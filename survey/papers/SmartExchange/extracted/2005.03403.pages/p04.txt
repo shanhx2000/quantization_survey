@@ -1,0 +1,68 @@
+Algorithm 1 SmartExchange Algorithm.                                 i.e., a smaller r favors a higher compression rate yet might
+                                                                     cause a higher accuracy loss. Note that r is equal to the rank
+ 1: Sparsify Ce in a channel-wise manner;                            of the basis matrix B, i.e., r = n when B is a full matrix,
+ 2: Initialize Ce and B; Iteration = 0;                              otherwise r ≤ n. To minimize the memory storage, we set the
+ 3: while kδ (Ce )k ≥ tol or iteration < tol maximum:                basis matrix B ∈ Rr×n to be small. In practice, we choose
+ 4:     Step 1: Quantize Ce to powers of 2;                          n = R = S with R × S being the CONV kernel size. Since n
+ 5:     Step 2: Fitting B and Ce ;                                   is small, we choose r = n = S too. We next discuss applying
+ 6:    iteration = iteration + 1;                                    the proposed algorithm to the FC and CONV layers. In all
+ 7:    Step 3: Sparsity Ce in a vector-wise manner;                  experiments, we initialize Ce = W and B = I for simplicity.
+ 8: Re-quantize Ce and re-fit B.
+                                                                         • SmartExchange algorithm on FC layers.          Consider a
+introduce an efficient heuristic algorithm that iterates between           fully-connected layer W ∈ RM×C . We reshape each row
+objective fitting and feasible set projection. The general outline         of W into a new matrix W̃i ∈ RC/S×S , and then apply
+of the SmartExchange algorithm is described in Algorithm 1,                SmartExchange algorithm. Specifically, zeros are padded
+and the three key steps to be iterated are discussed below:                if C is not divisible by S, and SmartExchange algorithm
+    Step 1: Quantizing Ce . The quantization step projects                 is applied to W̃i , where i = 1, . . . , M. When C  S, the
+the nonzero elements in Ce to ΩP . Specifically, we will first             reconstruction error might tend to be large due to the
+normalize each column in Ce to have a unit norm in order                   imbalanced dimensions. We alleviate it by slicing W̃i
+to avoid scale ambiguity. We will then round each non-zero                 into smaller matrices along the first dimension.
+                                                                         • SmartExchange algorithm on CONV layers. Consider a
+element to its nearest power-of-two value. We define δ (Ce ) to
+be the quantization difference of Ce .                                     convolutional layer W in the shape (M,C, R, S): Case 1:
+    Step 2: Fitting B and Ce . We will first fit B by                      R = S > 1. We reshape the M filters in W into matrices of
+solving arg minB kW − Ce Bk2F , and then fit Ce by solving                 shape (S × C, S), on which SmartExchange algorithm is
+arg min Ce kW − Ce Bk2F . When fitting either one, the other is            applied. The matrices can be sliced into smaller matrices
+fixed to be its current updated value. The step simply deals               along the first dimension if S ×C  S. Case 2: R = S = 1.
+with two unconstrained least squares.                                      The weight is reshaped into a shape of (M,C) and then
+    Step 3: Sparsifying Ce . To pursue better compres-                     is treated the same as an FC layer.
+sion/acceleration, we simultaneously introduce both channel-         The above procedures are easily parallelized along the axis of
+wise and vector-wise sparsity to Ce :                                the output channels for acceleration.
+                                                                        We apply the SmartExchange algorithm on a VGG19 net-
+    • We first prune channels whose corresponding scaling
+                                                                     work1 pre-trained on the CIFAR-10 [26], with θ = 4×10−3 ,
+      factor in batch normalization layers is lower than a
+                                                                     tol = 10−10 , and a maximum iteration of 30. Weights in it are
+      threshold which is manually controlled for each layer. In
+                                                                     decomposed by SmartExchange algorithm into the coefficient
+      practice, we only apply channel-wise sparsifying at the
+                                                                     matrices and basis matrices. It only takes about 30 seconds
+      first training epoch once, given the observation that the
+                                                                     to perform the algorithm on the network. Without re-training,
+      pruned channel structure will not change much.
+                                                                     the accuracy drop in the validation set is as small as 3.21%
+    • We then zero out elements in Ce based on the magnitudes
+                                                                     with an overall compression rate of over 10×. The overall
+      to meet the vector-wise sparsity constraint: ∑ j kCe [:
+                                                                     compression rate of a network is defined as the ratio between
+      , j]k0 ≤ Sc , where Sc is manually controlled per layer.
+                                                                     the total number of bits to store the weights (including the
+    In practice, we use hard thresholds for channel and vector-      coefficient matrix Ce , basis matrix B, and encoding overhead)
+wise sparsity to zero out small magnitudes in Ce for implemen-       and the number of bits to store the original FP32 weights.
+tation convenience. With the combined channel and vector-               SmartExchange algorithm with re-training. After a DNN
+wise sparsity, we can bypass reading the regions of the input        has been post-processed by SmartExchange algorithm, a re-
+feature map that correspond to the pruned parameters, saving         training step can be used to remedy the accuracy drop. As
+both storage-access and computation costs in convolution             the un-regularized re-training will break the desired property
+operations. Meanwhile, the sparsity patterns in Ce also reduce       of coefficient matrix Ce , we take an empirical approach to
+the encoding overheads, as well as the storage-access and            alternate between 1) re-training the DNN for one epoch; and
+computation costs during the weight reconstruction W = Ce B.         2) applying the SmartExchange algorithm to ensure the Ce
+    After iterating between the above three steps (quantization,     structure. The default iteration number is 50 for CIFAR-10
+fitting and sparsification) for sufficient iterations, we conclude   [26] and 25 for ImageNet [11]. As shown in experiments
+the iterations by re-quantizing the nonzero elements in Ce to        in Section V-A, the alternating re-training process further
+ensure Ce [i, j] ∈ ΩP and then re-fitting B with the updated Ce .    improves the accuracy while maintaining the favorable weight
+C. Applying the SmartExchange Algorithm to DNNs                      structure. More analytic solutions will be explored in future
+                                                                     work, e.g., incorporating SmartExchange algorithm as a regu-
+   SmartExchange algorithm as post-processing. The value             larization term [48].
+of r (see Eq. (1)) is a design knob of SmartExchange for
+trading-off the achieved compression rate and model accuracy,          1 https://github.com/chengyangfu/pytorch-vgg-cifar10
+

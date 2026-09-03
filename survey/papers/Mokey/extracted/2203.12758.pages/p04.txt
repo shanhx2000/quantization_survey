@@ -1,0 +1,64 @@
+                                                                                                         EA                  EW
+                                                                                                    A0 = a1 +b           W0 = a2 +b
+                                                                                                    A1 = a4 +b           W1 = a5 +b
+                                                                                                    …                     …
+                                                                                                            Exponential terms (E)
+
+                                                                          ∑# 𝐴𝑊 = A0W0+A1W1+ …
+                                                                                = a1+2 + ba1 + ba2 + b2 +
+                                                                                   a4+5 + ba4 + ba5 + b2 +
+                                                                         Range [0,14]      …                               Range [0,7]
+ Fig. 3: Fitting an Exponential Curve to Golden Dictionary.
+                                                                                        = (a3+a9+…)+b(a1+a4+…)+ b(a2+a5+…)+Nb2
+                                                                                                                                                             Constant
+                                                                                           Calculated as:      Sum of E Terms       Sum of E Terms
+of the tensor’s values. These two parameters are constant for                       (1) Histogram of exponents for Activations        for Weight
+                                                                                      (2) Weighted reduction                              Constant     Pre-computed
+weights and are estimated using profiling for activations. A                                                                                           when compiling
+                                                                                                                      “Constant”     Computed when quantizing
+simple linear transformation of GD is all that is needed: GD×                                                                        output of previous later
+s + m. This is done once per tensor using profiling.
+   Dictionary size affects overall accuracy. In general, the more       Fig. 4: Calculating output activations without having to expand
+entries a dictionary has, the better it represents the original         the quantized input activations and weights to their corre-
+tensor distribution and the better it preserves overall model ac-       sponding centroids.
+curacy. However, larger dictionaries incur higher overheads. To
+better balance dictionary overheads while preserving accuracy
+Mokey uses two small dictionaries per tensor. The first “Gaus-          composes MAC operations into exponent counting (histogram)
+sian” dictionary quantizes the bulk of the values, whereas the          for quantized indexes and some constants. In this simplified
+second “Outlier” dictionary maps the few remaining values of            example, all values are assumed to be positive and the layer’s
+much larger magnitude. To best explain how Mokey chooses                mean and standard deviation are assumed to be zero and one,
+the respective ranges, it is best to first discuss how Mokey            respectively.
+manages to map what were originally floating-point values and              In more detail: Since the Golden Dictionary is symmetrical
+operations into fixed-point values and operations. Unique to            around 0 and for a limited range, we first fit an exponential
+Mokey, the bulk of these operations manipulate narrow fixed-            curve to one-half of the Golden Dictionary. The other half
+point dictionary indexes instead of their respective centroids.         holds the opposite values. We used MATLAB’s curve-fitting
+                                                                        toolbox [41] to fit a curve of the form aint + b where a, b
+D. Integer Exponents for Compute Acceleration                           are the parameters that we are fitting and int is a list of
+   Mokey quantizes weights and activations to a few unique              integers from zero to half of the dictionary size. Since we
+values. For clarity, this section assumes that there is a single        have more values near zero and the density of the values
+dictionary of 16 values which all follow a Gaussian distri-             decreases as we go sideways, we apply a weighting scheme
+bution with a narrow range near its mean (outlier handling              during curve fitting to emphasize more densely populated
+is described in Section II-E). With this quantization scheme,           ranges. The weighting scheme uses a unit weight for the outer
+there are just 256 (16 × 16) possible multiplication products           bin, and doubles the weight for the bins as we move towards
+instead of the 232 possible products with the original FP16             zero. For 4 bit quantization, this results in 16 bins which are
+model. This represents an opportunity to replace the native             symmetrical around zero: 8 are positive and 8 are negative
+FP16 multiply-accumulate (MAC) operations, with counting                with identical magnitudes as their corresponding positive bin.
+per possible product (integer histogram), followed by a final           We fit the GD = aint + b curve on these 8 positive values
+multiplication of the integer counts with the product of their          where a = 1.179, b = −0.977, where int is an integer in
+respective centroids. However, we anticipate that having 256            range of [0, 7] and the fitting weights are in [27 , 20 ] range.
+counters per processing element will be impractical due to high         Figure 3 shows the resulting exponential function (curve) and
+energy and latency overhead compared to an FP16 MAC unit.               the original Golden Dictionary entries (dots).
+   We observe that a Gaussian distribution, provided that we               In the resulting 4 bit quantization, the most significant bit
+are only interested in values near its mean, can be approx-             is the sign of the value (0: positive , 1: negative) and the
+imated well with an exponential function where values are               following 3 bits are the index. For instance, if the quantized
+represented as aint + b, where int is an integer index and a            representation is 0b1011 the corresponding value would be
+and b are appropriately chosen constants. As we explain here,           −(a3 + b). We emphasize that a and b are fitted to the Golden
+this approximation enables Mokey to reduce what otherwise               Dictionary and this process is performed only once prior to
+would have been 256 possible products into just 15 possible             scaling the resulting dictionary to each tensor.
+exponent sums, making a histogram-based processing MAC                  Computing using Dictionary Indexes instead of Dictionary
+unit practical. Figure 4 illustrates, informally, how Mokey de-         Centroid Values: We can now exploit that our values fall on
+
+
+
+                                                                    4
+

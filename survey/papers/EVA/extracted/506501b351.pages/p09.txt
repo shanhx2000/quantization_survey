@@ -1,0 +1,101 @@
+                              TABLE III                                                                                                                                                    TABLE IV
+   N ORMALIZED EVA’ S L ATENCY ON LL A MA-2-7B ACROSS D IFFERENT                                                                                                               EVA A RCHITECTURAL C ONFIGURATION
+                         VQ C ONFIGURATIONS .                                                                                                          PE Array                         32 × 32 INT8, Weight Stationary;
+                                                                                                                                                       Mixed-precision                  32 × 8 FP16, Input Stationary.
+ Algorithm                        d          n (2n )        C           q                            N        PE:EU       Norm. Latency                Epilogue Unit                    4× 32-input Adder Tree.
+ AQLM 2×8                         8        8 (256)          2            2                         4096       1 : 16                   1.00×           Decoding Stage Tiling            m = M ; k = 4×v×d
+                                                                                                                                                                                                      M
+                                                                                                                                                                                                          ; n = N.
+ AQLM 3×8                         8        8 (256)          3            3                         4096       1 : 16                   1.49×           Prefill Stage Tiling             m = 1024; k = 32; n = 1024.
+ AQLM 2×12                        8      12 (4096)          2            3                         4096        1:1                     2.96×
+                                                                                                                                                       Quantization: q-bit              d = 8; n = 8; C = q.
+ AQLM 4×8                         8        8 (256)          4            4                         4096       1 : 16                   1.98×
+ AQLM 1×16                        8      16 (65536)         1            2                         4096       16 : 1                  22.86×                                            16KB Weight Codebook; 256KB Weight; 32KB Input;
+                                                                                                                                                       Buffer Size: 528KB
+                                                                                                                                                                                        192KB Output Codebook; 32KB Output.
+ GPTVQ-4D                         4        8 (256)          1            2                          256        1:1                     4.17×
+ Hypothesized                     4        8 (256)          1            2                         4096       1 : 16                   1.00×           DDR4 DRAM                        8Gb × 8 2133R; 16GB/s per channel; 4 channels 64GB/s.
+
+                                                                                                                                                                                            TABLE V
+(a) 0.006                                                       4.5                   (b) 0.8                                                                                  T HE P ERPLEXITY ON W IKITEXT DATA .
+                                                                4                                  0.7
+                                                                      Norm. Latency
+
+
+
+
+                                                                3.5                                0.6
+                                                                                      Area (mm2)
+ Energy (J)
+
+
+
+
+              0.004                                             3                                  0.5
+                                                                2.5                                                                                    Arch.            SA            ANT      FIGNA      FIGLUT      EVA     FIGNA    EVA          FP16
+                                                                                                   0.4
+                                                                2
+              0.002                                             1.5                                0.3                                                 Algo.       QSERVE             ANT       AWQ        BCQ       AQLM      AWQ     AQLM         FP16
+                                                                1                                  0.2
+                                                                0.5                                0.1                                                 FC Act.         INT8           8bit      FP16       FP16       FP16     FP16    FP16         FP16
+                 0                                              0                                    0
+                          1   2          4        8    16                                                 1       2       4       8     16
+                                                                                                                                                       FC Wgt.         INT8           8bit      INT4        4bit       4bit    INT2     2bit        FP16
+                                      Num. EU                                                                          Num. EU                         L-2 7B           5.56          5.58       5.60      5.58       5.43     2.2e5   6.69         5.12
+                      Array   Epilogue          SFU    Latency                                                Array    Epilogue   SFU
+                                                                                                                                                       L-2 13B          4.95          5.20       4.97      4.96       4.76     1.2e5   5.63         4.57
+
+
+Fig. 8. Design space exploration of EVA. (a) Number of Epilogue Units with
+latency and energy. (b) Number of Epilogue Units with area.
+                                                                                                                                                      the prefill phase and increase DRAM power consumption.
+   VQ parameters. Tbl. III shows how EVA’s latency varies                                                                                             Additionally, increasing the number of EUs results in a rise in
+across different VQ configurations. Here, N denotes the                                                                                               both the architecture’s area and buffer size. Therefore, we have
+minimum number of output channels sharing the same code-                                                                                              chosen to implement four EUs with a memory bandwidth of 64
+book; for AQLM, this corresponds to the linear-layer output                                                                                           GB/s. A complete summary of the architectural configuration
+dimension (N ≥ 4096). As shown in the table, when 2n < N ,                                                                                            of EVA is presented in Tbl. IV.
+latency is approximately proportional to the effective bitwidth                                                                                       C. Model Performance
+q = nCd ; thus configurations with the same q exhibit similar
+performance. After VQ reformulation, computation splits into                                                                                         Comparison of EVA and the baselines. We evaluate the
+PE-side multiplications K × 2n and EU-side accumulations                                                                                          LLaMA-2-7B (L-2 7B) and LLaMA-2-13B (L-2 13B) on
+                                        n
+K × N , yielding the ratio PE:EU = 2N . For example, when                                                                                         the WikiText-2 dataset [43], comparing EVA with accelerator
+n = 12 and N = 4096, we have 2n = N (PE:EU = 1:1).                                                                                                baselines using their respective state-of-the-art (SOTA) quan-
+In this balanced regime, the systolic array latency exceeds                                                                                       tization algorithms.
+the Epilogue latency, causing EVA to become PE-bound and                                                                                             As shown in Tbl. V, systolic arrays adopt INT8 multiply-
+reducing its acceleration benefit. When 2n > N , this effect be-                                                                                  accumulate (MAC) units with QSERVE [39], ANT applies
+comes more pronounced; centroid under-utilization introduces                                                                                      its dedicated 8-bit format, FIGNA supports FP16 activation
+“spurious” multiplications (presented in the Sec. VI-F), further                                                                                  and INT4 weight for AWQ [37], FIGLUT uses binary-coding
+increasing latency. Our design-space exploration confirms that                                                                                    quantization (BCQ) with ShiftAddLLM [71], and EVA em-
+2n = 256 (n = 8) provides the most practical trade-off                                                                                            ploys AQLM [15], [42] with parameters d = 8, n = 8. All
+between compute efficiency and memory cost.                                                                                                       methods maintain Attention layers in FP16 precision.
+                                                                                                                                                     Tbl. V presents the perplexity results, where lower per-
+   Number of Epilogue Units. As shown in Fig. 8 (a) and
+                                                                                                                                                  plexity indicates better performance. At higher quantization
+Fig. 8 (b), we fix the DRAM bandwidth at 64 GB/s and
+                                                                                                                                                  precision (e.g., 8-bit or 4-bit weight-only), all algorithms
+evaluate the impact of EU count on latency, energy, and
+                                                                                                                                                  achieve comparable accuracy with minimal degradation from
+area. Increasing the number of EUs initially reduces both
+latency and energy, but beyond four EUs, latency no longer
+decreases. This is because in each cycle the four EUs can                                                                                                                       TABLE VI
+process 4 × v = 128 weight indexes, which fully utilizes the                                                                                             ACCURACY (%) C OMPARISON OF LL A MA-2-7B ON DOWNSTREAM
+                                                                                                                                                                               BENCHMARK .
+64 GB/s DRAM bandwidth at a clock frequency of 500 MHz.
+Further increasing EU only raises energy consumption. Since                                                                                             Method                 Bits          PIQA       COPA       ARC-E      ARC-C    Winogrande
+each EU only consists of adders, its area overhead remains
+                                                                                                                                                        FP16                   16            78.1       87.0        76.4       43.5          69.1
+negligible (3.5%) compared to the PE array when the number
+of EUs is small.                                                                                                                                        LLM.265 FB              4            78.8        –         73.83       44.1          69.7
+                                                                                                                                                        LLM.265 VB              4            78.9        –         73.82        45           69.7
+   Architecture configuration. Our exploration indicates that                                                                                           EVA                     4            77.0       85.0       74.1        41.0          68.5
+during the decoding stage, the best trade-off is achieved
+                                                                                                                                                        LLM.265 FB              2            54.3       68.5       29.76       30.5          51.8
+by matching the number of EUs with memory bandwidth.                                                                                                    LLM.265 VB              2            56.7       68.9       34.52       31.1          52.3
+However, higher bandwidth can lead to lower utilization during                                                                                          EVA                     2            75.9       84.0       71.7        38.6          68.2
+
+
+
+
+                                                                                                                                               1359
+

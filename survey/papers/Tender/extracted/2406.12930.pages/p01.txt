@@ -1,0 +1,65 @@
+                                           Tender: Accelerating Large Language Models via
+                                          Tensor Decomposition and Runtime Requantization
+                                                                              Jungi Lee∗          Wonbeom Lee∗                  Jaewoong Sim
+                                                                                 Department of Electrical and Computer Engineering
+                                                                                              Seoul National University
+                                                                                     {jungi.lee, wonbeom, jaewoong}@snu.ac.kr
+
+
+
+                                            Abstract—Large language models (LLMs) demonstrate out-                  TPUs, in addition to benefiting from memory capacity and
+arXiv:2406.12930v1 [cs.LG] 16 Jun 2024
+
+
+
+
+                                         standing performance in various tasks in machine learning and              bandwidth savings.
+                                         have thus become one of the most important workloads in today’s               However, it is quite challenging to quantize the activations
+                                         computing landscape. However, deploying LLM inference poses
+                                         challenges due to the high compute and memory requirements                 in LLMs, unlike convolutional neural networks or small Trans-
+                                         stemming from the enormous model size and the difficulty of                former models. When the LLM scales beyond a certain size
+                                         running it in the integer pipelines. In this paper, we present             (around 6.7B parameters), extremely large magnitude values,
+                                         Tender, an algorithm-hardware co-design solution that enables              compared to others, appear in a few feature dimensions of
+                                         efficient deployment of LLM inference at low precision. Based on           activations [11]. These outliers increase the quantization range,
+                                         our analysis of outlier values in LLMs, we propose a decomposed
+                                         quantization technique in which the scale factors of decomposed            thereby necessitating the use of larger bit widths in LLMs
+                                         matrices are powers of two apart. The proposed scheme allows us            compared to other DNN models.
+                                         to avoid explicit requantization (i.e., dequantization/quantization)          As such, there have been recent efforts to effectively quan-
+                                         when accumulating the partial sums from the decomposed matri-              tize activations in LLMs using low-bit integers in both soft-
+                                         ces, with a minimal extension to the commodity tensor compute              ware and algorithm-hardware co-design works. However, most
+                                         hardware. Our evaluation shows that Tender achieves higher
+                                         accuracy and inference performance compared to the state-of-               software-only works do not noticeably reduce the inference
+                                         the-art methods while also being significantly less intrusive to the       time due to the overhead of complex algorithms or result
+                                         existing accelerators.                                                     in a significant quantization loss at ultra low-bit precisions
+                                            Index Terms—Large Language Model; LLM Acceleration                      (e.g., 4 bits) [11], [33], [65], [66]. Also, prior works dealing
+                                                                                                                    with outliers via algorithm-hardware co-designs require either
+                                                                  I. I NTRODUCTION                                  mixed-precision/complex compute units [11], [44], [52], [70]
+                                                                                                                    or custom/adaptive datatypes that are not natively supported
+                                            Large language models (LLMs) have demonstrated remark-                  by commodity hardware [20], [21], [55].
+                                         able performance across a variety of tasks in natural language                In this paper, we propose Tender, an algorithm-hardware
+                                         processing, including machine translation, sentiment analysis,             co-design technique that efficiently executes LLMs in the
+                                         and even generating human-like text, as evidenced by recent                high-throughput integer pipeline without the need of mixed-
+                                         applications such as OpenAI’s ChatGPT and Google’s Gem-                    precision compute units or custom/adaptive datatypes. The
+                                         ini [1], [19], [42], [56], [64]. The tremendous success of LLMs            high-level idea behind Tender is to split the activation tensor
+                                         can be largely attributed to their enormous model size, which              into several subtensors along the feature/channel dimensions
+                                         has seen substantial growth in recent years. For example, the              (e.g., columns in 2D), each of which contains the elements
+                                         first version of GPT, which was introduced in 2018, had 117                with a similar range of values, effectively isolating the chan-
+                                         million parameters, but the recently released GPT-4 is rumored             nels that contain outliers from the others. Each subtensor is
+                                         to contain more than a trillion parameters only after five years.          then quantized with a different scale factor, thereby reducing
+                                            LLM inference has now become one of the most important                  the quantization error for the entire activation tensor compared
+                                         workloads in today’s computing landscape, but deploying and                to the conventional per-tensor (or per-row) quantization vari-
+                                         serving LLMs poses a unique challenge because it requires a                ants.
+                                         significant amount of compute and memory resources due to                     While this has the great potential to enhance model per-
+                                         the massive model size. Quantization [11], [18], [50], [66] is             formance compared to previous LLM quantization works,
+                                         one of the most popular techniques to mitigate the resource                setting different scale factors for each subtensor requires
+                                         problem. By quantizing both weights and activations in LLMs                explicit and costly rescaling/requantization (i.e., dequantiza-
+                                         into low-bit integers, we can accelerate compute-intensive                 tion/quantization) when adding up the partial sums (i.e., outer
+                                         operations such as matrix multiplication while leveraging high-            products) from matrix multiplications of the subtensors. Our
+                                         throughput integer tensor compute units in modern GPUs or                  key insight is that we can avoid the explicit requantization step
+                                                                                                                    by setting the scale factors with power-of-two relationships
+                                           ∗ Equal contribution                                                     between the decomposed subtensors and employing simple
+
+
+
+                                                                                                                1
+

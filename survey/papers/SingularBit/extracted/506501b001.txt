@@ -1,0 +1,1000 @@
+                      2026 ACM/IEEE 53rd Annual International Symposium on Computer Architecture (ISCA)
+
+
+
+
+      SingularBit: Exploiting Synergy of Singular Value
+        Decomposition and Low-Bit Quantization for
+      Weight and KV Compression in LLM Inference
+        Seongyon Hong                Hyundeok Kong                  Jungwan Lee                     Sangjin Kim              Hoi-Jun Yoo
+             KAIST                       KAIST                          KAIST                           GIST                    KAIST
+       sy.hong@kaist.ac.kr        bosco0127@kaist.ac.kr          milelion@kaist.ac.kr           sangjinkim@gist.ac.kr      hjyoo@kaist.ac.kr
+
+
+
+       Abstract—Large language models (LLMs) have become indis-                     Models (PRMs) [6], and iterative self-correction [7] instantiate
+   pensable across diverse domains, while inference-time scaling                    this principle in multi-step reasoning and problem solving.
+   has further enhanced their ability to tackle complex real-world                     However, this shift toward larger inference-time token bud-
+   tasks through long-context processing and extended generation.
+   However, autoregressive decoding with extended sequences inten-                  gets, spanning long-context inputs and extended generations,
+   sifies the memory bandwidth bottleneck through repeated weight                   fundamentally reshapes the memory bottlenecks of LLM in-
+   access and growing key-value (KV) caches, a challenge we term                    ference. Prior work has studied weight compression [8], [9]
+   the Dual Memory Wall. Although quantization and low-rank                         and key-value (KV) cache compression [10], [11] largely in
+   approximation have been explored independently for weight and                    isolation, but modern inference-time scaling workloads require
+   KV compression, existing approaches remain insufficient for the
+   demands of modern LLM inference. We present SingularBit, the                     a unified solution to the dual memory wall of model weights
+   first accelerator to exploit the synergy between singular value                  and KV caches.
+   decomposition (SVD) and low-bit quantization for both offline                       (1) Weight Memory Bottleneck: Each decoding step re-
+   weight and online KV cache compression. Our key insight is                       peatedly accesses model parameters from external memory.
+   that singular values decay rapidly in both weight matrices and                   For a model with L layers and hidden dimension D, each
+   attention distributions, enabling aggressive compression of less
+   critical components while preserving model accuracy through                      token generation incurs O(L · D2 · bW ) weight memory
+   rank-aware mixed-precision allocation. SingularBit comprises                     traffic, where bW denotes the weight bitwidth. This cost is
+   two algorithm-hardware co-designs. First, SingularBit-W applies                  constant per token and dominates latency in the early stages
+   rank-aware mixed-precision quantization to weights, compressing                  of generation, before the KV cache becomes sufficiently large.
+   most parameters to 1-2 bits guided by singular value magnitude,                  Prior approaches have explored quantization [8], [9], [12]
+   executed efficiently by the SingularBit Tensor Core supporting
+   rank-wise mixed-precision computation. Second, SingularBit-KV                    and low-rank approximation [13], [14] independently, but they
+   extends this principle to online KV cache compression, dynam-                    either suffer accuracy degradation at aggressive compression
+   ically allocating precision based on both token importance and                   ratios or provide limited hardware efficiency.
+   rank significance, accelerated by the SingularBit Compression                       (2) KV Cache Memory Bottleneck: Each decoding step
+   Engine. Synthesized in 28nm CMOS, SingularBit achieves state-                    accesses key-value vectors from all preceding tokens. The KV
+   of-the-art algorithmic efficiency across standard language mod-
+   eling, commonsense reasoning, and long-context benchmarks.                       cache grows as O(N · L · D · bKV ), where N is the number of
+                                                                                    generated tokens and bKV is the average KV bitwidth. Unlike
+                           I. I NTRODUCTION                                         weight traffic, KV traffic increases with sequence length and
+                                                                                    becomes the dominant bottleneck in later decoding stages,
+      Frontier large language models (LLMs) [1]–[3] have ad-                        especially in long-context reasoning tasks where N can reach
+   vanced beyond basic text generation toward long-context un-                      tens of thousands. Recent methods apply eviction policies [10],
+   derstanding, extended generation, multi-step reasoning, and                      [15] or KV quantization [11], [16], but they typically focus on
+   complex problem solving. A key driver of this progress                           a single compression dimension, leaving joint token-wise and
+   is inference-time scaling, where models allocate additional                      channel-wise KV-cache compression largely underexplored.
+   computation or token budget at inference time to improve                            These two bottlenecks are not mutually exclusive; rather,
+   output quality. This scaling can take multiple forms, including                  they arise as sequential phases within each generative request.
+   processing longer contexts, sustaining extended generations,                     A decoding session begins as a weight-bound workload, where
+   sampling or searching over multiple candidate outputs, refining                  loading model parameters dominates latency. As the sequence
+   intermediate drafts, and verifying partial results. Reasoning-                   length N grows, KV-cache traffic increases and eventually
+   oriented methods such as Chain-of-Thought (CoT) prompt-                          surpasses weight access as the primary bottleneck. In real-
+   ing [4], Monte Carlo Tree Search (MCTS) [5], Process Reward                      world inference scenarios, the crossover point is difficult to
+                                                                                    predict. Each session begins with a different number of context
+     This work was supported by the Commercialization Promotion Agency for
+   R&D Outcomes(COMPA) grant funded by the Korea government(Ministry of             tokens in its prompt and terminates after a different number of
+   Science and ICT) (2710086165).                                                   generated tokens, as inference-time scaling works dynamically
+
+
+979-8-3315-5065-3/26/$31.00 ©2026 IEEE                                       1001
+DOI 10.1109/ISCA66397.2026.00079
+                      Fig. 1: Overview of the proposed SingularBit algorithm and hardware accelerator.
+based on query types. A system optimized for only one                    online attention-aware and rank-aware KV quantization and
+regime can therefore underperform across diverse workloads,              dequantization in the KV cache datapath.
+a challenge also recognized by recent LLM inference systems                 We evaluate SingularBit across diverse benchmarks on
+that target distinct execution regimes [17]–[19]. Achieving              LLaMA (7B, 13B, 30B) [20], Llama 2 (7B, 13B) [21], Llama
+low end-to-end generation latency across diverse inference-              3 (8B-Instruct) [22], and DeepSeek-R1-Distill reasoning mod-
+time scaling workloads therefore requires a unified algorithm–           els [2]. For weight compression, SingularBit-W is evaluated
+hardware approach that jointly reduces both weight and KV-               using perplexity on Wikitext-2 [23] and C4 [24], as well as
+cache memory costs.                                                      zero-shot accuracy averaged over six commonsense reason-
+   We present SingularBit, an LLM accelerator that exploits              ing benchmarks: PIQA, ARC-Easy, ARC-Challenge, BoolQ,
+the synergy between singular value decomposition (SVD)                   HellaSwag, and WinoGrande. SingularBit-W consistently out-
+and low-bit quantization to compress both weights and KV                 performs competing methods, including GPTQ [8], AWQ [9],
+caches. Our key insight is that singular values in LLM                   OmniQuant [25], and GuidedQuant [26], across model sizes
+weight matrices decay rapidly, indicating that rank components           and bitwidths. In the ultra-low-bit regime, where conven-
+contribute unequally to model quality. Rather than treating              tional methods often suffer severe perplexity degradation,
+SVD and quantization as alternative compression techniques,              SingularBit-W maintains stable performance, demonstrating
+SingularBit combines them: SVD provides a rank-wise impor-               the effectiveness of rank-aware mixed-precision quantization.
+tance signal, while quantization uses it to allocate precision              For KV cache compression, SingularBit-KV is evaluated on
+accordingly. To the best of our knowledge, SingularBit is the            generation quality, including CoQA [27] and TruthfulQA [28],
+first unified algorithm–hardware framework that applies the              and mathematical reasoning using GSM8K [29]. It outper-
+synergy between SVD and quantization to both model-weight                forms KIVI [11], GEAR [30], KVQuant [16], PALU [31],
+and KV-cache compression. It consists of two algorithm–                  ReCalKV [32], and ZipCache [33]. We further validate
+hardware co-designs.                                                     SingularBit-WKV on prefill-heavy long-context workloads us-
+   (1) SingularBit-W applies rank-aware mixed-precision                  ing LongBench [34] and decode-heavy reasoning scenarios,
+quantization to offline weight compression. By analyzing the             where it outperforms the best prior combination across diverse
+singular value spectrum of each weight matrix, SingularBit-              inference regimes.
+W assigns higher precision, e.g., 4 bits, to leading singu-                 Synthesized in 28nm CMOS, the SingularBit accelerator
+lar components that capture dominant signal energy, while                achieves up to 5.3× speedup and 4.8× energy savings on
+compressing less significant components to 1–2 bits. To exe-             decode-heavy reasoning tasks, and up to 9× throughput im-
+cute this heterogeneous precision efficiently, we introduce the          provement with 79% system energy reduction on standard
+SingularBit Tensor Core, a specialized core that performs                inference workloads compared to the FP16 baseline. These
+bit-serial mixed-precision matrix multiplication using lookup            results demonstrate that SingularBit effectively addresses the
+tables for low-bit operations.                                           dual memory wall in modern LLM deployment.
+   (2) SingularBit-KV extends the same rank-aware principle                 This paper makes the following contributions:
+to online KV cache compression during inference. Unlike                     • We identify the synergy between SVD and low-bit quan-
+static weight compression, KV compression must adapt as new                   tization for LLM compression, showing that rank-aware
+tokens are generated. SingularBit-KV allocates precision based                mixed-precision allocation exploits rapid singular value
+on both token importance, measured by aggregated attention                    decay to achieve superior compression-accuracy trade-
+scores [10], and rank significance, derived from the SVD of                   offs.
+the KV projection weights. We design the SingularBit Com-                   • We propose SingularBit-W, an offline weight compres-
+pression Engine, a specialized hardware unit that performs                    sion algorithm based on rank-aware quantization, and
+
+
+
+
+                                                                  1002
+                                                                       TABLE I: Comparison of SingularBit with prior LLM com-
+                                                                       pression and acceleration approaches.
+                                                                                                          Weight            KV     Accelerator
+                                                                                 Approaches
+                                                                                                          Q   LR        Q     LR   Co-Design
+                                                                          GPTQ, AWQ, OmniQuant           ✓     ×        ×     ×        ×
+                                                                              SVD-LLM, ASVD              ×     ✓        ×     ×        ×
+                                                                          KIVI, KVQuant, ZipCache        ×     ×        ✓     ×        ×
+                                                                                   GEAR                  ×     ×        ✓     ✓        ×
+                                                                        PALU, MatryoshkaKV, ReCalKV      ×     ×        ×     ✓        ×
+                             (a)
+                                                                                 SingularBit             ✓     ✓        ✓     ✓        ✓
+                                                                       Q = quantization, LR = low-rank approximation.
+
+
+                                                                       BitNet b1.58 [37] explore native low-bit LLM training,
+                                                                       with BitNet b1.58 representing weights using ternary values
+                                                                       {−1, 0, +1}. OneBit [38] represents weight matrices with a 1-
+                                                                       bit sign matrix and lightweight value vectors, combined with
+                             (b)                                       knowledge distillation. As shown in Figure 2(a), such methods
+                                                                       represent weights using binary bases Bi and scale factors αi
+Fig. 2: Background on representative LLM compression tech-
+                                                                       to minimize reconstruction error. Although uniform aggressive
+niques: (a) low-bit quantization and (b) SVD-based low-rank
+                                                                       quantization achieves high compression ratios, it often causes
+approximation.
+                                                                       severe accuracy degradation, especially on conversational and
+    design the SingularBit Tensor Core to execute rank-wise            reasoning tasks.
+    mixed-precision computation efficiently.                           B. Low-Rank Approximation
+  • We propose SingularBit-KV, an online KV cache com-
+    pression algorithm that dynamically allocates precision               Singular Value Decomposition (SVD) factorizes a weight
+    based on token importance and rank significance, along             matrix W ∈ Rm×n into W = USVT . SVD-based compres-
+    with the SingularBit Compression Engine for real-time              sion exploits the rapid decay of singular values by retaining
+    compression.                                                       only the leading rank components and truncating the low-
+  • We implement and evaluate a full-system SingularBit
+                                                                       energy tail, as illustrated in Figure 2(b). ASVD [39] ap-
+    accelerator in 28nm CMOS technology, demonstrating                 plies activation-aware transformations before decomposition
+    state-of-the-art performance across standard benchmarks,           to mitigate activation outliers, while SVD-LLM [40] uses
+    long-context inference, and reasoning tasks while main-            truncation-aware data whitening to better align singular values
+    taining competitive accuracy.                                      with compression loss. SliceGPT [41] applies orthogonal
+                                                                       transformations that preserve model computation and then
+                     II. BACKGROUND                                    removes less significant rows and columns to reduce the em-
+  This section first reviews two representative approaches to          bedding dimension. Despite their theoretical optimality under
+LLM weight compression—low-bit quantization and low-rank               the Frobenius norm, SVD-based methods often provide less
+approximation—and then discusses KV cache compression.                 aggressive compression than quantization under comparable
+                                                                       accuracy constraints. Moreover, the interaction between quan-
+A. Low-Bit Quantization                                                tization and low-rank decomposition remains underexplored,
+   Post-training quantization (PTQ) has become a practical             leaving substantial compression potential unused.
+approach for compressing LLM weights [8], [9], [25], [35].
+GPTQ [8] minimizes layer-wise quantization error using ap-             C. KV Cache Compression
+proximate second-order information, achieving competitive 3–              The memory bandwidth bottleneck also extends to the key-
+4 bit weight compression. AWQ [9] identifies salient weight            value (KV) cache during autoregressive decoding. KIVI [11]
+channels from activation statistics and protects them through          applies asymmetric 2-bit quantization, using per-channel quan-
+activation-aware scaling, while SmoothQuant [35] shifts quan-          tization for keys and per-token quantization for values, based
+tization difficulty from activations to weights through per-           on the observation that keys exhibit channel-wise outliers
+channel scaling. OmniQuant [25] optimizes quantization pa-             whereas values show token-wise patterns. KVQuant [16] intro-
+rameters through learnable weight clipping and equivalent              duces pre-RoPE quantization and non-uniform quantization to
+transformation, supporting both weight-only and weight-                handle long-context inference. ZipCache [33] further improves
+activation quantization. However, PTQ methods still face sub-          KV quantization by assigning token-wise bitwidths based on
+stantial accuracy degradation as the bitwidth approaches 1–2           attention-derived saliency. GEAR [30] complements quantiza-
+bits.                                                                  tion with low-rank correction and sparse outlier compensa-
+   Extreme 1–2 bit quantization has therefore been explored            tion to reduce KV quantization error. Recent methods such
+mainly through training-aware approaches. BitNet [36] and              as PALU [31] reduce KV dimensionality through low-rank
+
+
+
+
+                                                                1003
+Fig. 3: Memory bottlenecks across varying sequence lengths.                Fig. 4: Layer-wise singular value distributions of Llama2-7B,
+                                                                           showing rapid decay across rank components.
+projection, caching compressed intermediate states and recon-
+structing keys and values on the fly, and MatryoshkaKV [42]                through low-bit or saliency-aware quantization. GEAR [30]
+uses trainable orthogonal projections for adaptive KV com-                 further complements KV quantization with low-rank correc-
+pression. ReCalKV [32] further improves low-rank KV com-                   tion and sparse outlier compensation to reduce quantization
+pression through head reordering and offline calibration. How-             error. Other methods, such as PALU [31], MatryoshkaKV [42],
+ever, most existing methods exploit quantization and low-rank              and ReCalKV [32], explore low-rank or projection-based KV
+structure either separately or only for a single compression               compression.
+target, leaving their joint use across offline weight compression             Beyond these compression techniques, recent architecture-
+and online KV cache management underexplored.                              level works explore complementary directions, including
+                                                                           entropy-aware cache compression [43], prefill-decode overlap
+                      III. M OTIVATION
+                                                                           scheduling [17], CPU-GPU/CXL-based offloading [18], and
+   The Dual Memory Wall in LLM Inference. LLM infer-                       alternative execution substrates such as in-flash, chiplet-based,
+ence faces a growing memory bandwidth bottleneck as context                and PIM-enabled architectures [44]–[46]. However, they target
+length increases. As illustrated in Figure 3, this bottleneck              specific inference bottlenecks rather than jointly compressing
+arises from two major sources: weight access and KV cache                  weights and KV caches under a unified algorithm-hardware
+access. Weight access incurs a constant cost per generated                 framework.
+token, leading to O(N ) total memory traffic over N decoding                  The Key to Unified Compression: Synergy of SVD
+steps, since model weights are repeatedly fetched from off-                and Low-Bit Quantization. The key to unifying weight and
+chip memory during generation. In contrast, KV cache access                KV compression is to exploit the complementary strengths
+grows with sequence length, resulting in O(N 2 ) total memory              of low-rank approximation and quantization. Low-rank de-
+traffic over the decoding session. At moderate context lengths             composition reveals which rank components carry dominant
+up to 1K tokens, weight access dominates, accounting for over              information, while quantization provides a fine-grained mech-
+70% of total memory latency. However, as context lengths                   anism to compress each component according to its impor-
+extend to tens of thousands of tokens for reasoning and long-              tance. As shown in Figure 4, the singular values of Llama2-
+context applications, KV-cache traffic becomes the primary                 7B [21] decrease sharply across layers as rank increases,
+bottleneck. Addressing this dual memory wall therefore re-                 indicating that the leading rank components capture most of
+quires compressing both weights and KV caches, yet prior                   the representational capacity, while the long tail contributes
+approaches largely treat them separately.                                  much less to model outputs. This motivates a rank-aware
+   Limitations of Isolated Optimization. Existing LLM ac-                  mixed-precision strategy: components associated with larger
+celeration techniques typically optimize either weights or KV              singular values retain higher precision, whereas components
+caches, but not both under a unified compression framework.                associated with smaller singular values can be compressed
+As summarized in Table I, prior weight compression methods                 more aggressively to 1–2 bits. SingularBit applies this rank-
+primarily rely on either quantization or low-rank approxima-               aware mixed-precision principle to both static weights and
+tion. GPTQ [8], AWQ [9], and OmniQuant [25] reduce weight                  intermediate KV representations, and co-designs hardware to
+memory with low-bit representations, whereas SVD-LLM [40]                  execute it efficiently across the inference pipeline.
+and ASVD [39] reduce parameter redundancy through matrix
+decomposition. However, these methods target static weights                                 IV. P ROPOSED A LGORITHM
+and do not address the dynamically growing KV cache during                 A. SingularBit-W for Weight Compression
+decoding.
+                                                                             Unlike prior work based on coarse SVD truncation or
+   KV compression methods have also emerged along several
+                                                                           uniform quantization, SingularBit-W applies rank-aware fine-
+directions. Quantization-based approaches such as KIVI [11],
+                                                                           grained precision allocation to W. By assigning precision
+KVQuant [16], and ZipCache [33] reduce KV cache size
+                                                                           according to the singular-value importance of each rank
+
+
+
+
+                                                                    1004
+                                                                          Algorithm 1 SingularBit-W Compression
+                                                                          Input:
+                                                                                       och×ich
+                                                                            • W ∈R                : original weight matrix
+                                                                                      N ×ich
+                                                                            • x∈R             : calibration input matrix
+                                                                            • Bavg ∈ R: target average precision
+                                                                          Output:
+                                                                            • Ub ∈ Rich×r : quantized U matrix
+                                                                            • Vb T ∈ Rr×och : quantized V matrix
+                                                                           1: U, S, VT ← SVD(WT )
+                                                                           2: r = {r1 , r2 , ..., rK } ← B OUNDARY (S, Bavg )
+                                                                           3: HU ≈ xT x                                    ▷ Hessian for U
+                                                                           4: for idx ← ich to 0 step −blocksize do
+                              (a)
+                                                                           5:   αr , αcP, B ← Q UANTIZE(U, r, idx)           ▷ Quantize U
+                                                                           6:   Ub ← αr,i αc,i Bi
+                                                                                        i
+                                                                           7:   Eu ← U − U    b
+                                                                           8:   U ← U − Eu × H−1    U
+                                                                           9: end for
+                                                                          10: HV T = SU   b T HU US
+                                                                                                 b        ▷ Effective Hessian for VT
+                                                                          11: for idx ← 0 to r step blocksize do
+                                                                          12:   αr , αc , B ← Q UANTIZE(VT , r, idx) ▷ Quantize VT
+                                                                          13:   Vb T ← P αr,i αc,i Bi
+                                                                                            i
+                              (b)
+                                                                          14:   Ev = VT − VbT
+Fig. 5: Proposed SingularBit-W method for weight com-                     15:   V = V − Ev × H−1
+                                                                                  T     T
+                                                                                              VT
+pression. (a) Detailed algorithm and (b) layer-wise precision             16: end for
+allocation results.                                                       17: return U, bT
+                                                                                      b V
+
+component, it achieves a refined compression-accuracy trade-
+off without fine-tuning. Moreover, unlike empirical methods               as:
+                                                                                                              r−1
+that rely on exhaustive per-model or per-layer hyperparameter                                                 P
+                                                                                                                    σk
+search, our theoretically grounded strategy generalizes across                                             k=i
+                                                                                                      Ci = r−1                         (2)
+diverse architectures without manual tuning.                                                               P
+                                                                                                                    σk
+   We formalize the weight compression by first performing                                                    k=0
+SVD on the weight matrix W:
+                                                                          The region boundaries {r1 , r2 , ..., rK−1 } are determined by a
+                             X                                            rank ratio p ∈ (0, 1), representing the fraction of remaining
+                     WT =           σi ui viT .              (1)          information assigned to each successive precision level. By
+                               i                                          ensuring that the information content decreases exponentially
+                                                                          across regions, the boundary conditions for K regions are
+Each outer product ui viT , formed by orthonormal bases span-             derived as Crk = (1 − p)K−k . For K = 4 regions, this yields:
+ning the column and row spaces of W, contributes information
+                                                                                                     Cr1 = (1 − p)3
+proportional to its singular value σi . As shown in Figure 4,
+the singular values of weight matrices in LLMs exhibit ap-                                           Cr2 = (1 − p)2
+                                                                                                                                       (3)
+proximately exponential decay. This property implies that a                                          Cr3 = (1 − p)
+small fraction of leading components account for the dominant                                        C0 = 1
+share of signal energy, while the remaining components are
+progressively less significant.                                           where 0 < p < 1 is a single parameter controlling the rate of
+   Based on this observation, we partition the columns of U               information decay across regions.
+and rows of VT into K precision regions, assigning higher                    A key advantage of SingularBit-W is its analytical nature,
+precision to basis pairs associated with larger singular values.          which eliminates the need for empirical simulations. The
+In our specific implementation of SingularBit-W, we employ                average precision Bavg of a layer is a deterministic function of
+K = 4 regions, assigning 4, 3, 2, and 1-bit precisions respec-            the boundaries {rk } and their corresponding bit-widths {bk }:
+tively, as illustrated in Figure 5a. To quantify the information                                        K
+density, we define the cumulative tail sum from rank i onward                                        1 X
+                                                                                            Bavg =       bk · (rk − rk−1 )             (4)
+                                                                                                     R
+                                                                                                        k=1
+
+
+
+
+                                                                   1005
+where r0 = 0, rK is the total rank R, and bk denotes
+the bit-width assigned to the k-th region. Given a target
+average precision, the parameter p can be solved by combining
+Eq. 4 with the boundary conditions in Eq. 3. As shown in
+Figure 5b, this procedure applies consistently to every linear
+layer, requiring no heuristic search.
+   Regarding the precision range, we observed that extending
+the maximum precision beyond 4 bits requires assigning
+a larger portion of ranks to low-precision regions to meet
+the target Bavg , which offsets the benefit of using higher
+precision. We also exclude 0-bit allocation, i.e., pruning,
+because reducing a component from (n + 1) to n bits only
+lowers its representational capacity, whereas assigning 0 bits
+represents a total loss of information. This helps explain why
+rank-truncation methods often suffer from larger accuracy
+degradation than our mixed-precision approach.                              Fig. 6: Proposed SingularBit-KV pipeline for online KV-cache
+   SingularBit-W integrates the proposed algorithm into a                   compression.
+GPTQ error-feedback framework [8] to minimize accuracy
+degradation. Unlike standard GPTQ, which directly quantizes                 ing the assigned bitwidth bk to translate directly into hardware
+the original weight matrix, we apply error compensation to                  latency and energy savings.
+the SVD components. The overall procedure is summarized
+in Algorithm 1.                                                             B. SingularBit-KV for KV Cache Compression
+   After decomposing W into U, S, and VT , we first quantize                   KV cache compression requires an online scheme, as the
+U in sequential blocks using the precision levels bk ∈                      cache grows dynamically during autoregressive generation and
+{4, 3, 2, 1} determined by the boundaries {r1 , r2 , r3 }. This             token importance changes at every decoding step. Attention
+process is guided by the Hessian HU = xT x computed from                    patterns, which indicate token importance, exhibit locality and
+the calibration inputs. For each block, the quantization error              sparsity; thus, not all cached tokens contribute equally to
+Eblock = Ublock − U  b block is multiplied by the inverse Hessian           generation [10], [15]. Existing methods exploit this property
+and used to update the remaining unquantized parameters. This               by either pruning unimportant tokens [10] or assigning lower
+error-feedback mechanism allows later blocks to compensate                  bitwidths to them [33]. However, they treat tokens in a binary
+for the accumulated quantization error from earlier blocks.                 manner—as important or unimportant—and fail to capture
+   For the subsequent quantization of VT , we derive an effec-              intermediate levels of token importance.
+tive Hessian HVT that accounts for the previously quantized                    SingularBit-KV improves the accuracy-compression trade-
+ b From the linear relation xWT ≈ xUSV
+U.                                          b     T
+                                                     = zVT , the            off by compressing the KV cache along two complementary
+Hessian for VT is given by                                                  dimensions. Along the token dimension, it assigns one of
+                                                                            five or more bitwidth levels according to attention-based
+                     HVT = zT z                                             importance. Along the rank dimension, it extends the rank-
+                         = SUb T xT xUS
+                                     b                        (5)           aware quantization principle of SingularBit-W to apply mixed
+                              b T HU US.                                    precision within each token. Specifically, the cache is stored
+                           = SU      b
+                                                                            in intermediate representations K’ and V’, obtained by multi-
+The resulting HVT allows the quantization of VT to account                  plying the input embeddings only with UWK or UWV . Since
+                                                                                                                     T          T
+for both the calibration activations and the previously quan-               K’ and V’ are later multiplied by VW       K
+                                                                                                                         and VW   V
+                                                                                                                                     during
+tized U,
+       b reducing cumulative error across the SVD compo-                    attention computation, respectively, their rank-wise precision
+nents.                                                                      is determined by the singular-value magnitudes of the cor-
+   To represent each precision region, we adopt hierarchical                responding components in these matrices. This enables fine-
+binary quantization based on ARB-LLM [47]. Each quantized                   grained bit allocation across both tokens and rank components,
+block is decomposed into a series of binary bases Bi ∈                      maximizing compression while minimizing information loss.
+{−1, +1}och×ich , scaled by row-wise and column-wise factors                   As illustrated in Figure 6, SingularBit-KV operates in three
+(αr,i and αc,i , respectively. For a region assigned bitwidth bk ,          stages at each decoding step: (1) attention map update to track
+the quantized weights are reconstructed as                                  recent attention patterns, (2) importance score computation
+                                                                            to quantify each token’s contribution to generation, and (3)
+                           bk
+                           X                                                bit precision allocation and compression based on both token
+                     W=           αr,i αc,i Bi .              (6)           importance and rank significance.
+                            i=1                                                (1) Attention Map Update. At each decoding step t, we
+This hierarchical representation is naturally compatible with               maintain a recent-k attention map window (e.g. k = 128)
+the bit-serial execution of the SingularBit Tensor Core, allow-             to capture temporal attention dynamics. The current attention
+
+
+
+
+                                                                     1006
+                                                                          Fig. 8: Modified multiplexer PE supporting both binary and
+ Fig. 7: Overall architecture of the SingularBit accelerator.             group-wise quantized operations.
+
+                                                                          overall compression ratio. To this end, we use a linearly
+map At ∈ RH×Nt is aggregated via head-wise max pooling
+                                                                          increasing capacity schedule:
+followed by normalization to produce ãt ∈ RNt . This resulting
+vector is appended to the window Mt ∈ Rk×Nt , while                                 li · 2b+i = m · i + c,   i ∈ {0, 1, 2, 3, 4}.      (8)
+the oldest entry is evicted to maintain the fixed window
+size. Head-wise max pooling preserves tokens required by                  Here, m controls the increase in capacity for higher-
+any attention head at higher precision, as different heads                importance regions, and c sets the baseline capacity.
+                                                                                                                            P4The inter-
+may attend to complementary information [48]. The window                  val lengths are obtained by solving Eq. (8) with i=0 li = 1,
+provides sufficient temporal context to smooth out transient              after which the boundaries are recovered as cumulative sums
+attention patterns while maintaining computational efficiency.            of li .
+   (2) Importance Score Calculation. From the recent-k                       Second, the SingularBit-W rank precision policy is ap-
+attention maps in Mt , we compute per-token importance                    plied within each token’s allocated maximum bitwidth. Rank
+scores by taking the query-wise maximum:                                  components with larger singular values retain higher precision,
+                                                                          while less significant components are assigned progressively
+                     Ii =      max        ãj [i]            (7)          lower precision according to the SingularBit-W rank bound-
+                            j∈[t−k+1,t]
+                                                                          aries. This nested policy enables two-dimensional mixed pre-
+We use max pooling instead of averaging due to the irre-                  cision over token importance and rank significance.
+versibility of online quantization: once a token is stored at a
+                                                                                  V. P ROPOSED H ARDWARE A RCHITECTURE
+lower bitwidth, recovering the discarded information requires
+recomputing its higher-precision KV representation, incurring             A. Overall Architecture
+substantial inference overhead. This motivates a conservative                Figure 7 presents the overall architecture of the SingularBit
+strategy that captures each token’s peak attention over recent            accelerator. The system interfaces with 80GB of external
+steps, ensuring that tokens critical to any recent decoding step          DRAM through HBM controllers, providing 2.0 TB/s off-
+are preserved with sufficient precision.                                  chip bandwidth, and receives commands via a PCIe-based host
+   (3) KV Bit Precision Allocation. The precision allocation              interface. The accelerator consists of two main components:
+follows two nested policies. First, the SingularBit-KV token              SingularBit Tensor Cores for mixed-precision matrix multipli-
+precision policy maps each token importance score to one                  cation and a SingularBit Compression Engine for online KV
+of five bitwidth levels, from b to b + 4, where b is the base             cache compression. Each SingularBit Tensor Core includes
+precision. Let 0 = s0 < s1 < · · · < s5 = 1 denote the interval           a 32 × 32 PE array that performs bit-serial mixed-precision
+boundaries over the normalized importance-score range, and                weight computation with FP16 activations. The SingularBit-W
+let li = si+1 − si be the length of the interval assigned                 Compute FSM coordinates mixed-precision execution, while
+to bitwidth b + i. Since a b + i bit quantizer provides 2b+i              the core scheduler manages data movement and buffer oper-
+representable levels, li 2b+i represents the effective capacity           ations. Each core also includes local GeMV units for matrix-
+allocated to that importance region.                                      vector operations and SIMD units for element-wise operations
+   Considering the heavy-tailed nature of attention-based im-             such as bias addition and nonlinear functions. The SingularBit
+portance scores, where a small fraction of tokens receives                Compression Engine handles attention computation and KV
+dominant attention while the majority receives low atten-                 compression. Its global GeMV and SIMD units compute atten-
+tion [10], a desirable allocation should provide higher capac-            tion scores and softmax, and the SingularBit-KV Compressor
+ity to high-importance regions without letting high-precision             compresses the KV cache based on token importance and rank
+intervals absorb too many tokens, which would degrade the                 information.
+
+
+
+
+                                                                   1007
+                                                                           Fig. 10: SingularBit Compression Engine for online token-
+Fig. 9: Data mapping on the SingularBit Tensor Core for rank-              wise and rank-wise KV-cache compression.
+aware mixed-precision execution.
+                                                                           precision, the core scheduler assigns the next rank to the first
+B. SingularBit Tensor Core                                                 available core, improving load balance.
+                                                                             For the VT computation, we use temporal mixed precision,
+   Figure 8 shows the SingularBit Tensor Core architec-
+                                                                           where precision varies across ranks along the reduction di-
+ture, which supports rank-aware mixed-precision computation
+                                                                           mension within each core. Each core processes output chunks
+within a unified datapath. Unlike conventional cores, which
+                                                                           sequentially while accumulating partial sums across rank-
+often require separate datapaths or incur reconfiguration over-
+                                                                           wise precision transitions. Since all cores follow the same
+head to support multiple precisions [49], [50], our design
+                                                                           precision sequence over the reduction dimension, they finish
+processes 1–4 bit weights through the same hardware path
+                                                                           synchronously, eliminating the need for dynamic scheduling.
+by exploiting the precision hierarchy of SVD-decomposed
+matrices.                                                                  C. SingularBit Compression Engine
+   Our tensor core builds on lookup table (LUT)-based com-                    Figure 10 shows the SingularBit Compression Engine,
+putation paradigm for low-bit LLM inference [51]–[53] and                  which performs attention-aware online KV cache compression.
+adds dual-level accumulation for group quantization and rank-              It dynamically assigns token-wise precision based on attention
+aware mixed precision. The activation loader precomputes                   importance and progressively reduces rank-wise precision us-
+FP16 partial sums over four input channels and broadcasts                  ing singular-value-based rank boundaries.
+them to each PE row. To reduce the number of LUT entries,                     The precision allocator receives attention scores from the
+it generates only eight entries: the 0th channel is used to                global GeMV unit, which computes QKT , and the global
+encode the sign, while all possible magnitude combinations are             SIMD unit, which applies softmax. The maximum-tracking
+precomputed for the 1st–3rd channels. During computation,                  logic performs head-wise max pooling, normalizes the scores
+the 1st–3rd weight bits select the corresponding partial sum               to [0, 1], and maintains a recent-k attention window with
+through a multiplexer, and the 0th bit determines whether the              k = 128. It then computes each key token’s importance
+selected value is negated.                                                 score as the maximum attention value across recent query
+   The SingularBit-W compute FSM provides the current                      positions. The precision selector maps these scores to token-
+bit position to both the activation and weight loaders. The                wise precision levels using predefined thresholds, which are
+activation loader applies this bit offset to the exponent of               added to a base precision to determine each token’s max-
+the FP16 partial sums, enabling bit-serial computation, while              imum bitwidth. Adjusting the base precision controls the
+the weight loader broadcasts the corresponding weight bits to              compression-accuracy trade-off.
+the PE columns. To support group quantization, the weight                     The KV quantizer receives K’ and V’, intermediate key
+loader also delivers group scale factors to the PEs in sync                and value representations obtained by multiplying the input
+with group boundaries. The intra-group accumulator performs                activations only with the U matrices of the K and V projection
+FP16 accumulation within each quantization group, while the                weights. Using the token-wise maximum bitwidth and rank
+inter-group accumulator applies group-specific scale factors               metadata, the FP16-to-INTx quantizer progressively reduces
+and aggregates the group outputs.                                          precision across rank boundaries. Given the token-wise maxi-
+   Figure 9 illustrates how SVD-decomposed matrices are                    mum bitwidth from the precision allocator and rank metadata
+mapped to exploit precision heterogeneity. For the U compu-                indicating the corresponding rank positions, the FP16-to-
+tation, we use spatial mixed precision, where precision varies             INTx quantizer reduces precision progressively across rank
+across ranks assigned to different cores. Each core processes              boundaries, starting from each token’s maximum bitwidth.
+an entire rank at the precision determined by its singular value,          The mixed-precision compressor then packs the quantized
+while multiple cores execute ranks with different precisions               values into a compact format without bit-level padding. The
+in parallel. Since bit-serial latency depends on the assigned              quantized KV router performs bit-level packing in the KV
+
+
+
+
+                                                                    1008
+TABLE II: Perplexity comparison on Wikitext-2 and C4 for LLaMA and Llama 2 model families under low-bit weight
+quantization.
+
+                          Average Group      LLaMA-7B          LLaMA-13B           LLaMA-30B          Llama2-7B        Llama2-13B
+          Method
+                          Precision Size
+                                            Wiki      C4      Wiki       C4        Wiki     C4      Wiki      C4      Wiki      C4
+          Baseline         FP16       –      5.68     7.08     5.09      6.61      4.10     5.98     5.47     6.97     4.88     6.46
+          RTN             W2A16      128     1.9e3    1.0e3   781.20    447.64     68.04    99.45    4.2e3    4.9e3   122.08   139.65
+          GPTQ            W2A16      128     44.01    27.71    15.60     15.29     10.92    11.93    36.77    33.70    28.14    20.97
+          AWQ             W2A16      128    2.6E+5   1.9E+5   2.8E+5    2.3E+5    2.4E+5   2.4E+5   2.2E+4   1.7E+5   1.2E+5   9.4E+4
+          OmniQuant       W2A16      128      9.72    12.97     7.93     10.36      7.12     9.36    11.06    15.02     8.26    11.05
+          MagR+OPTQ       W2A16      128      9.89    13.14     9.22     10.62      6.72     8.05     9.94    14.08     7.63    10.57
+          SingularBit-W   W2*A16     128      7.56    11.02     6.59      9.23      5.34     7.93     8.85    12.97     6.63    10.43
+
+
+buffer and translates logical token indices into physical storage               Models. Our evaluation spans the LLaMA (7B, 13B,
+addresses according to each token’s bitwidth. A precision                    30B) [20], Llama 2 (7B, 13B) [21], and Llama 3 (8B-
+information table records each token’s bitwidth to enable                    Instruct) [22] families to establish scalability across diverse
+correct dequantization.                                                      model sizes. Additionally, we validate our performance on
+                                                                             reasoning-specialized models, such as DeepSeek-R1-Distill-
+                      VI. E VALUATION                                        Qwen-1.5B and DeepSeek-R1-Distill-LLaMA-8B [2].
+                                                                                Baselines. For weight compression, we compare
+   We present a comprehensive evaluation of SingularBit,                     SingularBit-W against RTN [59], GPTQ [8], AWQ [9],
+validating its algorithm-hardware co-design across multiple                  OmniQuant [25], MagR [60], Olive [61], SpQR [62],
+dimensions. We first establish the algorithmic efficiency                    SqueezeLLM [63], and GuidedQuant [26]. For KV cache
+of SingularBit-W and SingularBit-KV by comparing them                        compression, we compare SingularBit-KV with KIVI [11],
+against state-of-the-art weight and KV cache compression                     GEAR [30], KVQuant [16], PALU [31], ReCalKV [32], and
+methods. We then demonstrate that the SingularBit accelerator                ZipCache [33]. For hardware comparisons, we additionally
+realizes these algorithmic gains into system-level improve-                  compare against LUT tensor core [51] for weight compression
+ments in throughput and energy efficiency, alongside an anal-                acceleration, and Oaken [64] for KV cache acceleration, both
+ysis of hardware overhead and implementation cost. Finally,                  representing specialized architectures for LLM inference.
+we conduct ablation studies including two types of scenarios
+that stress the dual memory wall most severely: (i) prefill-                 B. Algorithmic Performance
+heavy long-context scenarios and (ii) decode-heavy reasoning
+                                                                                We evaluate the algorithmic effectiveness of SingularBit-W
+scenarios, confirming that SingularBit achieves state-of-the-art
+                                                                             and SingularBit-KV against state-of-the-art compression base-
+performance across diverse inference regimes.
+                                                                             lines. For weight compression, we assess SingularBit-W using
+                                                                             perplexity and zero-shot accuracy, highlighting its robustness
+A. Experimental Setup
+                                                                             in the ultra-low-bit regime. For KV-cache compression, we
+   Hardware Configuration. We use an NVIDIA A100 80GB                        evaluate SingularBit-KV on generation quality and multi-step
+GPU with 2TB/s memory bandwidth for our baseline. To                         reasoning under aggressive compression.
+ensure a fair comparison, the hardware configurations of Sin-                   Ultra-Low-Bit Effectiveness. Table II compares perplexity
+gularBit and all baseline accelerators are normalized to match               at 2-bit precision, with all measurements using a context
+the A100 in both peak throughput and memory bandwidth.                       window of 2,048 tokens. Conventional methods such as RTN,
+This iso-resource setup enables a controlled evaluation of our               GPTQ, and AWQ suffer severe perplexity degradation at
+architectural and algorithmic innovations.                                   this precision, whereas SingularBit-W maintains stable perfor-
+   Datasets. For language modeling, we measure perplexity                    mance across all evaluated settings. SingularBit-W also out-
+on Wikitext-2 [23] and C4 [24]. For commonsense reason-                      performs specialized low-bit methods, including OmniQuant
+ing, we report the average zero-shot accuracy across six                     and MagR+OPTQ, achieving the best perplexity with margins
+multiple-choice benchmarks: PIQA [54], ARC-Easy, ARC-                        ranging from 0.14 to 2.63. These gains are consistent across
+Challenge [55], BoolQ [56], HellaSwag [57], and Wino-                        model families, model sizes, and benchmarks, demonstrating
+Grande [58]. For generation quality, we employ CoQA [27], a                  the generality of our approach. We attribute this advantage to
+conversational reading comprehension benchmark, and Truth-                   the synergy between SVD and mixed-precision quantization,
+fulQA [28], which measures the factual accuracy of generated                 which preserves critical spectral components while reducing
+responses. To address prefill-heavy long-context scenarios,                  quantization error at extremely low average bitwidths.
+we use LongBench [34], a multitask benchmark designed to                        Language Modeling. Figure 11 shows Wikitext-2 perplex-
+stress long-context comprehension. For decode-heavy reason-                  ity versus total model size, where each method is evalu-
+ing scenarios, we use GSM8K [29], a mathematical reasoning                   ated at multiple compression levels, including 2-, 3-, and 4-
+benchmark requiring extended multi-step generation.                          bit settings. SingularBit-W consistently achieves the lowest
+
+
+
+
+                                                                      1009
+                                                                         TABLE III: Accuracy (%) and compression ratio (%) compar-
+                                                                         ison on CoQA and TruthfulQA for Llama-3-8B-Instruct.
+                                                                                                    CoQA                      TruthfulQA
+                                                                          Precision           KV3           KV2           KV3           KV2
+                                                                          Method           Acc    CR     Acc    CR     Acc    CR     Acc    CR
+                                                                          FP16                       63.5                        60.0
+                                                                          GEAR             63.7   78.1   59.6   84.2   58.5   78.1   54.0   84.2
+                                                                          KVQuant          58.8   80.4   20.6   86.6   49.0   80.4   24.5   86.6
+                                                                          PALU             22.4   85.9    2.2   90.6   42.0   85.9    9.0   90.6
+                                                                          ReCalKV          62.6   60.0   36.5   70.0   47.0   60.0   40.0   70.0
+                                                                          ZipCache         63.5   80.9   56.4   86.9   60.0   80.9   52.0   86.9
+Fig. 11: Wikitext-2 perplexity versus compressed model size
+for weight quantization baselines.                                        SingularBit-KV   67.6   83.1   61.5   86.8   60.0   81.2   59.5   84.5
+
+
+                                                                         compression ratio in most configurations, yielding a better
+                                                                         accuracy-compression trade-off.
+                                                                            CoT Reasoning. Table IV shows the robustness of
+                                                                         SingularBit-KV on GSM8K, a mathematical reasoning bench-
+                                                                         mark that requires multi-step chain-of-thought generation. At
+                                                                         2-bit precision, most competing methods, including KVQuant,
+                                                                         PALU, and ZipCache, suffer severe accuracy degradation,
+                                                                         dropping to the 0–30% range and losing much of their
+                                                                         reasoning capability. In contrast, SingularBit-KV maintains
+                                                                         performance close to the FP16 baseline, including on the
+                                                                         DeepSeek-R1-Distill series. This robustness comes from its
+Fig. 12: Zero-shot commonsense reasoning accuracy versus
+                                                                         joint consideration of token importance and rank significance,
+compressed model size for weight quantization baselines.
+                                                                         which preserves critical contextual information throughout
+perplexity across model sizes, forming a Pareto frontier. In             extended decoding under aggressive compression.
+the smallest model-size range, aggressive compression causes             C. Hardware Performance
+several baselines, such as SqueezeLLM and OliVe, to collapse,
+                                                                            We evaluate the system-level performance of Singular-
+whereas SingularBit-W maintains stable perplexity. Even com-
+                                                                         Bit in terms of throughput and energy efficiency under
+pared with strong baselines such as GuidedQuant and SpQR,
+                                                                         an iso-resource constraint. We consider three configurations:
+SingularBit-W achieves comparable or better results across all
+                                                                         SingularBit-W, SingularBit-KV, and SingularBit-WKV. For
+settings.
+                                                                         throughput, we sweep sequence lengths, batch sizes, and
+   Multiple Choice Reasoning. Figure 12 further supports
+                                                                         model sizes to show that SingularBit-WKV mitigates the dual
+these findings by reporting zero-shot commonsense reasoning
+                                                                         memory wall across diverse inference scenarios. For energy ef-
+accuracy under the same model-size and compression settings.
+                                                                         ficiency, we evaluate the SingularBit algorithms on both a GPU
+SingularBit-W achieves the highest accuracy in nearly all con-
+                                                                         and the SingularBit accelerator to separate algorithmic gains
+figurations, with larger gains in smaller models and ultra-low-
+                                                                         from hardware specialization. We further analyze speedup and
+bit regimes. The consistent improvement in both perplexity
+                                                                         energy savings on reasoning workloads.
+and zero-shot accuracy shows that SingularBit-W preserves
+                                                                            Hardware Throughput Analysis. Figure 13 reports
+overall model quality rather than improving language model-
+                                                                         throughput in tokens per second across varying sequence
+ing metrics alone.
+                                                                         lengths and batch sizes for LLaMA2-7B and LLaMA2-13B.
+   Generation Quality. Table III evaluates the generation
+                                                                         To ensure an iso-accuracy comparison, we match the compres-
+quality of SingularBit-KV on CoQA and TruthfulQA using
+                                                                         sion ratio of SingularBit-W to competing weight-compression
+Llama-3-8B-Instruct at 2-bit and 3-bit precision. Although
+                                                                         methods by adjusting the rank ratio, and select SingularBit-
+each method targets a nominal bitwidth, the effective com-
+                                                                         KV operating points that incur less than a 1% accuracy drop
+pression ratio differs across methods due to heterogeneous
+                                                                         on CoQA and TruthfulQA.
+precision allocation. SingularBit-KV achieves the best accu-
+                                                                            The results show that SingularBit-WKV effectively ad-
+racy across all bitwidth and benchmark combinations. Exist-
+                                                                         dresses the dual memory wall that limits existing approaches.
+ing methods such as KVQuant, PALU, and ReCalKV suffer
+                                                                         Weight-compression methods such as OmniQuant and LUT-
+significant accuracy degradation at 2-bit precision, whereas
+                                                                         TensorCore perform well at short sequence lengths but lose
+SingularBit-KV remains robust, with only a 2.0% drop on
+                                                                         efficiency as the KV cache grows. In contrast, KV-compression
+CoQA and a 0.5% drop on TruthfulQA relative to the FP16
+                                                                         methods such as KIVI and Oaken improve throughput at long
+baseline. Compared with ZipCache, SingularBit-KV consis-
+                                                                         sequence lengths but remain limited by weight memory traf-
+tently delivers higher accuracy while maintaining a higher
+                                                                         fic at shorter sequences. SingularBit-WKV compresses both
+
+
+
+
+                                                                  1010
+TABLE IV: Accuracy and compression ratio (%) comparison on GSM8K across Llama-3 and DeepSeek-R1-Distill models.
+
+                                  Llama-3-8B-Instruct               R1-Distill-Qwen-1.5B                  R1-Distill-Llama-8B
+         Precision             KV3                    KV2           KV3                     KV2           KV3             KV2
+         Method             Acc       CR           Acc      CR   Acc       CR            Acc      CR   Acc      CR      Acc     CR
+         FP16                               0.77                                  0.85                           0.82
+         GEAR               0.77     78.1          0.66   84.2   0.80      78.1          0.55   84.2   0.80   78.1      0.74    84.2
+         KVQuant            0.81     80.4          0.36   86.6   0.77      80.4          0.24   86.6   0.70   80.4      0.04    86.6
+         PALU               0.43     85.9          0.03   90.6   0.29      85.9          0.03   90.6   0.34   85.9      0.00    90.6
+         ReCalKV            0.69     60.0          0.36   70.0   0.65      60.0          0.34   70.0   0.58   60.0      0.26    70.0
+         ZipCache           0.73     80.9          0.72   86.9   0.03      80.9          0.00   86.9   0.88   80.9      0.00    86.6
+         SingularBit-KV     0.82     81.1          0.81   85.1   0.81      79.1          0.85   84.4   0.80   82.1      0.82    86.0
+
+
+
+
+                          Fig. 13: Throughput comparison across sequence lengths and batch sizes.
+sources of memory traffic, maintaining high throughput across           reducing both computation and on-chip SRAM access. It
+the full sequence-length range. Individually, SingularBit-W             further employs a LUT-based structure that precomputes group
+outperforms weight-compression baselines through rank-aware             scaling factor multiplications and channel-wise accumulations
+mixed precision, while SingularBit-KV surpasses KIVI and                across four inputs, reusing the results across PE lines to
+Oaken at long sequences where KV cache traffic dominates.               minimize arithmetic energy. The SingularBit Compression
+These gains remain consistent across model sizes, from 7B               Engine supports fine-grained precision selection, quantization,
+to 13B, and batch sizes, from 16 to 64, demonstrating robust            and bit packing in dedicated hardware, avoiding the format-
+scalability.                                                            conversion and data-movement overheads incurred by GPU-
+   System Energy Analysis. Figure 14 presents a system en-              based implementations. Together, these units fully realize the
+ergy breakdown across on-chip computation, on-chip SRAM,                algorithmic benefits, delivering 78.6% (7B) and 79.1% (13B)
+and off-chip DRAM. We evaluate both GPU and SingularBit                 total system energy reduction compared to the FP16 baseline.
+accelerator execution to distinguish algorithmic benefits from             Reasoning Performance. Figure 15 evaluates end-to-end
+hardware specialization. Even without specialized hardware,             speedup and energy savings on decode-heavy reasoning
+the compression algorithms reduce system energy by 25.5–                tasks for DeepSeek-R1-Distill-Qwen-1.5B and DeepSeek-R1-
+29.1% for weight compression, 30.8–32.8% for KV compres-                Distill-LLaMA-8B, comparing GPU and accelerator execu-
+sion, and 34.7–37.3% for combined compression. However,                 tion across SingularBit-W, SingularBit-KV, and SingularBit-
+the GPU cannot fully exploit these reductions because it lacks          WKV configurations. Even on a GPU, the compression al-
+native support for fine-grained KV compression and rank-wise            gorithms alone achieve 4.00× speedup on both models using
+mixed-precision execution.                                              3-bit average weight precision and 78.18% KV compression,
+   The SingularBit accelerator closes this gap through two              demonstrating the substantial contribution of our algorithmic
+specialized units. The SingularBit Tensor Core operates di-             design. The SingularBit accelerator further amplifies these
+rectly on reduced bitwidth values without dequantization,               gains: SingularBit-WKV achieves 5.27× speedup and 4.64×
+
+
+
+
+                                                                    1011
+                                                                         once offline to the weight tensors, and no decomposition
+                                                                         is performed during inference. At runtime, KV generation
+                                                                         computes only xUWK and xUWV , denoted as K’ and V’.
+                                                                         The runtime compression path consists only of token- and
+                                                                         rank-aware mixed-precision quantization and packing on K’
+                                                                         and V’.
+                                                                            Compression Engine Overhead. The SingularBit com-
+                                                                         pression engine supports online KV compression using the
+                                                                         attention map, rank metadata, and K’ and V’ activations as
+                                                                         input. It determines token- and rank-aware precision and bit-
+                                                                         packs the quantized values into the compressed KV format.
+                                                                         These functions require additional control, quantization, and
+                                                                         packing logic. As shown in Table VII, the compressor occupies
+                                                                         21.5 mW (23.3%) and 1.23 mm2 (27.9%) within the compres-
+                                                                         sion engine. Since one compression engine is shared across
+                                                                         at least eight SingularBit tensor cores, the chip-level overhead
+                                                                         remains below 4% in both area and power. Compression also
+                                                                         proceeds in parallel with the post-attention computation and
+Fig. 14: System energy breakdown for Llama2-7B and                       finishes before the next attention layer begins KV compression
+Llama2-13B, comparing GPU execution with SingularBit ac-                 across all evaluated configurations. Therefore, it is not on the
+celerator execution to separate algorithmic and hardware gains.          critical path and does not increase end-to-end latency.
+                                                                            KV Reconstruction Overhead. The main runtime overhead
+                                                                         of SingularBit-KV comes from the additional VT recompu-
+                                                                         tation during decoding. Because the stored cache contains
+                                                                         only K’ and V’, the original K and V tensors must be
+                                                                         reconstructed before attention. This reconstruction is executed
+                                                                         on the SingularBit tensor core and increases latency by 5%
+                                                                         at context length 64 and by 2% at context length 2,048. In
+                                                                         contrast, SingularBit-KV reduces KV-related DRAM traffic
+                                                                         by approximately 5×, while SingularBit-WKV reduces total
+                                                                         DRAM traffic by up to 8.5×. As a result, the added VT
+                                                                         recomputation cost remains smaller than the performance
+                                                                         and energy gains obtained from reducing off-chip memory
+                                                                         accesses.
+                                                                            Mixed-Precision Control Overhead. The last overhead
+                                                                         concerns the control logic required to support rank-wise
+Fig. 15: End-to-end speedup and energy savings on decode-                mixed-precision execution in the SingularBit Tensor Core. As
+heavy reasoning workloads.                                               shown in Table VII, the total control logic per Tensor Core oc-
+                                                                         cupies only 0.09 mm2 (1.6% of area) and consumes 23.4 mW
+energy savings on Qwen-1.5B, and 5.32× speedup and 4.78×
+                                                                         (7.6% of power). These numbers include the entire Tensor
+energy savings on LLaMA-8B. These consistent gains across
+                                                                         Core control path, including standard matmul orchestration,
+both models show that SingularBit provides robust hardware
+                                                                         rather than only the additional logic for mixed-precision
+efficiency regardless of model architecture. The performance
+                                                                         scheduling. Therefore, the overhead attributable specifically
+gap between GPU and accelerator execution highlights that,
+                                                                         to rank-wise mixed-precision support is smaller still.
+while the algorithm reduces memory traffic, the SingularBit
+accelerator is necessary to fully exploit these savings by               E. Ablation Study: Long-Context Scenarios
+natively supporting rank-wise mixed-precision execution and
+                                                                            We conduct an ablation study to analyze the individual
+fine-grained KV compression.
+                                                                         and combined contributions of SingularBit-W and SingularBit-
+                                                                         KV in long-context scenarios, comparing them against strong
+D. Overhead Analysis
+                                                                         baselines for weight compression (GuidedQuant) and KV
+   We analyze four potential sources of overhead in the                  cache compression (ReCalKV), both individually and in com-
+SingularBit accelerator: online SVD, KV compression, KV                  bination.
+reconstruction, and mixed-precision control.                                Table V evaluates performance on LongBench across eight
+   No Online SVD Overhead. A possible misunderstanding is                prefill-heavy long-context tasks at 3-bit weight and KV preci-
+that SingularBit-KV performs an online SVD step to compress              sions. Both SingularBit-W and SingularBit-KV individually
+the KV cache. This is not the case. SVD is applied only                  outperform their corresponding baselines, with particularly
+
+
+
+
+                                                                  1012
+          TABLE V: LongBench accuracy (%) comparison for Llama-2-7B under 3-bit weight and KV-cache compression.
+                    Method                  Qasper      QMSum         MultiNews       TREC     TriviaQA   SAMSum        LCC    RepoBench-P   Avg.
+    Original        FP16                       9.6          21.2          3.5         66.0       87.7        41.7       66.7       59.8      44.5
+                    GuidedQuant                5.4          15.9          3.4         69.0       86.6        33.6       62.9       54.0      41.3
+ Prior SOTA         ReCalKV                    3.3          15.4          0.1         53.0       66.2        32.6       34.1       32.2      29.6
+                    GuidedQuant + ReCalKV      1.3          14.4          7.4         32.0       77.3        14.6       49.6       40.2      29.6
+                    SingularBit-W              6.4          19.5          19.8        65.0       85.8        31.5       65.4       56.2      43.7
+         Ours       SingularBit-KV             7.5          20.3          14.1        67.5       89.0        32.4       66.8       57.4      44.4
+                    SingularBit-WKV            6.4          19.6          19.8        65.0       85.8        31.4       65.5       55.9      43.7
+
+
+TABLE VI: Accuracy comparison on CoQA (%), TruthfulQA                                TABLE VII: Synthesis results of SingularBit accelerator.
+(%), and GSM8K for Llama-3-8B-Instruct under 3-bit weight
+                                                                                                               Power       Power     Area    Area
+and KV-cache compression.                                                                    Hardware
+                                                                                                               (mW)        Ratio    (mm2 )   Ratio
+
+           Method                      CoQA          TQA       GSM8K                    1× Tensor Core          307.3      100%      5.58    100%
+                                                                                           PE Array             168.1      54.7%     2.73    48.9%
+           GuidedQuant                  54.8         41.6          0.54                     Buffer               99.2      32.3%     1.94    34.8%
+ Prior
+
+
+
+
+           ReCalKV                      36.6         40.0          0.36                  GeMV, SIMD              16.6      5.4%      0.82    14.7%
+           GuidedQuant + ReCalKV        49.2         36.0          0.40                   Control, etc.          23.4      7.6%      0.09     1.6%
+
+           SingularBit-W                63.2         39.7          0.50              1× Compression Engine      92.0       100%      4.41    100%
+ Ours
+
+
+
+
+           SingularBit-KV               61.5         59.5          0.81                   Compressor            21.5       23.3%     1.23    27.9%
+           SingularBit-WKV              63.3         44.6          0.57                  GeMV, SIMD             66.2       72.0%     3.15    71.4%
+                                                                                          Control, etc.          4.3        4.7%     0.03     0.7%
+
+pronounced gains on document summarization tasks such as
+MultiNews and Qasper. In this prefill-heavy setting, KV-cache                      rank-wise mixed-precision computation, the PE array occu-
+compression has a greater impact on long-context fidelity than                     pies 48.9% of area and consumes 54.7% of power. In the
+weight compression, as reflected by the higher average score                       SingularBit compression engine, responsible for online KV
+of SingularBit-KV. Most critically, while the combination of                       cache compression, the compressor accounts for 27.9% of area
+GuidedQuant and ReCalKV yields a degraded average of                               and 23.3% of power. The remaining resources are allocated
+29.6%, SingularBit-WKV achieves 43.7%, a 14.1% improve-                            to control logic, interconnect, and memory interfaces. When
+ment that demonstrates the benefit of our unified compression                      scaled to a full accelerator configuration, where four or more
+framework.                                                                         tensor cores are integrated per compression engine to meet
+                                                                                   the high-throughput demands of LLM workloads, the relative
+F. Ablation Study: Reasoning Scenarios                                             power and area overhead of the compression engine is further
+                                                                                   amortized. This confirms that our online KV compression is
+   Following the long-context analysis, we conduct a com-
+                                                                                   introduced at minimal cost to the overall system.
+plementary ablation study to validate SingularBit in decode-
+heavy scenarios, evaluating generation quality and reason-
+ing performance on CoQA, TruthfulQA, and GSM8K using                                                      VII. C ONCLUSION
+the same comparison structure. Table VI presents results on                           We presented SingularBit, an accelerator that jointly ex-
+Llama-3-8B-Instruct at 3-bit weight and KV precisions. While                       ploits singular value decomposition and low-bit quantization
+individual components of SingularBit may occasionally trail                        for offline weight compression and online KV cache compres-
+specific prior arts in isolation, SingularBit-WKV consistently                     sion. SingularBit algorithm combines SVD-guided rank-aware
+achieves superior performance when both compression axes                           precision allocation with low-bit quantization, and extends the
+are applied, outperforming the GuidedQuant+ReCalKV com-                            same principle to online KV cache compression by incorpo-
+bination by 14.1% on CoQA, 8.6% on TruthfulQA, and 0.17                            rating attention-based token importance. Across diverse model
+on GSM8K. Notably, combining GuidedQuant and ReCalKV                               families, bitwidths, and benchmarks, SingularBit achieves
+degrades performance relative to either method alone, whereas                      state-of-the-art algorithmic performance, and long-context and
+SingularBit-WKV minimizes accuracy loss upon combination,                          reasoning evaluations confirm the effectiveness of the uni-
+demonstrating the stability and compatibility of our joint                         fied SingularBit-WKV framework. The SingularBit accelerator
+compression framework.                                                             further translates these algorithmic gains into system-level
+                                                                                   improvements in throughput and energy efficiency through na-
+G. Hardware Implementation                                                         tive support for rank-wise mixed-precision execution and fine-
+   Table VII summarizes synthesis results for the SingularBit                      grained online KV compression. Overall, SingularBit provides
+accelerator in 28nm CMOS technology at 1GHz operating                              an effective algorithm-hardware solution to the dual memory
+frequency. In each SingularBit tensor core, which handles                          wall in modern LLM inference.
+
+
+
+
+                                                                            1013
+                               R EFERENCES                                                 Proceedings of the 52nd Annual International Symposium on Computer
+                                                                                           Architecture, 2025, pp. 194–210.
+ [1] OpenAI, “OpenAI o3 and o4-mini System Card,” OpenAI, Tech. Rep.,                 [20] H. Touvron, T. Lavril, G. Izacard, X. Martinet, M.-A. Lachaux,
+     April 2025. [Online]. Available: https://cdn.openai.com/pdf/2221c875-                 T. Lacroix, B. Rozière, N. Goyal, E. Hambro, F. Azhar et al.,
+     02dc-4789-800b-e7758f3722c1/o3-and-o4-mini-system-card.pdf                            “Llama: Open and efficient foundation language models,” arXiv preprint
+ [2] D. Guo, D. Yang, H. Zhang, J. Song, P. Wang, Q. Zhu, R. Xu, R. Zhang,                 arXiv:2302.13971, 2023.
+     S. Ma, X. Bi et al., “Deepseek-r1: Incentivizing reasoning capability            [21] H. Touvron, L. Martin, K. Stone, P. Albert, A. Almahairi, Y. Babaei,
+     in llms via reinforcement learning,” arXiv preprint arXiv:2501.12948,                 N. Bashlykov, S. Batra, P. Bhargava, S. Bhosale et al., “Llama
+     2025.                                                                                 2: Open foundation and fine-tuned chat models,” arXiv preprint
+ [3] Anthropic, “Claude Opus 4 & Claude Sonnet 4 System Card,”                             arXiv:2307.09288, 2023.
+     Anthropic, Tech. Rep., May 2025. [Online]. Available: https://www-               [22] A. Grattafiori, A. Dubey, A. Jauhri, A. Pandey, A. Kadian, A. Al-Dahle,
+     cdn.anthropic.com/4263b940cabb546aa0e3283f35b686f4f3b2ff47.pdf                        A. Letman, A. Mathur, A. Schelten, A. Vaughan et al., “The llama 3
+ [4] J. Wei, X. Wang, D. Schuurmans, M. Bosma, F. Xia, E. Chi, Q. V. Le,                   herd of models,” arXiv preprint arXiv:2407.21783, 2024.
+     D. Zhou et al., “Chain-of-thought prompting elicits reasoning in large           [23] S. Merity, C. Xiong, J. Bradbury, and R. Socher, “Pointer sentinel
+     language models,” Advances in neural information processing systems,                  mixture models,” arXiv preprint arXiv:1609.07843, 2016.
+     vol. 35, pp. 24 824–24 837, 2022.                                                [24] C. Raffel, N. Shazeer, A. Roberts, K. Lee, S. Narang, M. Matena,
+ [5] S. Hao, Y. Gu, H. Ma, J. Hong, Z. Wang, D. Wang, and Z. Hu,                           Y. Zhou, W. Li, and P. J. Liu, “Exploring the limits of transfer learning
+     “Reasoning with language model is planning with world model,” in                      with a unified text-to-text transformer,” Journal of machine learning
+     Proceedings of the 2023 Conference on Empirical Methods in Natural                    research, vol. 21, no. 140, pp. 1–67, 2020.
+     Language Processing, 2023, pp. 8154–8173.                                        [25] W. Shao, M. Chen, Z. Zhang, P. Xu, L. Zhao, Z. Li, K. Zhang,
+ [6] H. Lightman, V. Kosaraju, Y. Burda, H. Edwards, B. Baker, T. Lee,                     P. Gao, Y. Qiao, and P. Luo, “OmniQuant: Omnidirectionally Calibrated
+     J. Leike, J. Schulman, I. Sutskever, and K. Cobbe, “Let’s verify step                 Quantization for Large Language Models,” in International Conference
+     by step,” in The twelfth international conference on learning represen-               on Learning Representations, 2024.
+     tations, 2023.                                                                   [26] J. Kim, M. E. Halabi, W. Park, C. J. Schaefer, D. Lee, Y. Park, J. W. Lee,
+ [7] A. Madaan, N. Tandon, P. Gupta, S. Hallinan, L. Gao, S. Wiegreffe,                    and H. O. Song, “Guidedquant: Large language model quantization via
+     U. Alon, N. Dziri, S. Prabhumoye, Y. Yang et al., “Self-refine: Iter-                 exploiting end loss guidance,” in International Conference on Machine
+     ative refinement with self-feedback,” Advances in neural information                  Learning, 2025.
+     processing systems, vol. 36, pp. 46 534–46 594, 2023.                            [27] S. Reddy, D. Chen, and C. D. Manning, “CoQA: A Conversational
+ [8] E. Frantar, S. Ashkboos, T. Hoefler, and D. Alistarh, “GPTQ: Accurate                 Question Answering Challenge,” in Transactions of the Association for
+     Post-Training Quantization for Generative Pre-trained Transformers,” in               Computational Linguistics, vol. 7, 2019, pp. 249–266.
+     International Conference on Learning Representations, 2023.                      [28] S. Lin, J. Hilton, and O. Evans, “TruthfulQA: Measuring How Models
+ [9] J. Lin, J. Tang, H. Tang, S. Yang, W.-M. Chen, W.-C. Wang, G. Xiao,                   Mimic Human Falsehoods,” in Proceedings of the 60th Annual Meeting
+     X. Dang, C. Gan, and S. Han, “Awq: Activation-aware weight quanti-                    of the Association for Computational Linguistics, 2022, pp. 3214–3252.
+     zation for on-device llm compression and acceleration,” Proceedings of           [29] K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser,
+     machine learning and systems, vol. 6, pp. 87–100, 2024.                               M. Plappert, J. Tworek, J. Hilton, R. Nakano et al., “Training Verifiers
+[10] Z. Zhang, Y. Sheng, T. Zhou, T. Chen, L. Zheng, R. Cai, Z. Song,                      to Solve Math Word Problems,” arXiv preprint arXiv:2110.14168, 2021.
+     Y. Tian, C. Ré, C. Barrett et al., “H2o: Heavy-hitter oracle for efficient      [30] H. Kang, Q. Zhang, S. Kundu, G. Jeong, Z. Liu, T. Krishna, and
+     generative inference of large language models,” Advances in Neural                    T. Zhao, “Gear: An efficient kv cache compression recipe for near-
+     Information Processing Systems, vol. 36, pp. 34 661–34 710, 2023.                     lossless generative inference of llm,” arXiv preprint arXiv:2403.05527,
+[11] Z. Liu, J. Yuan, H. Jin, S. Zhong, Z. Xu, V. Braverman, B. Chen,                      2024.
+     and X. Hu, “Kivi: a tuning-free asymmetric 2bit quantization for kv              [31] C.-C. Chang, W.-C. Lin, C.-Y. Lin, C.-Y. Chen, Y.-F. Hu, P.-S.
+     cache,” in Proceedings of the 41st International Conference on Machine                Wang, N.-C. Huang, L. Ceze, M. S. Abdelfattah, and K.-C. Wu,
+     Learning, 2024.                                                                       “Palu: Compressing kv-cache with low-rank projection,” arXiv preprint
+[12] T. Dettmers, M. Lewis, Y. Belkada, and L. Zettlemoyer, “Gpt3. int8 ():                arXiv:2407.21118, 2024.
+     8-bit matrix multiplication for transformers at scale,” Advances in neural       [32] X. Yan, Z. Li, T. Zhang, H. Qin, L. Kong, Y. Zhang, and X. Yang,
+     information processing systems, vol. 35, pp. 30 318–30 332, 2022.                     “Recalkv: Low-rank kv cache compression via head reordering and
+[13] Y.-C. Hsu, T. Hua, S. Chang, Q. Lou, Y. Shen, and H. Jin, “Lan-                       offline calibration,” arXiv preprint arXiv:2505.24357, 2025.
+     guage model compression with weighted low-rank factorization,” arXiv             [33] Y. He, L. Zhang, W. Wu, J. Liu, H. Zhou, and B. Zhuang, “Zipcache:
+     preprint arXiv:2207.00112, 2022.                                                      Accurate and efficient kv cache quantization with salient token identi-
+[14] A. Potapczynski, M. Finzi, G. Pleiss, and A. G. Wilson, “Cola: Exploit-               fication,” Advances in Neural Information Processing Systems, vol. 37,
+     ing compositional structure for automatic and efficient numerical linear              pp. 68 287–68 307, 2024.
+     algebra,” Advances in Neural Information Processing Systems, vol. 36,            [34] Y. Bai, X. Lv, J. Zhang, H. Lyu, J. Tang, Z. Huang, Z. Du, X. Liu,
+     pp. 43 894–43 917, 2023.                                                              A. Zeng, L. Hou et al., “Longbench: A bilingual, multitask benchmark
+[15] G. Xiao, Y. Tian, B. Chen, S. Han, and M. Lewis, “Efficient streaming                 for long context understanding,” in Proceedings of the 62nd annual
+     language models with attention sinks,” arXiv preprint arXiv:2309.17453,               meeting of the association for computational linguistics (volume 1: Long
+     2023.                                                                                 papers), 2024, pp. 3119–3137.
+[16] C. Hooper, S. Kim, H. Mohammadzadeh, M. W. Mahoney, Y. S. Shao,                  [35] G. Xiao, J. Lin, M. Seznec, H. Wu, J. Demouth, and S. Han,
+     K. Keutzer, and A. Gholami, “Kvquant: Towards 10 million context                      “SmoothQuant: Accurate and efficient post-training quantization for
+     length llm inference with kv cache quantization,” Advances in Neural                  large language models,” in Proceedings of the 40th International Con-
+     Information Processing Systems, vol. 37, pp. 1270–1303, 2024.                         ference on Machine Learning, 2023, pp. 38 087–38 099.
+[17] A. K. Kamath, R. Prabhu, J. Mohan, S. Peter, R. Ramjee, and A. Panwar,           [36] H. Wang, S. Ma, L. Dong, S. Huang, H. Wang, L. Ma, F. Yang, R. Wang,
+     “Pod-attention: Unlocking full prefill-decode overlap for faster llm                  Y. Wu, and F. Wei, “Bitnet: Scaling 1-bit transformers for large language
+     inference,” in Proceedings of the 30th ACM International Conference                   models,” arXiv preprint arXiv:2310.11453, 2023.
+     on Architectural Support for Programming Languages and Operating                 [37] S. Ma, H. Wang, L. Ma, L. Wang, W. Wang, S. Huang, L. Dong,
+     Systems, Volume 2, 2025, pp. 897–912.                                                 R. Wang, J. Xue, and F. Wei, “The era of 1-bit llms: All large language
+[18] H. Kim, N. Wang, Q. Xia, J. Huang, A. Yazdanbakhsh, and N. S. Kim,                    models are in 1.58 bits,” arXiv preprint arXiv:2402.17764, 2024.
+     “Lia: A single-gpu llm inference acceleration with cooperative amx-              [38] Y. Xu, X. Han, Z. Yang, S. Wang, Q. Zhu, Z. Liu, W. Liu, and
+     enabled cpu-gpu computation and cxl offloading,” in Proceedings of the                W. Che, “Onebit: Towards extremely low-bit large language models,” in
+     52nd Annual International Symposium on Computer Architecture, 2025,                   Advances in Neural Information Processing Systems, 2024, pp. 66 357–
+     pp. 544–558.                                                                          66 382.
+[19] C. Li, Y. Yin, X. Wu, J. Zhu, Z. Gao, D. Niu, Q. Wu, X. Si,                      [39] Z. Yuan, Y. Shang, Y. Song, D. Yang, Q. Wu, Y. Yan, and G. Sun,
+     Y. Xie, C. Zhang et al., “H2-llm: Hardware-dataflow co-exploration                    “Asvd: Activation-aware singular value decomposition for compressing
+     for heterogeneous hybrid-bonding-based low-batch llm inference,” in                   large language models,” arXiv preprint arXiv:2312.05821, 2025.
+
+
+
+
+                                                                                   1014
+[40] X. Wang, Y. Zheng, Z. Wan, and M. Zhang, “Svd-llm: Truncation-aware            [57] R. Zellers, A. Holtzman, Y. Bisk et al., “HellaSwag: Can a Machine
+     singular value decomposition for large language model compression,” in              Really Finish Your Sentence?” in Proceedings of the 57th Annual
+     International Conference on Learning Representations, 2025.                         Meeting of the Association for Computational Linguistics, Jul. 2019,
+[41] S. Ashkboos, M. L. Croci, M. G. do Nascimento, T. Hoefler, and                      pp. 4791–4800.
+     J. Hensman, “Slicegpt: Compress large language models by deleting              [58] K. Sakaguchi et al., “WinoGrande: An adversarial winograd schema
+     rows and columns,” arXiv preprint arXiv:2401.15024, 2024.                           challenge at scale,” in AAAI, 2021.
+[42] B. Lin, Z. Zeng, Z. Xiao, S. Kou, T. Hou, X. Gao, H. Zhang,                    [59] B. Jacob, S. Kligys, B. Chen, M. Zhu, M. Tang, A. Howard, H. Adam,
+     and Z. Deng, “Matryoshkakv: Adaptive kv compression via trainable                   and D. Kalenichenko, “Quantization and training of neural networks for
+     orthogonal projection,” arXiv preprint arXiv:2410.14731, 2024.                      efficient integer-arithmetic-only inference,” in Proceedings of the IEEE
+[43] F. Cheng, C. Guo, C. Wei, J. Zhang, C. Zhou, E. Hanson, J. Zhang,                   Conference on Computer Vision and Pattern Recognition (CVPR), Jun.
+     X. Liu, H. Li, and Y. Chen, “Ecco: Improving memory bandwidth and                   2018.
+     capacity for llms via entropy-aware cache compression,” in Proceedings         [60] A. Zhang, N. Wang, Y. Deng, X. Li, Z. Yang, and P. Yin, “Magr:
+     of the 52nd Annual International Symposium on Computer Architecture,                weight magnitude reduction for enhancing post-training quantization,” in
+     2025, pp. 793–807.                                                                  Proceedings of the 38th International Conference on Neural Information
+[44] J. Lee, H. Kim, S. Oh, M. Chun, M. Kim, and J. Kim, “Aif: Accelerating              Processing Systems, 2024.
+     on-device llm inference using in-flash processing,” in Proceedings of the      [61] C. Guo, J. Tang, W. Hu, J. Leng, C. Zhang, F. Yang, Y. Liu, M. Guo,
+     52nd Annual International Symposium on Computer Architecture, 2025,                 and Y. Zhu, “Olive: Accelerating large language models via hardware-
+     pp. 529–543.                                                                        friendly outlier-victim pair quantization,” in Proceedings of the 50th
+[45] Z. Yu, S. Liang, T. Ma, Y. Cai, Z. Nan, D. Huang, X. Song, Y. Hao,                  Annual International Symposium on Computer Architecture, 2023.
+     J. Zhang, T. Zhi et al., “Cambricon-llm: A chiplet-based hybrid archi-         [62] T. Dettmers, R. Svirschevski, V. Egiazarian, D. Kuznedelev, E. Frantar,
+     tecture for on-device inference of 70b llm,” in 2024 57th IEEE/ACM                  S. Ashkboos, A. Borzunov, T. Hoefler, and D. Alistarh, “Spqr: A sparse-
+     International Symposium on Microarchitecture (MICRO). IEEE, 2024,                   quantized representation for near-lossless llm weight compression,” in
+     pp. 1474–1488.                                                                      International Conference on Learning Representations (ICLR), 2024.
+                                                                                    [63] S. Kim, C. Hooper, A. Gholami, Z. Dong, X. Li, S. Shen, M. W.
+[46] C. Li, Z. Zhou, S. Zheng, J. Zhang, Y. Liang, and G. Sun, “Specpim: Ac-
+                                                                                         Mahoney, and K. Keutzer, “Squeezellm: Dense-and-sparse quantization,”
+     celerating speculative inference on pim-enabled system via architecture-
+                                                                                         in International Conference on Machine Learning (ICML), 2024, pp.
+     dataflow co-exploration,” in Proceedings of the 29th ACM International
+                                                                                         17 162–17 176.
+     Conference on Architectural Support for Programming Languages and
+                                                                                    [64] M. Kim, S. Hong, R. Ko, S. Choi, H. Lee, J. Kim, J.-Y. Kim, and
+     Operating Systems, Volume 3, 2024, pp. 950–965.
+                                                                                         J. Park, “Oaken: Fast and efficient llm serving with online-offline hybrid
+[47] Z. Li, X. Yan, T. Zhang, H. Qin, D. Xie, J. Tian, zhongchao shi, L. Kong,           kv cache quantization,” in Proceedings of the 52nd Annual International
+     Y. Zhang, and X. Yang, “Arb-llm: Alternating refined binarizations                  Symposium on Computer Architecture, ser. ISCA ’25. Association for
+     for large language models,” in International Conference on Learning                 Computing Machinery, 2025.
+     Representations (ICLR), 2025.
+[48] P. Michel, O. Levy, and G. Neubig, “Are sixteen heads really
+     better than one?” in Advances in Neural Information Processing
+     Systems, H. Wallach, H. Larochelle, A. Beygelzimer, F. d'Alché-Buc,
+     E. Fox, and R. Garnett, Eds., vol. 32. Curran Associates, Inc.,
+     2019. [Online]. Available: https://proceedings.neurips.cc/paper files/
+     paper/2019/file/2c601ad9d2ff9bc8b282670cdd54f69f-Paper.pdf
+[49] S. Markidis, S. W. Der Chien, E. Laure, I. B. Peng, and J. S. Vetter,
+     “NVIDIA Tensor Core Programmability, Performance & Precision,” in
+     2018 IEEE International Parallel and Distributed Processing Sympo-
+     sium Workshops (IPDPSW), 2018, pp. 522–531.
+[50] H. Sharma, J. Park, N. Suda, L. Lai, B. Chau, J. K. Kim, V. Chandra,
+     and H. Esmaeilzadeh, “Bit fusion: Bit-level dynamically composable
+     architecture for accelerating deep neural network,” in 2018 ACM/IEEE
+     45th Annual International Symposium on Computer Architecture (ISCA),
+     2018, pp. 764–775.
+[51] Z. Mo, L. Wang, J. Wei, Z. Zeng, S. Cao, L. Ma, N. Jing, T. Cao, J. Xue,
+     F. Yang, and M. Yang, “Lut tensor core: A software-hardware co-design
+     for lut-based low-bit llm inference,” in Proceedings of the 52nd Annual
+     International Symposium on Computer Architecture. Association for
+     Computing Machinery, 2025, p. 514–528.
+[52] S. Kim, J. Lee, and H.-J. Yoo, “Slim-llama: A 4.69mw large-language-
+     model processor with binary/ternary weights for billion-parameter llama
+     model,” in 2025 IEEE International Solid-State Circuits Conference
+     (ISSCC), vol. 68, 2025, pp. 421–423.
+[53] N. Lee, S. Kim, S. Hong, J. Choi, and H.-J. Yoo, “A 65.1 tops/w digital
+     cim processor for ultra-low-bit transformers with multiplexer-based
+     adder and scaling factor-based reordering,” in 2025 IEEE International
+     Symposium on Circuits and Systems (ISCAS), 2025, pp. 1–5.
+[54] Y. Bisk, R. Zellers, R. Le bras, J. Gao, and Y. Choi, “Piqa: Reasoning
+     about physical commonsense in natural language,” Proceedings of the
+     AAAI Conference on Artificial Intelligence, vol. 34, no. 05, pp. 7432–
+     7439, Apr. 2020.
+[55] P. Clark, I. Cowhey, O. Etzioni, T. Khot, A. Sabharwal, C. Schoenick,
+     and O. Tafjord, “Think you have solved question answering? try arc,
+     the ai2 reasoning challenge,” arXiv preprint arXiv:1803.05457, 2018.
+[56] C. Clark, K. Lee, M.-W. Chang, T. Kwiatkowski, M. Collins, and
+     K. Toutanova, “BoolQ: Exploring the surprising difficulty of natural
+     yes/no questions,” in Proceedings of the 2019 Conference of the North
+     American Chapter of the Association for Computational Linguistics:
+     Human Language Technologies, Volume 1 (Long and Short Papers).
+     Association for Computational Linguistics, Jun. 2019, pp. 2924–2936.
+
+
+
+
+                                                                                 1015
+

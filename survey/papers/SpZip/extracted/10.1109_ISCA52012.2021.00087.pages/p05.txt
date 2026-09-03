@@ -1,0 +1,79 @@
+  1   def PageRankIter ( Graph g, Array scores ,                               Several lightweight techniques use degree sorting [10, 28, 79].
+  2                      Array contribs ):                                     They group high-degree vertices, which are accessed more fre-
+  3     # Binning phase
+  4     for src in range(g. numVertices ):                                     quently, improving spatial locality. Other lightweight techniques
+  5       for dst in g. neighs [g. offsets [src ]:                             use topological sorting, reordering vertices according to their
+  6                              g. offsets [src +1]]:
+  7         bId = dst / verticesPerBin                                         topology, e.g., through a BFS [21] or DFS [12, 74] traversal or-
+  8         bins[bId ]. append ({dst , contribs [src ]})                       der. These algorithms group vertices with many connections, im-
+  9
+ 10      # Accumulation phase                                                  proving temporal and spatial locality. Heavyweight techniques
+ 11      for bin in bins:                                                      like GOrder [70] improve locality further, but use complex
+ 12        for {dst , contrib } in bin:
+ 13          scores [dst] += contrib                                           algorithms that are orders-of-magnitude slower [10, 45].
+          Listing 3. Serial PageRank using Update Batching (UB).
+                                                                                  Preprocessing improves locality and makes compression
+                                                                               more effective. Fig. 8 shows results for the same experiments
+                                                                               as in Fig. 7, but when the graph is preprocessed with DFS.
+   UB reduces traffic thanks to spatial locality: though binned
+                                                                               Preprocessing dramatically reduces Push’s destination vertex
+updates are large and are spilled to main memory, each bin is
+                                                                               traffic, as most updates happen to nearby data. By contrast, be-
+written sequentially, resulting in streaming writes that use full
+                                                                               cause UB does not exploit temporal locality, preprocessing does
+cache lines, unlike scatter updates. In the accumulation phase,
+                                                                               not reduce memory traffic, making it far worse than Push. PHI
+these scatter updates still happen, but they mostly result in hits
+                                                                               achieves similar memory traffic as Push but higher performance
+because each bin is restricted to a cache-fitting slice of vertices.
+                                                                               thanks to hardware support.
+   The DCL pipeline for the binning phase of UB-based PageR-
+                                                                                  The SpZip variants of each algorithm significantly improve
+ank (Listing 3) is the same as Fig. 5 except it does not prefetch
+                                                                               performance and reduce traffic by about 1.5× thanks to com-
+destination vertex data. The DCL pipeline for the accumulation
+                                                                               pression. In both Push and PHI, the adjacency matrix now
+phase consists of one range fetch operator for the bins (and one
+                                                                               dominates traffic. But while SpZip compression was ineffective
+decompression operator after it if the bins are compressed).
+                                                                               in the original graph, the preprocessed graph has high value
+   Fig. 7 shows that UB reduces memory traffic significantly,                  locality: since related vertices are placed nearby, each neighbor
+by 2.7×. Traffic is now dominated by sequential accesses to                    set often has similar ids. Thus, SpZip reduces its size by 2.3×.
+updates, and destination vertex data traffic is small since                    Overall, PHI+SpZip provides the highest speedups: 6.3× over
+it enjoys perfect reuse. Overall, UB is 2.5× faster than Push.                 Push with preprocessing, and 7.4× without preprocessing.
+   More importantly, UB enables effective compression: each                       These results show that the best algorithm variant to use
+bin is accessed sequentially, so bins can be compressed well,                  depends on the graph and available optimizations (e.g., whether
+reducing the dominant contribution to memory traffic. (We                      preprocessing is practical). We will also later see (Sec. V) that
+will see how SpZip compresses bins in detail in Sec. III-C.)                   compression favors topology-based preprocessing algorithms
+Fig. 7 shows that UB+SpZip reduces update traffic by 1.6× and                  because they improve value locality further than degree-sorting
+overall traffic by 1.4× over UB. Since SpZip also handles UB’s                 preprocessing, which is more widely used without compression.
+traversals, it is 2.4× faster than UB and 6.0× faster than Push.
+PHI [46] builds on UB and further reduces traffic by adding                                            III. S P Z IP D ESIGN
+hardware support, and provides state-of-the-art data movement
+reductions. PHI builds on the observation that the updates in                  A. SpZip overview                        Main Memory
+many algorithms are commutative and associative. PHI lever-                       SpZip consists                          LLC
+ages this to opportunistically coalesce updates to the same                    of two key com-            L2                        L2
+destination vertex in the cache hierarchy before binning and                   ponents: fetchers Fetcher Compressor … Fetcher Compressor
+spilling them off-chip. Cores push updates to caches, which                    that traverse and
+buffer and coalesce them. Updates are binned lazily: when a                    decompress       data         Core                      Core
+cache line with updates is evicted from the LLC, its updates                   structures and feed         Fig. 9. SpZip architecture overview.
+are written into bins. Bins are then spilled to main memory.                   them to cores, and compressors that compress new data before
+   PHI and SpZip offer complementary ways to reduce data                       they are stored off-chip. We implement SpZip in a multicore
+movement. Fig. 7 shows that, on BFS, PHI and UB+SpZip                          system. Fig. 9 highlights SpZip’s additions and shows how
+achieve similar traffic and performance. But PHI and SpZip can                 they fit into the system: each core has a fetcher, which issues
+be combined to yield even larger benefits: PHI+SpZip reduces                   accesses to the core’s private L2 cache, and a compressor,
+update traffic by a further 1.3× and improves performance                      which issues accesses to the LLC.
+by 26%. Overall, PHI+SpZip is 7.4× faster than Push.                              Each core communicates with its fetcher and compressor
+Preprocessing techniques reorder sparse data structures to im-                 through queues: the input and output queues of these units
+prove locality [31, 70, 74, 78, 79, 82]. In graph algorithms,                  are exposed to the core. The core uses enqueue and dequeue
+preprocessing reorders vertex ids in the adjacency matrix.                     instructions to move data between queues and registers.
+   Preprocessing is beneficial only when the graph is reused                      We first present SpZip’s fetcher (Sec. III-B) and compressor
+enough times to amortize preprocessing cost, which is often                    (Sec. III-C), then discuss system-level issues (Sec. III-D), and
+much higher than the algorithm itself. Thus, prior work has pro-               conclude by analyzing SpZip’s small area costs (Sec. III-E).
+posed lightweight and heavyweight preprocessing techniques.
+
+
+                                                                        1073
+
+      Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:08:17 UTC from IEEE Xplore. Restrictions apply.
+

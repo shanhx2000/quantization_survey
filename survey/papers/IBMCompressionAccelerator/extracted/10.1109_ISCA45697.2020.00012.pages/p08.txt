@@ -1,0 +1,84 @@
+                                      User+Library                                            To minimize Linux kernel code changes, we implemented a
+               U1                                            U5 GZIP CC
+                             Read
+                                        Process                                               user-mode page-fault handler in the compression library [40].
+                     U2                   U4            Initialize         PAGE FAULT         Figure 11 shows the handler control/data ﬂow. The user library
+                                                                           RETRY
+         Touch         Touch           Write Command
+                                                        Status U3
+                                                                            F5
+                                                                                              touches one byte in source and target data pages to make them
+       User          User                                                                     present in memory; no new kernel support is required for this
+      Source        Target                CRB                        CSB   User waits         step. Posting a CRB to the NXU queue starts the job (steps U1-
+                                            Command                        for job
+                                            queued to NXU                  completion         U4 in Fig.11). NXU depends on NMMU (Fig. 3) and ERAT
+                     H3                   H1                                                  for virtual/physical address translation. In the common case,
+                              Write                                        SIGSEGV
+                                          NXU
+                                                     Done              notify_process()       job executes without page faults (steps H1-H4, U5). Hardware
+               H2                                       H4
+                          Read         (Hardware)                K2          K3               interrupts are available through Linux signals but currently not
+                                                                   OK      !OK
+                                            Fault                                             used in the library.
+                                                              rc=copy_to_user(CSB)
+                                          H5                                                     When the system free page counts are low, the operating
+                                                    Kernel
+                                                               K1
+                                                    Driver   Report fault to user             system may page-out user pages before a queued job starts. In
+                                                                                              the simple-fault case, NXU reports a missing page via the
+           Fig. 11. User-mode page fault handler control ﬂow
+                                                                                              Command Status Block (CSB) found in the user memory
+   Since compression is a complex operation with many argu-                                   (Fig. 11). Kernel is not involved in this code path, H4.
+ments, both z15 and POWER9 architected their own message                                      The problem is if the CSB containing page was also paged
+formats for communicating with NXU. On z15, the DFLTCC                                        out. Then, NXU interrupts the kernel driver (the H5 path in
+instruction’s general purpose register arguments contain the                                  Fig. 11). The kernel driver pages in the CSB containing page
+user source and target buffer addresses/lengths, and the sliding                              and then copies the fault status back to the user thread waiting
+window address, and a Deﬂate speciﬁc parameter-block [38].                                    on job completion (steps H5, K1, K2, F5.) In both the H4 and
+The POWER architecture, in contrast, uses a 128 byte length                                   H5 scenarios, the CSB status indicates that the user thread
+message format called Coprocessor Request Block (CRB).                                        must retry the job.
+CRB has ﬁelds for device function codes, source, target, and                                     To adapt to the low memory condition and to prevent inﬁnite
+parameter-block memory addresses, similar to that of z15.                                     retries, the library shrinks the source and target buffer lengths
+User threads atomically post CRBs to NXU job queues, using                                    and then retries the NXU job, effectively executing the original
+the POWER9 ”copy-paste” instruction pair bypassing the OS                                     job using multiple smaller jobs. Suppose, an accelerator job
+kernel [42], [43].                                                                            requires 100 resident pages but some of them were paged
+   POWER9 NXU has two 256 deep hardware managed job                                           out due to insufﬁcient number of free pages. Through the
+queues (high and low priority). The queues are mapped to                                      retry mechanism, the library may cut the original job size
+the user address space with the mmap() system call. Synchro-                                  down to 3 resident pages only, namely the source, target, and
+nization among multiple processes and threads is handled in                                   parameter-block pages, therefore making forward progress.
+hardware; semaphores and mutexes are not necessary to share                                   The beneﬁt of this approach is that the OS kernel is not
+NXU. Multiple processes have fair access to the NXU thanks                                    involved in compression speciﬁc operations and page pinning
+to a ”job-limit” register that suspends long running jobs. When                               is not required therefore enabling low latency access.
+suspended, NXU dumps its internal state to the parameter-
+                                                                                                 The value of user-mode access and page fault handling
+block in caller’s memory. The dumped state includes partial
+                                                                                              is also recognized in [29] for network adapters. User-mode
+checksums and stream offsets. The software thread resumes a
+                                                                                              page fault handlers have been used in other contexts. The
+job by submitting it again with the NXU state restored through
+                                                                                              Userfaultfd and CRIU mechanisms were proposed for live
+the same parameter-block.
+                                                                                              migration of virtual machines [44] and for applications to opti-
+   Another difference between z15 and POWER9 is that a                                        mize access (e.g. caching, prefetching) to backing stores [45].
+POWER9 processor thread can send jobs to any other chip’s                                     Our method is for managing page faults caused by a physical
+NXU which can be used for balancing accelerator workloads                                     device and has no relation to those mechanisms.
+and increasing overall throughput. The POWER9 processor
+includes a ”Nest MMU” (NMMU), and an ”effective to real
+address translation” table (ERAT) enabling virtually addressed                                C. Software Exploitation
+NXU [42].                                                                                       Zlib API compliant libraries were implemented for lever-
+   A notable design goal of these features and functions in                                   aging the accelerators transparently [40], [46]–[48]. z/OS,
+both z15 and POWER9 is that NXU are accessed in the user-                                     z/Linux and AIX product level implementations are available.
+mode without making system calls and without page pinning                                     Power Linux implementation is going through the open-
+which are necessary for low latency access (any system calls                                  source upstreaming process. Existing zlib enabled applications
+are made once per device initialization.)                                                     can link to the accelerator enabled libraries without a new
+                                                                                              programming effort. New applications wanting to use com-
+B. User mode page fault handling                                                              pression can be coded for the zlib library virtually available
+  While z15 does not need OS or device drivers, POWER9                                        on every O/S distribution. The accelerator can be leveraged
+needs kernel support to handle page faults caused by NXU.                                     when hardware is available.
+
+
+
+
+                                                                                          8
+
+      Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:40 UTC from IEEE Xplore. Restrictions apply.
+

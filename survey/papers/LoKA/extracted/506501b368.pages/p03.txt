@@ -1,0 +1,89 @@
+                                           2.5                                                                challenges because it requires native low-precision throughout
+
+
+               % Relative Log Loss (RLL)
+                                           2.0                                                                entire training and inference.
+                                                                                                                 Despite successful FP8 adoption in LLMs, direct application
+                                           1.5                                                                to LRMs fails dramatically. To demonstrate this, we applied
+                                                                                                              TorchAO [60], a widely-used PyTorch low-precision library to
+                                           1.0                                                                all linear layers (input/output features ≥ 128) in the state-of-
+                                                                                                              the-art Wukong model using 64 H100 GPUs with tensorwise
+                                           0.5                                                                FP8 scaling.
+                                           0                                                                     Figure 3 shows the results: FP8 training incurs 1.3× slow-
+                                                 10 20      30   40   50      60   70   80                    down and up to 2.5% relative log loss degradation. This failure
+                                                                                                              stems from fundamental differences between LRMs and LLMs
+                                                            Billion Examples
+                                                                                                              highlighted in §I.
+ BF16 Throughput                               FP8 Throughput    FP8 Slowdown      Relative Log Loss (%)
+      520K/s                                       395K/s             1.32×                  2.5                                           Normal Dist.   LRM Input Dist.
+Fig. 3. Significant Relative Log Loss (top) and throughput (bottom) degradation                                          Pytorch BF16          0.03             0.04
+are observed when training a Wukong model in FP8 low precision.                                                          TorchAO RW            0.47             0.53
+                                                                                                                         DeepGEMM BW           0.49             0.56
+                                                                                                                         FBGEMM RW             0.48             0.52
+comprise four main components:
+• Sparse embedding tables store dense vectors for discrete                                                                                   TABLE II
+   features like user IDs and item categories. These tables                                                       G EOMETRIC MEAN OF MERE OF 4 IMPORTANT LINEAR LAYERS IN A LRM
+                                                                                                                     COMPARED TO TF32 BASELINE FOR LOW- PRECISION KERNELS WITH
+   contain most model parameters and are distributed across                                                                       DIFFERENT INPUT DISTRIBUTIONS .
+   GPUs using techniques like embedding sharding.
+• Dense architecture processes continuous numerical features
+                                                                                                              C. Characterizing Low-Precision Quantization Overheads and
+   through standard neural network layers.
+                                                                                                              Error in LRMs
+• Dense-sparse interaction modules combine embeddings and
+   dense features through stacked layers containing specialized                                                      Standard low-precision libraries optimize for accuracy and
+   interaction components including deep cross networks [70],                                                     performance using random or fixed-distribution [18], [27], [66]
+   multi-head attention [15], factorization machines [78], or                                                     tensor benchmarks and common GEMM shapes [60]. However,
+   ensembles [79] thereof. They dominate computational com-                                                       recent study [22] has demonstrated that at scale, models develop
+   plexity in the LRM.                                                                                            highly systematic outlier activations that severely disrupt
+• Prediction layers generate final scores from features.                                                          standard quantization techniques and real LRM workloads
+                                                                                                                  deviate substantially from these test conditions.
+   Like LLMs, LRMs follow scaling laws [7], [31], [33],
+                                                                                                                     We analyzed a four-layer production LRM with lin-
+[40], [78] and have reached comparable FLOPS complexity.
+                                                                                                                  ear layers, comparing three state-of-the-art low-precision
+However, unlike LLMs that process relatively static data
+                                                                                                                  libraries—FBGEMM [41], TorchAO, and DeepGEMM [17].
+requiring single training runs, LRMs must continuously adapt
+                                                                                                                  For each library, we evaluated two input distributions: (1)
+to evolving user preferences and new items through online
+                                                                                                                  standard normal (as used in typical benchmarks), and (2)
+training [30], making both training and inference performance
+                                                                                                                  learned distributions obtained from actual LRM training traces.
+critical.
+                                                                                                                     Using the learned distributions allows us to synthesize
+   Modern LRMs use hybrid training [50]: sparse embedding
+                                                                                                                  representative inputs and quantify how errors manifest on out-
+tables are sharded across GPUs [75], and are communicated
+                                                                                                                  of-distribution data, the conditions that are rarely exercised by
+via the AlltoAll collectives [48], [50], while dense components
+                                                                                                                  standard benchmarks. We enabled fast accumulation, sampled
+use Fully Sharded Data Parallel (FSDP) [81].
+                                                                                                                  50 input–weight pairs per layer, and computed average statistics
+B. Low-precision Training and Inference                                                                           to ensure significance. Only forward performance was tested
+                                                                                                                  for simplicity.
+   Low-precision approaches span several categories [32].
+                                                                                                                  Error Analysis. For each linear layer, we measure the FP8
+Quantization-Aware Training (QAT) simulates quantization
+                                                                                                                  execution error relative to a TF32 reference using Mean
+effects during training while maintaining full-precision weights,
+                                                                                                                  Element-wise Relative Error (MERE):
+improving accuracy but not training speed. Post-Training
+                                                                                                                                                      M X
+                                                                                                                                                        N
+Quantization (PTQ) applies quantization to trained models                                                                                             X     outm,n − refm,n
+without additional training, offering simplicity but typically                                                      MERE(out(M,N ) , ref(M,N ) ) =        |                 |
+                                                                                                                                                      m n
+                                                                                                                                                                refm,n
+larger accuracy loss. Post-Quantization Training (PQT) com-
+bines PTQ with fine-tuning to recover accuracy. Direct Low                                                           MERE captures the average element-wise deviation of low-
+Precision (DLP) employs native low-precision training and                                                         precision outputs from full-precision results.
+inference, offering the greatest throughput benefits. DLP is                                                         Findings. Table II summarizes results: the geometric mean of
+the focus of LoKA, though it presents the greatest technical                                                      MERE across layers increases by up to 15% when tested with
+                                                                                                                  realistic LRM distributions versus standard normal inputs. This
+
+
+
+
+                                                                                                           1370
+

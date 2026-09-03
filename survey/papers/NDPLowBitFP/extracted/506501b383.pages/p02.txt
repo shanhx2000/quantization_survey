@@ -1,0 +1,63 @@
+are twofold: (1) Different to GPU/CPU, processing units (PUs)             compiler tailored for low-bit FP computation. The contribu-
+and memory units are tightly coupled in NDP architectures.                tions of this work include:
+Consequently, NDP performance depends not only on how                        • We develop a cycle-accurate simulation framework to
+workloads are mapped to different PUs, but also on the data                    model group-wise low-bit FP computation on NDP archi-
+layout in DRAM, e.g., different layouts may cause different                    tectures, which comprehensively analyzes the group-wise
+DRAM row-buffer miss rates [63]. (2) Dedicated NDP com-                        scaling and dequantization overheads.
+pilers [30], [42], [49], [63] have been developed to optimize                • We design a scale-value interleaved FP layout to map a
+INT operator partition and data layout in DRAM. However,                       quantized matrix to DRAM, which adapts to different
+introducing low-bit FP quantization with fine-grained grouping                 group sizes and matrix tiling strategies. The proposed
+into NDP systems faces several new challenges, which cannot                    FP data layout effectively reduces DRAM row-changing
+be handled by existing NDP compilers.                                          overhead by 2×.
+   First, the configurations of low-bit FP quantization (QCon-               • We propose a dequantization-hiding technique based on
+figs) vary in terms of group granularity, value/scale precision,               instruction reordering to reduce the DRAM idle time
+weight-only or weight-activation quantization, etc., and these                 induced by frequent dequantization operations. It can
+differences are overlooked by existing NDP compilers. How-                     automatically identify the opportunity to overlap the
+ever, different QConfigs exhibit distinct preferences for NDP                  dequantization latency with existing value access and
+compilation strategies. For example, compared with weight-                     DRAM row-changing delay.
+activation quantization, in weight-only quantization, weights                • We systematically analyze the compatibility between
+need to be dequantized before multiply-accumulate (MAC)                        NDP compilation strategies and QConfig to derive NDP-
+operation, which prioritizes allocating buffer to weights to                   oriented FP compilation guidelines. Building on these
+avoid redundant dequantization. Therefore, the NDP compiler                    guidelines, we develop a lightweight compilation-space
+for low-bit FP necessitates exploration of the compilation                     pruning and search strategy to enable efficient low-bit
+space to identify the optimal strategy for a given QConfig. The                FP computation on NDP.
+compilation space is the Cartesian product of design choices              Experiments show that FlexQ-NDP achieves up to 3.29×
+for matrix-operator partitioning, data-mapping strategies, loop           operator-level and 2.73× end-to-end speedup over existing
+traversal orders, and PU/buffer allocation, which is enormous             NDP compilation strategies across various low-bit FP formats.
+and requires an efficient exploration strategy.
+                                                                                                 II. BACKGROUND
+   Second, the presence of fine-grained group scales in low-bit
+FP computation introduces additional complexity and chal-                 A. Group-Wise Low-bit FP Quantization
+lenge to NDP dataflow scheduling. Considering the limited                    Quantization is a fundamental ML compression technique
+KB-level buffer capacity in NDP, a key optimization objective             to reduce memory footprint and computation costs while
+of NDP dataflow is maximizing the SRAM buffer hit rate and                maintaining acceptable accuracy. Recent work on quantization-
+reducing DRAM row-changing overhead. However, with fine-                  based training and inference has shifted from integer-only to
+grained grouping, the amount of scale becomes non-negligible              group-wise low-bit FP formats, such as microscaling family
+compared to quantized value. Both value and scale need to                 (MXFP4/6/8) [32], [47] and NVIDIA’s NVFP4 [1], [9]. The
+share the limited on-chip SRAM, causing reduced buffer hit                low-bit FP values retain the “sign + exponent + mantissa”
+rates. Besides, the fine-grained grouping also leads to frequent          structure while relying on higher-precision group scales to
+switching between value access and scale access during com-               recover effective dynamic range and preserve model accuracy
+putation, introducing extra DRAM row-changing overhead.                   at ultra-low precision.
+Our experiment shows the presence of scales increases the                    The low-bit FP quantization process starts from partitioning
+latency by ∼ 1.34×.                                                       the high-precision (e.g., FP16) tensors/matrices into fine-
+   Third, the group-wise quantization scheme introduces fine-             grained groups (e.g., 16×1 vectors or 16×16 tiles [9], [66]). For
+grained dequantization operations, which are performed in                 each group, a scale sg is chosen based on the local statistics
+high precision and therefore incur significant latency and                and the representable range of the target low-bit FP format.
+DRAM idle time on NDP architectures. Prior studies have                   Then the values are normalized by sg and rounded to the
+shown that smaller group sizes improve quantization accuracy;             nearest representable low-bit FP value. Targeting ML models,
+however, they also increase computational overhead, since                 low-bit FP is applied to weights and optionally activations
+each group requires an independent dequantization process.                for each operator. Weight-only quantization refers to only
+For example, in NVFP4-based matrix multiplication, partial                quantizing model weights to low precision [4], [40]. It avoids
+results must be multiplied by both the activation scales and              dynamically quantizing activations but requires dequantizing
+weight scales after processing every 16 FP4 elements. Because             weights back to higher precision before computation. In con-
+these scales are stored in higher precision (FP8) and the                 trast, weight-activation quantization quantizes both weights
+accumulation result of 16 FP4 multiplication should be stored             and activations to low-bit formats, delivering greater efficiency
+in higher precision, the dequantization process alone accounts            at the cost of runtime quantization process [41], [65].
+for approximately 35% of the total execution latency.                        We adopt a generic view of low-bit FP that can represent
+   Facing these challenges, we designed FlexQ-NDP, an NDP                 different QConfigs: each QConfig is characterized by its group
+
+
+
+
+                                                                   1384
+

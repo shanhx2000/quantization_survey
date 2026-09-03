@@ -1,0 +1,81 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                Cong Guo, Chiyue Wei, Jiaming Tang, Bowen Duan, Song Han, Hai Li, and Yiran Chen
+
+
+                                                      Present           Present     Present   Present
+L0
+                           0
+                                                         2                   3        11        15
+                                                                                                          Dynamic. The static Scoreboard operates offline, generating ex-
+                          0000
+                                                        0010              0011        1011     1111
+                                                                                                          ecution information at the tensor level. In contrast, the dynamic
+             1      2             4      8
+L1          0001   0010          0100   1000          Prefix: 0   Prefix: 2   Prefix: 3   Prefix: 11      Scoreboard processes smaller sub-GEMM operations online, ensur-
+                                                      Suﬃx: 3     Suﬃx: 11 Suﬃx: 15 Suﬃx: -
+      3      5                                        Distance: 1 Distance: 1 Distance: 1 Distance: 1
+                                                                                                          ing compatibility with all GEMM kernels and enabling seamless
+L2                  6             9     10     12
+     0011   0101   0110          1001   1010   1100
+                                                      Present           Absent      Present               deployment for large language models (LLMs). To accommodate
+             7     11            13     14               4                   12       14                  the dynamic nature of attention mechanisms in Transformer ar-
+L3          0111   1011          1101   1110
+                                                        0100                 1100     1110
+
+                                                                                                          chitectures, the Scoreboard efficiently determines the execution
+                          15                          Prefix: 0   Prefix: 2   Prefix: 3
+L4                        1111
+                                                      Suﬃx: 3     Suﬃx: 11 Suﬃx: 15
+                                                                                                          order through dedicated hardware design, while simultaneously
+                                                      Distance: 1 Distance: 1 Distance: 2                 optimizing parallelism and workload balance at runtime. Both static
+             (a) Hasse Graph                          (b) Prefix, Suﬃx, and Distance                      and dynamic mechanisms leverage the same Scoreboard algorithm,
+Figure 4: Hasse graph and definition of prefix, suffix, and                                               as illustrated in Fig. 5, Alg. 1, and Alg. 2
+distance.
+                                                                                                          3.1     Hamming-order Execution
+exhibits parallelism horizontally across each level of the Hasse
+graph.                                                                                                    Unlike general applications, which handle irregular and dynamic
+   Parallelism. Specifically, for an 𝑆-bit width transitive sparsity,                                     instructions, the instructions and data accesses in GEMM operations
+the maximum parallelism is achieved at Level- 𝑆2 , corresponding                                          within DNN models exhibit strict regularity. This regularity enables
+                                                                                                          us to predefine execution orders for all instructions before they are
+to the binomial coefficient 𝑆𝑆 =  𝑆  𝑆! 𝑆  . For example, Level
+                                
+                                               2
+                                                        2      !·   2    !                                issued. Based on our analysis using the Hasse graph, the level of a
+2 in a 4-bit graph exhibits a parallelism of 6, while Level 4 in an                                       node corresponds to the number of 1s (i.e., PopCount) in its binary
+8-bit graph exhibits a parallelism of 70. However, leveraging the                                         representation. For instance, Node 11 (1011) belongs to Level 3.
+maximum parallelism would result in the underutilization of other                                         Leveraging this property, we sort the incoming TransRows based on
+levels. Therefore, we typically utilize the granularity corresponding                                     their Hamming weight (i.e., PopCount) [34] instead of their integer
+to Level 1, which is 4 for a 4-bit width and 8 for an 8-bit width                                         values, defining this execution order as Hamming-order.
+TranSparsity. This strategic choice of granularity ensures balanced                                          As shown in Fig. 5 1 , TransRows are sorted exclusively by their
+utilization across all levels of the Hasse graph, optimizing both                                         number of 1s. Moreover, since there is no inherent partial ordering
+computational efficiency and hardware resource allocation.                                                within nodes at the same level, the sorting mechanism does not
+   Data Independence. Additionally, each node in the Hasse graph                                          enforce any order among nodes with identical PopCount. This
+can be transitioned by only one prefix node. For example, Node 11                                         approach significantly simplifies the sorter design, reducing its
+can be transitioned from only one of its prefix nodes, such as Node                                       complexity and hardware overhead.
+3, Node 9, or Node 10. Therefore, we can assign only one prefix to
+every node in the graph. Consequently, we can divide the graph                                            3.2     Scoreboarding
+into a forest comprising 𝑇 independent trees starting from Level                                          To achieve a balanced forest with independent trees, we design an
+1 for 𝑇 -bit transitive sparsity. Therefore, we can safely divide the                                     efficient Scoreboarding algorithm optimized for hardware imple-
+Hasse graph into multiple independent trees, each node having                                             mentation, as depicted in Fig. 5 2 - 5 .
+one in-degree edge, as shown in Fig. 4(a). This division ensures                                             First, we record (Step 2 ) all present TransRow and their counts
+parallelism and that each node has a prefix node with correct partial                                     in the Hasse graph. Subsequently, we perform forward and back-
+ordering.                                                                                                 ward passes to build and prune the Hasse graph for transitive
+   Load Balance. After dividing the Hasse graph to enable par-                                            sparsity, maintaining prefix information with the smallest distance
+allelism, it is essential to balance the resulting trees to prevent                                       for each node.
+extreme workload imbalances across parallel lanes, which can lead                                            Forward Pass for Prefix. As shown in Alg. 1 and Step 3 , we
+to inefficient resource utilization and performance bottlenecks. We                                       hierarchically update each node’s prefix information without in-
+design an effective round-robin-like traversal method by leveraging                                       terdependencies. Therefore, we need to traverse all nodes by the
+the rule that each node has only one prefix. This method allows                                           Hamming order (Line 3) in Step 3 . Initially, we initialize the nodes
+us to select an available prefix node for each node, thereby evenly                                       (Lines 1-2) and traverse all nodes in a forward partial ordering
+distributing workloads among the trees only using a simple node                                           (Lines 3-4). For transitive sparsity, we select node prefixes with a
+number counter for supervision.                                                                           distance of less than 4 (Line 7). In practice, even in an 8-bit Tran-
+   Finally, this section presents a streamlined representation of                                         sRow, nodes with a distance of 3 are rarely observed (< 0.1% within
+transitive sparsity and theoretically addresses the challenges of                                         128 TransRows). In Line 8, we set a temporary distance of 0 for
+parallelism and load balancing. This framework paves the way                                              nodes with a valid distance and Count > 0. This indicates that the
+for more efficient architectural designs, which are detailed in the                                       node will be executed and has a valid prefix, as at least one Tran-
+subsequent sections.                                                                                      sRow has been processed. Consequently, the node can serve as a
+                                                                                                          prefix, resetting the distance for subsequent suffixes. Following this,
+3    Scoreboard Design                                                                                    we generate locally the suffix based on the Hasse graph and send
+In this section, we introduce the Scoreboard mechanism, designed                                          the prefix information to all its suffixes with an incremented (+1)
+to efficiently compute the execution order using a Hasse graph                                            distance (Lines 9-10), embodying the transitivity of TranSparsity.
+representation. We propose two types of Scoreboard: Static and                                            Lines 11-13 set the distance and prefix bitmaps.
+

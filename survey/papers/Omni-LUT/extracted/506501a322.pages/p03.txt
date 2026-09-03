@@ -1,0 +1,80 @@
+                                 0000   -A-B-C-D                                                        Instead of dequantizing low-precision weights, the LUT-
+                                 0001   -A-B-C+D                                                     based GEMM [53] precomputes the dot products of high-
+                        Generate 0010   -A-B+C-D
+                          LUT    0011   -A-B+C+D                                                     precision activations and low-precision weights, which are
+       A B C D
+
+
+
+
+                                         ...
+                                 1100   +A+B-C-D                                                     stored in the LUT. As shown in Fig. 2, the LUT-based GEMM
+  Input Activation               1101   +A+B-C+D
+                                 1110   +A+B+C-D                                                     divides activations into groups, and the dot products of a small-
+   Scaling Factor                1111   +A+B+C+D                                                     grouped activation with low-bit weights are precomputed and
+  1.3 2.4 3.7 ... 5.7     Get                              1.3 •           3.7 • ... 5.7 •
+                                                                   2.4 •                             stored in a LUT. Each dot product in the LUT is in a high-
+                         Search 1.3       1111
+   1    1   0     0                                       T[1111] T[1101] T[0011]   T[0001]
+                          Key   2.4       1101
+                                3.7       0011                   Output Activation
+                                                                                                     precision format. For instance, in Fig. 2, four activations are
+   1    1   0 ... 0
+                                                                                                     grouped, and the LUT preserves only 16 precomputed high-
+                                          ...
+   1    0   1     0              5.7      0001
+   1    1   1     1                                                                                  precision dot products. In each cycle, this group looks for
+    BCQ Weight                                                                                       binary values in one column of the quantized matrix to retrieve
+  {-1 ➜ 0, +1 ➜ 1}
+                                                                                                     the corresponding values stored in the LUT. The number of
+                Fig. 2: LUT-based mpGEMM Operations                                                  LUT lookups is proportional to the length of the bits in the
+                                                                                                     low-precision weight (i.e., the 2-bit weights require twice the
+                                                                                                     LUT lookups to obtain the final dot products). The LUT is
+actual distribution, thereby reducing the quantization errors                                        reused multiple times when conducting dot products between
+when outliers exist.                                                                                 an activation tile and binary values in each column of the
+  Binary-coding quantization (BCQ) [15], [70] is a type                                              quantized matrix. The partial sum is yielded after completing
+of non-uniform quantization method. It approximates a full-                                          each LUT lookup and is accumulated to produce the final
+precision vector W by decomposing it into a high-precision                                           results. Finally, a new LUT will be created when conducting
+scaling factor vector a and a binary-coding matrix B, where                                          the dot products of a new activation group. Our work utilizes
+B contains only the values −1 and +1. This reconstruction,                                           LUT-based mpGEMMs for the computations of Key and Value
+which is inherently non-uniform, is expressed as:                                                    activations to improve the efficiency of LLM inference.
+                                                k
+                                                X                                                      III. BCQ-BASED KV C ACHE Q UANTIZATION D ESIGN
+                                  Wi ≈                Bij · aj                           (1)
+                                                j=1                                                  A. KV Value Distribution
+where k denotes the number of binary bases used for the                                                 As observed in prior research [29], [46] and shown in Fig. 3,
+approximation, Bij represents the binary coefficient for the                                         the Key (K) and Value (V) caches exhibit distinct statistical
+i-th weight and the j-th basis, and aj is the corresponding                                          properties. The Key cache demonstrates strong per-channel
+scaling factor. By extending the traditional BCQ representation                                      characteristics, where certain channels consistently present as
+with an offset and structured power-of-2 scalers, the BCQ                                            outliers with significantly large magnitudes. By contrast, the
+method is adapted to be compatible with uniform quantization                                         Value cache exhibits highly dynamic data distributions, lacking
+schemes.                                                                                             this stable per-channel structure in its vector magnitudes
+   Prior works [29], [46], [59], [60] reveal that the KV caches                                      and ranges. This fundamental divergence naturally suggests
+consist of distinct value distributions, posing a challenge in                                       distinct quantization strategies. The stable outlier pattern in
+reducing their bit widths while maintaining LLM inference                                            the Key cache makes per-channel quantization a suitable and
+accuracy. To address this and minimize model accuracy loss,                                          effective approach. In contrast, the variable nature of the Value
+previous works often adopt a hybrid strategy: it uses per-                                           cache necessitates a more adaptive per-token quantization
+channel quantization for the Key cache, validating the distinct                                      method.
+value distributions found across its different channels, while                                       B. Binary-Coding Uniform and Binary-Coding Quantization
+applying per-token quantization to the Value cache. Prior
+research [29], [37], [46] also isolates these outliers, represents                                      Following Section III-A, we employ a per-channel quanti-
+them in a higher-precision format, and performs additional                                           zation strategy for the Key cache. The required statistics are
+calculations for these preserved outliers.                                                           global, depending on the distribution across all tokens, which
+                                                                                                     prevents accurate on-the-fly estimation during autoregressive
+C. LUT-based mpGEMM on LLMs                                                                          inference. Therefore, we pre-compute the quantization param-
+   Recent quantization methods have significantly reduced the                                        eters, specifically the scaling factors and offsets, offline using
+bit widths of weights in LLM to 2-4 bits, demonstrating                                              a representative calibration dataset. Omni-LUT supports two
+that this low-bit weight quantization does not tremendously                                          distinct methods for this offline calibration, both designed to
+decrease the accuracy of LLM inference. However, commer-                                             express the final quantized value in a hardware-friendly binary
+cial accelerators, such as GPUs and TPUs, do not natively                                            coding format.
+support the resulting activation-weight (AW) mixed-precision                                         Binary-Coding Uniform Quantization (BC-UQ). We first
+GEMM (mpGEMM). This problem is typically addressed                                                   perform simple per-channel uniform quantization, finding a
+by additional dequantization operations that upscale the low-                                        single scale and zero-point for each channel from the calibra-
+precision weights to match the high-precision activations; this                                      tion data. To fit this into our binary-coding framework, we do
+approach leads to inefficiencies in LLM inference.                                                   not learn the scaling factors. Instead, we set them to a fixed
+
+
+
+
+                                                                                               324
+

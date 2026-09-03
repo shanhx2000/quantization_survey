@@ -1,0 +1,75 @@
+                                                                                                                                        Read W Scale       DRAM           K Inner Loop Case 1
+   NDP Step      Partition     Loop Tiling   DRAM Mapping     Codegen          Inst.   Cmd.           W Value      W Scale      W*A       To Buffer      Row Change
+                        Motivation &          SF Interleave   Reorder                                                                                                    itBlock = 8 QGroup
+  Innovation         Design Guideline           (Sec.VI)      (Sec.VII)       Sim.     HW
+                                                                                                             3 Extra Row-Change                No Extra Row-Change
+                                                                          OPs partition
+  Compilation                                                                                        R0
+                                                                          buffer allocation                                                                              K Inner Loop Case 2
+    Space                                                                 loop permutation           R1
+    (Sec.VIII)                                                            DRAM mapping               R2                                                                   itBlock =
+                 Cost Model           Pruning     Design Space
+                                                                    Strategy Encoding                                                                                     8 QGroup
+                                                                                                     R3
+                           Fig. 5. FlexQ-NDP Overview                                                              DRAM Array                      DRAM Array                      Exceed
+                                                                                                                             (a) Problem and Key Idea
+                        V. FlexQ-NDP OVERVIEW                                                               GK
+                                                                                                      1                 Gran = 1 Col         Scale Buf ≥ 2 Col itBlock    itBlock =
+   The overview of our compilation framework FlexQ-NDP is                                                          GN                          x2                         6 QGroup
+
+shown in Fig. 5, which is built based on existing compilation                                         1 * QGroup                4 * QGroup             8 * QGroup
+flow of NDP introduced in Sec. II-B. For operator partition                                                      (b) Definition of Interleaving Block (itBlock)          (c) Adjust to Loop Tiling
+
+and loop tiling, we maximize reuse of the existing INT-                                                                       Fig. 6. Value-Scale Interleaved Layout
+oriented NDP compiler and extend it to support low-bit FP.
+Specifically, data partitioning considers the impact of fine-                                        DRAM, aligning the interleave pattern with periodical access
+grained grouping, and loop tiling is aware of DRAM data                                              rhythm. The interleaving design reduces DRAM row changing
+layout and SRAM buffer allocation for scales. Sec. VIII-A                                            and the associated access overhead.
+further elaborates how these considerations guide the explo-
+ration of the compilation space. For the DRAM mapping                                                B. Definition and Construction of Interleaving Blocks
+part, we introduce a scale-value interleaved layout to reduce                                           In FlexQ-NDP, we pack the scales of multiple QGroups
+the cost of row-changing brought by scale access, which is                                           into one contiguous scale region, and similarly construct the
+detailed in Sec. VI. The proposed layout method can also                                             value region for these QGroups. We then place the scale region
+adapt to different QConfigs and the previously mentioned                                             and its corresponding value region contiguously in DRAM,
+partition and tiling strategies. For the code generation, Sec. VII                                   forming an interleaving block (itBlock). The interleaving
+introduces a dequantization-hiding technique, which can adjust                                       block serves two purposes. On one hand, when QGroup is
+the order of dequantization and computation instructions for                                         small, the scales of a single QGroup cannot fully occupy
+better instruction-level compute-memory overlap.                                                     a DRAM column (i.e., the minimum DRAM access granu-
+   For a specified input, choosing a suitable compilation strat-                                     larity2 ). Concatenating the scales of multiple QGroups into
+egy from this framework is crucial for better performance.                                           one region improves DRAM column utilization. On the other
+As a result, FlexQ-NDP develops a design-space exploration                                           hand, storing scales and values contiguously in DRAM reduces
+method (detailed in section VIII), including (1) an encoding                                         the number of DRAM row changes when the access pattern
+method to construct the design space, (2) a pruning method                                           alternates between scales and values.
+to reduce the size of the design space, and (3) an analytical                                           After defining the interleaving block, the key question is
+cost model which is less precise but quicker than performance                                        how many & which QGroups should be packed into a single
+simulation, to help accelerate the exploration of design space.                                      itBlock for a given QConfig and loop schedule. To answer
+                                                                                                     this question, for a GEMM (W (M,K) × A(K,N ) → O(M,N ) ),
+ VI. S CALE -VALUE I NTERLEAVED FP L AYOUT FOR NDP
+                                                                                                     we construct the itBlock for W in three steps.
+A. Problem Example and Key Idea                                                                         Step 1: Determining the interleaving ratio, the ratio of value
+   To analyze the root cause of increased row-changing, we                                           and scale region in itBlock. The size of QGroup and the
+use a quantized weight matrix as an example. As shown in                                             precision of data and scale is different for different QConfigs.
+the left part of Fig. 6(a), the values and scales of weight are                                      As a result, this ratio should also adjust to flexibly apply to
+stored separately in existing NDP and GPU solutions [30],                                            different QConfigs.
+[57]. During computation, fine-grained grouping necessitates                                                            Size(V alueRegion)   P rec.(V alue)GM GK
+frequently alternating DRAM accesses between scales and                                                   Ratio =                          =                     ,                              (1)
+                                                                                                                        Size(ScaleRegion)        P rec.(Scale)
+values, which reduces SRAM buffer hit rate considering the
+limited NDP buffer capacity. Refilling the buffer requires                                           where P rec.() is the precision of value/scale, GM /GK rep-
+changing to a new DRAM row and change back to the original                                           resent the group sizes of W along the M/K dimensions,
+DRAM row. Experiments show that for the additional latency                                           respectively. Besides, values in the same QGroup are required
+overhead related to scales, 75% of it is caused by DRAM row                                          to be assigned to the same itBlock, otherwise the scale for
+changing and only 25% is about scale access.                                                         this QGroup needs to be duplicated to another itBlock.
+   To address this bottleneck, our key idea is to exploit the                                           Step 2: Determine the interleaving stride, the size of an
+scale-value access pattern induced by QConfig and GEMM                                               itBlock. Given different buffer sizes, the refill frequency of
+loop schedules. For a given QConfig and loop traversal order                                         scale buffer will also be different. As a result, we should
+and iteration count, we analyze the period and granularity of                                        support adjusting the stride of interleaving to different refill
+alternating accesses between scales and values. We then adap-
+                                                                                                       2 This should also consider Burst Length. We omit it solely for brevity.
+tively place scales and values in a tightly interleaved layout in
+
+
+
+
+                                                                                              1387
+

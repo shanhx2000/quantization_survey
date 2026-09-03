@@ -1,0 +1,100 @@
+                      NPU Core 0                      NPUE 0
+                                                                    IFM                        Tensor unit
+                                                                  Weights
+                                                                                                                                               Vector unit
+                              NPU controller                     OFM/PSUM                                        MAA0
+                                                                                                                                  Activation      Quantization
+                                                                                                                Weight buffer   function unit        unit
+                                                              Data fetcher     Sparsity unit                                       Block #1            Block #1
+                                                                                                                                   Block #2            Block #2
+                                                                                                                                                                   Buffer
+                                                                                                                16 × 16            Block #3            Block #3
+
+
+
+
+                                                                                                     IFM reg.
+                                NPUE 0               2× 16B
+                                                               IFM fetcher
+                                                                                   Sparsity
+                                                                                  controller                     MAC
+                                                                                                                                   Block #4            Block #4
+
+                                                                                                                                   Block #5            Block #5
+                                                                                                                 array             Block #6            Block #6
+                                                                                                                                                                   Buffer
+                                                                                                                                   Block #7            Block #7
+                                                                 Weight             Flow                                           Block #8            Block #8
+                                                      32B        fetcher          controller
+                                                                                                                                   Block #9            Block #9
+
+          External
+                                                                                                                                  Block #10            Block #10
+                             1 MB shared on-chip               IFM/PSUM                                          MAA1             Block #11            Block #11
+                                                                                                                                                                   Buffer
+                                                                                    Flow
+          memory             scratchpad memory        32B        fetcher          controller
+                                                                                                                                  Block #12            Block #12
+
+                                                                                                                                  Block #13            Block #13
+                                                                                                                 MAA2             Block #14            Block #14
+                                                                                                                                                                   Buffer
+                                                                  PSUM              Flow                                          Block #15            Block #15
+                                                                                                                                  Block #16            Block #16
+                                                      32B        fetcher          controller
+                                                                                                                 MAA3
+                                NPUE 1                            MAA output
+                                                                 from NPUE 0
+                                                                                                                         To                    From
+                                                                  MAA output                                           NPUE 1                 NPUE 1
+                                                                 from NPUE 1
+
+
+
+
+ Fig. 3: Top-level architecture of the proposed NPU core comprising two engines (NPUE0 and NPUE1) and an on-chip
+ scratchpad memory. Each engine includes a data fetcher, tensor unit, and vector unit. NPUEs in the same NPU core can
+ communicate directly through the tensor unit output (e.g., to NPUE 1) and vector unit input (e.g., from NPUE 1) to implement
+ a re-configurable MAA.
+
+
+MAAs receive the same input feature map tensor (e.g., the                           or four cycles are required in total (e.g., 8×4 bytes ×2 fetchers
+input feature map tensor in Figure 2 sized 1 × 1 × cstin ), and                     ×2 cycles or 8 × 4 bytes ×1 fetcher ×4 cycles). The weight
+each MAA generates a partial sum tensor divided along the                           fetcher preloads the weights of the next subtile during the
+output channel dimension (e.g., the four small partial output                       computations in the current subtile, and the PSUM fetcher
+feature map tensors in Figure 2 sized 1 × 1 × ctout /4). After                      preloads the partial sums of the next 1 × 1 × ctout partial
+the accumulation of each partial sum tensor, the result is                          sum tensor during the computations in the current partial sum
+transmitted to the vector unit, which performs element-wise                         tensor in order to overcome the load latency of the weight and
+operations such as nonlinear activation functions.                                  partial sum through double buffering.
+C. Data Fetcher                                                                     D. Tensor Unit
+   The data fetcher includes three static fetchers, the IFM                         Sparsity unit. To find the nonzero input feature map, and its
+fetcher, weight fetcher, and PSUM fetcher, which handle the                         corresponding weight and partial sum, the sparsity controller
+input feature maps, weights, and partial sums, respectively.                        first generates nonzero bit flags, which store information on
+Unlike a static fetcher that handles only a designated type                         whether each input feature map is zero. Based on our priority-
+of data, the dynamic fetcher, referred to as the IFM/PSUM                           based searching mechanism, the sparsity unit then generates
+fetcher, can load an arbitrary type of data from the input                          appropriate dense data and transfers them to the MAAs. As
+feature map or partial sum. All the fetchers have their own                         the input feature map is shared among the MAAs in the same
+buffers, which are sufficiently large to avoid stall due to                         tensor unit (e.g., MAA0 to MAA3 in Figure 3), the sparsity
+scratchpad memory delay. Data are loaded through each                               unit broadcasts the nonzero input feature map to the MAAs,
+fetcher in parallel, with a bandwidth of 32 bytes each.                             reducing data traffic. Note that the proposed NPU bypasses the
+   The IFM fetcher is connected to the scratchpad memory                            sparsity unit when executing the pooling layer. The proposed
+through two 16-byte ports. As the proposed NPU utilizes                             zero-skipping mechanism is described in Section V-A.
+the input feature map sparsity, we set the IFM fetcher band-                        MAC array (MAA). Figure 4 illustrates the architecture of
+width to twice the data quantity that the MAAs can process                          the proposed MAA. The tensor unit includes four MAAs, each
+per cycle to alleviate utilization drop. To load partial sums                       comprising 16 MUL columns. Each MUL column has 16 mul-
+with variable bit-width, the PSUM fetcher adopts a time-                            tipliers, and two sets including an adder-tree and accumulator
+multiplexing method. We assume that the input data is 8-                            each (i.e., four 16x16 MAAs in total). In order to achieve
+bit and the corresponding partial sum is 32-bit to cope with                        high throughput by reducing the required bandwidth from the
+the corner case during accumulation. In this case, the IFM                          sparsity unit, the input feature map is shared across the MUL
+and weight fetchers can load 32 elements in a cycle (e.g.,                          columns (e.g., the arrow annotated as IFM sharing lane in
+32 × 1 byte ×1 cycle). To load the corresponding partial sum,                       Figure 4). A set of horizontal MACs, which share an input fea-
+which includes 32 4-byte data, the PSUM fetcher loads eight                         ture map, is defined as a lane. During each cycle, each MAA
+elements per cycle and transfers them to the tensor unit. Two                       loads the same input feature map tensor (e.g., i ∈ R1×1×16 )
+
+
+
+
+                                                                               19
+
+      Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:08:00 UTC from IEEE Xplore. Restrictions apply.
+

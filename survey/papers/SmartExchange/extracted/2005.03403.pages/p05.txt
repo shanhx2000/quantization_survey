@@ -1,0 +1,92 @@
+                                             Coefficient             Basis                               Weight (W)                                     Input (I)             Unstructured Sparsity           Vector-wise Sparsity
+           Weight (W)                                                                                                                                                         Encoding Index Matrix          Encoding Index Matrix
+                                             matrix (Ce)            matrix (B)
+       C                                                                S                                                                                                             0      1   0                       1
+                                                                                                                 0       0       0
+
+                               S                   S                B00 B01 B02                                                                                                       1      0   1                       0
+       W00 W01 W02                                                                                           0       0       0
+
+                           W00 W01 W02   〓   Ce00 Ce01 Ce02    ✕S   B10 B11 B12                                                                                                       1      0   0    18 indices
+                                                                                                                                                                                                          VS.
+                                                                                                                                                                                                                         1
+   R                                                                                                                                                                                  0      0   1    6 indices          1
+                                                                    B20 B21 B22
+                                                                                                                                                                                      1      1   0                       0
+                                                                                               R         0       0       0
+                                                                                                                                                                                      0      1   1                       0
+             S       (a)                                 (b)                                             0       0       0
+
+                                                                                                                 S                                                                           S                           S
+Fig. 2: An illustration of (a) a 3D weight filter and its                                                                               skipped input                                1      non-zero data          0    zero data
+
+parameters’ notations, and (b) rebuilding one row of weights                                                                                (a)                                                             (b)
+using the corresponding basis and coefficient matrix.                             Fig. 3: An illustration of (a) vector-wise skipping the corre-
+                                                                                  sponding activations, and (b) the reduced indexing overhead,
+  IV. T HE P ROPOSED S MART E XCHANGE ACCELERATOR                                 thanks to the enforced vector-wise weight sparsity of the
+   In this section, we present our proposed SmartExchange                         SmartExchange algorithm.
+accelerator. We first introduce the design principles and con-
+siderations (Section IV-A) for fully making use of the proposed                   both the PEs and REs, and stored in the local memories within
+SmartExchange algorithm’s properties to maximize energy ef-                       REs for minimizing the associated data movement costs.
+ficiency and minimize latency, and then describe the proposed                        Second, the REs should be located close to the PEs for
+accelerator (Section IV-B) in details.                                            minimizing the data movement costs of the rebuilt weights.
+                                                                                  This is because once the weights are rebuilt, the cost of their
+A. Design Principles and Considerations                                           data movements are the same as the original weights.
+   The proposed SmartExchange algorithm exhibits a great                             Third, as the basis matrices are reused most frequently, the
+potential in reducing the memory storage and accesses for                         dataflow for these matrices should be weight stationary, i.e.,
+on-device DNN inference. However, this potential cannot be                        once being fetched from the memories, they should stay in the
+fully exploited by existing accelerators [1], [6], [39], [54] due                 PEs until all the corresponding weights are rebuilt.
+to 1) the required rebuilding operations of the SmartExchange                        Taking advantage of the (structured) sparsity. The
+algorithm to restore weights and 2) the unique opportunity to                     enforced vector-wise sparsity in the SmartExchange algo-
+explore coefficient matrices’ vector-wise structured sparsity.                    rithm’s coefficient matrices offers benefits of 1) vector-wise
+In this subsection, we analyze the opportunities brought by                       skipping both the memory accesses and computations of the
+the SmartExchange algorithm to abstract design principles and                     corresponding activations (see Figure 3 (a)) and 2) reduced
+considerations for developing and optimizing the dedicated                        coefficient matrix encoding overhead (see Figure 3 (b)). Mean-
+SmartExchange accelerator.                                                        while, there is an opportunity to make use of the vector-
+   Minimizing overhead of rebuilding weights. Thanks to                           wise/bit-level sparsity of activations for improving efficiency.
+the sparse and readily quantized coefficient matrices resulting                      First, one promising benefit of the SmartExchange algo-
+from the SmartExchange algorithm, the memory storage and                          rithm’s enforced vector-wise sparsity in the coefficient ma-
+data movements associated with these matrices can be greatly                      trices is the possibility to vector-wise skip both the memory
+reduced (see Table II; e.g., up to 80×). Meanwhile, to fully                      accesses and computations of the corresponding activations
+utilize the advantages of the SmartExchange algorithm, the                        (see Figure 3 (a)). This is because those vector-wise sparse
+overhead of rebuilding weights should be minimized. To do so,                     coefficient matrices’ corresponding weight vectors naturally
+it critical to ensure that the location and time of the rebuilding                carry their vector-wise sparsity pattern/location, offering the
+units and process are properly designed. Specifically, a Smar-                    opportunity to directly use the sparse coefficient matrices’
+tExchange accelerator should try to 1) store the basis matrix                     encoding index to identify the weight sparsity and skip the cor-
+close to the rebuild engine (RE) that restores weights using                      responding activations’ memory accesses and computations.
+both the basis matrix and corresponding weighted coefficients;                    Such a skipping can lead to large energy and latency savings
+2) place the RE to be close to or within the processing                           because weight vectors are shared by all activations of the
+elements (PEs); and 3) use a weight-stationary dataflow for                       same fracture maps in CONV operations, see Figure 3 (b).
+the basis matrix. Next, we elaborate these principles in the                         Second, commonly used methods for encoding weight spar-
+context of one 3D filter operation (see Figure 2 (a)):                            sity, such as run-length coding (RLC) [7], [54], the 1-bit
+   First, the SmartExchange algorithm decomposes the weight                       direct weight indexing [56], and Compressed Row Storage
+matrix ((C × R) × S) corresponding to one 3D filter into a                                                                                     w/ o Booth encoding             w/ 4-bit Booth encoding
+                                                                                  Percentage (%)
+
+
+
+
+                                                                                                   100
+coefficient matrix of size (C × R) × S and a basis matrix of                                                         86.5
+                                                                                                                                 76.6
+                                                                                                                                            85.2
+                                                                                                                                                   73.9         79.8
+                                                                                                                                                                              86.8
+                                                                                                                                                                                     76.9
+                                                                                                                                                                                                     84.1
+                                                                                                                                                                                                            73.0
+                                                                                                                                                                                                                        86.7
+                                                                                                                                                                                                                               76.1
+                                                                                                    80                                                                 66.0
+size S × S. According to Eq. (1), each element in the basis                                         60
+matrix is reused C × R times in order to rebuild the weights,                                       40
+                                                                                                    20
+while the number of reuses of each element in the coefficient
+                                                                                                     0
+matrix is only S. This often means two orders of magnitude                                                           VGG11                 ResNet50                 MBV2      VGG19               ResNet164            DeepLabV3+
+
+more reuse opportunities for the basis matrices than that of                                                                               ImageNet                                       CIFAR-10                      CamVid
+
+the coefficient matrices, considering most state-of-the-art DNN                   Fig. 4: The bit-level sparsity in activations for six models on
+models. Therefore, the basis matrices should be placed close to                   three datasets.
+

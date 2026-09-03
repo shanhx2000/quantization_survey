@@ -1,0 +1,114 @@
+typically around 40-60 tokens. Considering the visual tokens’                                                    Quantization. The quantization phase operates on the resid-
+dominance, this work targets to dynamic visual token quantiza-                                                   uals Res to reduce bit width. A common form is an affine
+tion/compression by leveraging the token temporal and spatial                                                    transform followed by a right shift and clamping:
+(intra- and inter-frames, see below) similarity. By exploiting                                                                              
+                                                                                                                                                  Res
+                                                                                                                                                                    
+these similarities, more efficient quantization can be achieved,                                                      Quant(Res) = Clamp                + Offset ≫ b
+                                                                                                                                                Factor
+as subtracting similar visual tokens results in deltas with a
+narrower distribution, as manifested in Fig. 3.                                                                  where Factor, Offset, and b are predefined parameters control-
+                                                                                                                 ling the quantization step size and dynamic range. This step
+B. Video Encoding                                                                                                introduces controlled distortion while saving fewer bits.
+   Due to the massive data volume of raw video, practi-                                                              PE Array
+cal systems almost never store or transmit uncompressed
+                                                                                                                                                 Cur         Ref         Cur         Ref
+frames. Instead, modern video is encoded using standardized                                                                                     INT8                                 INT8
+                                                                                                                                                                   ...                               Residual Quantization Unit
+compression formats to take advantage of the spatial and                                                                                               ABS                     ABS                     INT16
+                                                                                                                                                                                                                              b
+                                                                                                                                                                                            Offset
+temporal similarity to reduce the data traffic while retaining                                                                                          INT16                                          Adder              Shifter
+
+the video quality. In this section, the basics of H.265[7], [51],                                                     L1 distances
+                                                                                                                                                CMP     CMP ... CMP                  CMP     Res        INT16
+including the data format, as well as the three phases of the                                                                                                                                                                       Res’
+
+
+
+
+                                                                                                                                      6-stage
+                                                                                                                                                                                              1
+                                                                                                                   Motion Vector                      CMP                      CMP          Factor    Multiplier          Clamper
+                                                                                                                                                              ...    ...
+                                                                                                                  Generation Engine
+encoding algorithm, motion estimation, motion compensation,                                                                                                      CMP
+
+and quantization, will be explained.                                                                                                            (a)                                                                (b)
+
+                                                                                                                 Fig. 5. The hardware details of the ME module (a); details of the quantization
+                                                                 Motion Compensation                             module (b).
+                                                                                        INT4
+
+                                                                  Mcurrent
+                                                                                     0 2 8 14
+                                                                                     4 8 0 10
+                                                                                                                 Practice in Multimedia Systems. In practical multimedia
+                                                                                    14 12 8 6
+ I   B    B    P    B     B    P   I           current                              10 4 0 2
+                                                                                  Res = Mcurrent - Mref
+                                                                                                                 processing systems, these three phases are often implemented
+                                                                    Mref
+
+                                                                                          0
+                                                                                              INT2
+                                                                                              0 2     3
+                                                                                                                 by specialized software or hardware units (a.k.a. CODEC).
+                                                Best match
+
+                                              reference
+                                                                   Quant(Res)=Clamp
+                                                                    Res +Offset)>>b)
+                                                                 ((———
+                                                                   Factor
+                                                                                          1
+                                                                                          3
+                                                                                              2 0
+                                                                                              3 2
+                                                                                                      2
+                                                                                                      1          Fig. 5 shows a typical implementation of a CODEC unit,
+                                                                                          2   1 0     0
+                                          Motion Estimation                  Quantization                        specializing ME, MC, and Quantization discussed above.
+              I-/P-/B- Frame                Search            Current                 Reference
+
+                    (a)
+                                            Window           Macroblock
+                                                              (b)
+                                                                                      Macroblock                    As shown in top of Fig. 5(a), a 8×8 mesh of process
+Fig. 4. The definition of I-/P-/B-frames (a); the details of the ME phase (b).
+                                                                                                                 elements (PE) is integrated in the ME module to compute 64
+                                                                                                                 pairs of L1 distances between the current macroblock and the
+Hybrid Video Coding. H.265/HEVC adopts a hybrid, two                                                             candidate macroblocks in parallel. Within each PE, since each
+types of video frame encoding: intra-frame and inter-frame.                                                      macroblock is 8×8, L1 distance computation is specialized
+As shown in Fig. 4(a), an I-frame (intra frame) is encoded                                                       by a 64-wide subtract-and-abs reduction tree. Each channel
+by only using information from the same frame, whereas P-                                                        of image is INT8 and 64 pixels are accumulated. Thus, the
+and B-frames are encoded by predicting residuals from the                                                        addition is 16-bit. After the 64 L1 distances are computed, as
+reference frames before and after the current frame, and only                                                    shown in bottom of Fig. 5(a), these 64 L1 distances are fed to
+encoding the residuals (deltas). Conceptually, encoding both                                                     a comparison reduction tree to find the candidate macroblock
+inter and intra frames are very similar, detecting the similarity,                                               with minium L1 distance (also the best similarity) as the
+computing the residual, and quantizing the residual. In the                                                      reference macroblock. Then, the reference macroblock is fed
+rest of this section, we exemplify the inter-coded P/B frames,                                                   to the quantization unit shown in Fig. 5(b) for a block-wise
+by explaining motion estimation, motion compensation, and                                                        affine transformation, shifting, and clamping to reduce the
+residual quantization.                                                                                           bitwidth of the residual.
+Motion Estimation (ME). H.265/HEVC partitions each frame                                                         Opportunities. H265 encoding takes advantage of the simi-
+into small, fixed-size regions to form the basic units of                                                        larity in inter- and intra-frame to compress the input/output
+encoding. For simplicity, we refer to these basic coding blocks                                                  for lower bitrate, and the CODEC unit can efficiently encode
+(e.g., CTUs/CUs in H.265) as macroblocks.                                                                        and decode the raw video. Such unit is often idle during VLM
+   As illustrated in Fig. 4(b), for each macroblock in an inter-                                                 inference, which can be potentially made use of.
+predicted frame (P/B frame), the motion estimation (ME)                                                          Challenges. However, such CODEC unit is specialized for
+phase searches a window in adjacent reference frames to                                                          integer-based video compression, while VLM inference often
+find the most similar macroblock. Let Mcurrent denote the                                                        involves floating-point. Naively extending floating-point units
+current macroblock and {C1 , C2 , . . . , CK } the candidate mac-                                                may introduce expensive hardware overhead.
+roblocks in the search window. ME computes the L1 distance
+∥Mcurrent − Ck ∥1 for all candidates and selects the one with                                                    C. CODEC-Acclerated LLM Systems
+minium distance as the reference macroblock, Mref .                                                                 Prior works already recognized the opportunities of the
+Motion Compensation (MC). Given the reference mac-                                                               idle CODEC unit [39], [43] to accelerate LLM inferences.
+roblocks, the residual can be defined as Res = Mcurrent − Mref .                                                 However, few of them propose an end-to-end solution.
+Because of the similarity, the generated residual can further                                                       For example, CMC [39] leverages CODEC to accelerate
+be encoded in narrower bits by quantization.                                                                     the prefilling stage. CODEC is used to detect the similarity
+
+
+
+
+                                                                                                          1419
+

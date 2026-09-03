@@ -1,0 +1,71 @@
+ TABLE VI: PTQ perplexity of Tender and MSFP for WikiText-2.
+                                                                                                and MX need more customized compute units. For instance,
+             Precision      OPT-66B          Llama-2-70B        LLaMA-65B                       each element in an MXFP block is essentially a floating-point
+              FP16                9.34           3.32                  3.56
+                                                                                                number, requiring hardware that deals with FP computation.
+                                                                                                   The essence of Tender involves setting scale factors that are
+         MSFP12               7E+3               74.61                 73.22
+       MSFP12-OL              56.69              15.57                 26.11                    powers of two apart between the groups (e.g., the ratios of
+       Tender-INT4            13.38              13.43                  9.30                    scale factors between 1st /2nd /3rd immediate neighbor groups:
+                                                                                                21 , 22 , 23 ), which enables implicit rescaling with minimal
+TABLE VII: Accuracy for the lm-evaluation-harness zero-shot tasks                               overhead (1-cycle). MX formats, however, merely use some
+used in [10], [48]. Higher is better. Tender uses INT4.                                         power-of-two scale factors, similar to MSFP. Thus, implicit
+     Tasks
+                             OPT-6.7B                            LLaMA-7B                       rescaling by 1-bit shifting cannot be achieved by simply using
+                   FP32   SMX4 MXFP4         Tender     FP32   SMX4 MXFP4         Tender
+                                                                                                MX. As discussed in Section III, the scale factor of Tender is
+  Hellaswag       67.16   26.94      54.13    64.54   76.20    25.89      67.51   57.30
+     WIC          48.12   49.84      51.72    50.00   49.06    50.00      46.24   49.53         also not limited to powers of two; it can be any real number.
+   Anli-r2        34.40   33.40      33.90    34.20   36.10    33.40      35.30   35.20
+  Winogrande      65.43   50.12      52.88    61.80   70.01    50.59      62.35   59.04
+                                                                                                Additionally, MX formats follow a conventional approach of
+   ARC easy       60.02   29.76      44.57    56.82   72.85    27.78      63.68   58.50         grouping adjacent elements, whereas Tender groups columns
+ ARC challenge    34.73   23.46      29.18    33.79   44.71    26.88      35.49   36.26
+   Lambada        67.69   00.02      43.74    60.06   73.61    00.02      56.65   56.80
+                                                                                                within similar ranges while considering ease of computation.
+  College CS      34.00   25.00      25.00    34.00   26.00    23.00      22.00   28.00
+    Int. law      37.19   23.97      32.23    26.45   46.28    29.75      33.06   33.88
+ Jurisprudence    21.30   25.93      25.00    21.30   36.11    26.85      26.85   24.07         D. Tender on Output and Weight Stationary Dataflows
+                                                                                                   While we present the benefit of Tender based on the systolic
+hardware could reduce the impact of outliers, it is more                                        array that employs the output stationary dataflow, it is not
+area/energy inefficient than integer compute units [10].                                        a strict requirement as discussed in Section IV-B. For the
+MSFP [9] uses a shared exponent to mitigate the inefficiency.                                   generation stage in LLMs, we may consider batching inputs
+As shown in Table VI, however, Tender shows better perfor-                                      only up to the number of rows of an output stationary systolic
+mance than MSFP. By default, MSFP12 uses an 8-bit shared                                        array due to compute and energy efficiency, while we can batch
+exponent for 16 elements in a row, so the huge increase                                         more inputs than the systolic array dimension for the weight
+in perplexity likely comes from sharing exponents between                                       stationary design. If there are ample batching opportunities,
+outliers and others. We modify the MSFP12 to use the shared                                     weight stationary can be more efficient since the output
+exponent for 8 elements in a column (MSFP12-OL). However,                                       stationary design may incur idle time and additional energy
+still Tender shows better model performance. This is likely                                     due to repeated weight loading. Conversely, when batching is
+because the intra-channel variance of the outlier channel is                                    limited, such as by the memory size of large intermediate states
+more precisely represented in the integer format than the                                       (i.e., key-value cache), output stationary could be as efficient
+MSFP. Thus, Tender achieves better performance than MSFP,                                       as weight stationary since it minimizes the movement of high-
+while requiring much simpler hardware.                                                          precision partial sums. Note that Tender can be employed in
+                                                                                                either case and provides benefits.
+C. Comparison with Microscaling (MX) Formats
+   Shared Microexponents (SMX) [10] and the subsequent                                          E. Channel Decomposition and Compute Utilization
+Microscaling (MX) format [41] are recently proposed number                                         Although channels are decomposed into multiple groups,
+representations that employ multiple levels of scaling.2 Similar                                Tender can continuously compute the groups in MSA without
+to MSFP, they group elements in a block-based manner,                                           a major interrupt. This is because rescaling can be done
+but with two-level scaling, where the scaling factors are                                       entirely in integer PEs (implicit) and only takes a single cycle
+constrained to powers of two. SMX groups 16 elements with                                       (i.e., runtime requantization). During runtime, skewed channel
+an 8-bit shared exponent, and two elements in a block form a                                    groups are continuously provided with a 1-cycle rescale signal,
+subgroup to share a 1-bit subscale factor. Similarly, MX groups                                 aligned with the inputs between the groups (Figure 7(a)), and
+32 elements, but each element has also its own exponent field                                   each PE individually rescales the accumulated value via 1-bit
+in addition to the 8-bit shared exponent.                                                       shifting; this feature is crucial as the systolic array takes as
+   Table VII compares the accuracy between employing Tender                                     input a skewed matrix. The original computation in Figure 5(a)
+and using SMX and MX formats on OPT-6.7B and LLaMA-                                             leads to large under-utilization of compute units. Tender does
+7B for the lm-evaluation-harness tasks used in [10], [48]. For a                                not suffer from this issue and preserves the reduction axis of
+fair comparison, we employ the same compute flow across the                                     the original input matrix, regardless of the number of groups or
+low-precision formats while quantizing matrix multiplications                                   the group size for the matrix. Thus, during offline calibration,
+into low precision and keeping other element-wise operations                                    Tender only considers model performance to determine the
+as scalar floating-point formats as in [48]. The results show                                   number of groups, where perplexity does not decrease further
+that Tender can provide better or comparable accuracy while                                     as shown in Figure 9; it varies at some point due to noise.
+it builds on standard INT4 representations. Note that SMX                                       Each channel is then classified into the corresponding group.
+  2 In this paper, we denote Shared Microexponents [10] as SMX to distin-                       This calibration process naturally determines the size of each
+guish it from the Microscaling (MX) formats [41] endorsed by OCP.                               channel group.
+
+
+
+                                                                                           12
+

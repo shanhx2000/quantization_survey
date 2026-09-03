@@ -1,0 +1,105 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                               Seunghee Han, Soongyu Choi, and Joo-Young Kim
+
+            1e6                                                      1e3                                             Token A Token B         Token C
+                                                           2607.16                                                                                                                    Token A (12, 75)
+                                                                                                                               Channel 15                              25
+
+
+
+
+                                                                           Activation Weight Ratio
+            1e5                                                                                                                                                                        3σ             3σ
+                                                                     1e3                                                                                                             -33.24         29.41
+            1e4
+                                                  331.39                                             Activation                                                        20
+Size (GB)
+
+
+
+
+                                         43.45                                                       Weight
+            1e3                                                      1e2
+                                                                                                                                                                       15
+
+
+
+
+                                                                                                                                                               Count
+                                3.93                                                                 Activation
+            1e2          1.41                                                                        Weight Ratio
+                  1.00                                               1e1                                                                                               10
+            1e1
+                                                                                                                                                                       5
+                                                                                                                                                                                  Min                  Max
+                  100    500     1000     2500     5000    10000                                                                                                                 -38.53                17.45
+                                Sequence Length                                                                                                                         -150   -100     -50      0     50      100    150
+                                                                                                                                       ...                                                     Value
+                                                                                                                                                                                    Token B (35, 75)
+                                                                                                                               Channel 56                              25         3σ                  3σ
+Figure 4: Analysis of total weight size and peak activation                                                                                                                     -56.94               62.55
+size in PPM across various sequence lengths.                                                                                                                           20
+
+                                                                                                                                                                       15
+
+
+
+
+                                                                                                                                                               Count
+                                                                                                                                                                       10
+without the chunk option. For the dataset, we select proteins from
+                                                                                                                                                                       5
+the latest CASP16 [13] dataset. Specifically, we select R0271 (77                                                                                                            Min                                 Max
+                                                                                                                                                                            -93.67                              101.16
+amino acids) as the shortest protein and T1269 (1,410 amino acids)                                                                                                      -150   -100     -50      0     50      100    150
+as the longest protein that can be processed within a single GPU.                                                                      ...                                                     Value
+                                                                                                                                                                                   Token C (75, 75)
+   As shown in Figure 3, the Protein Folding Block in the PPM con-                                                             Channel 122                             25        3σ                            3σ
+                                                                                                                                                                               -243.97                       254.83
+stitutes a significant portion of the total execution time, accounting                                                                                                 20
+for 83.8% and 94.5%, respectively. The Pair Representation dataflow
+                                                                                                                                                                       15
+
+
+
+
+                                                                                                                                                               Count
+accounts for 69.4% of the total execution time for R0271 as shown in
+Figure 3 (a), but the proportion increases dramatically to 91.9% for                                                                                                   10
+
+T1269 as shown in Figure 3 (b), indicating that it becomes a major                                                                                                     5      Min                             Max
+                                                                                                                                                                            -561.26
+bottleneck. This sharp increase is primarily due to the execution                                                                                                                                            247.60
+time spent on the Triangular Attention operation, which surges                                                                                                          -600   -200     -100     0     100     200    300
+                                                                                                                                                                                               Value
+from 29.0% to 75.9%. As mentioned in Section 2.3, the size of the                                                                      (a)                                                     (b)
+Pair Representation grows quadratically with the sequence length,
+unlike other data structures. Consequently, as the sequence length                                                  Figure 5: Analysis of activation value distribution in PPM.
+increases, the proportion of Pair Representation dataflow within                                                    Visualization of (a) three representative channels and (b)
+the overall PPM execution grows significantly. For extremely large                                                  three representative tokens.
+proteins such as PKZILLA-1 (45,212 amino acids) [21], Pair Repre-
+sentation dataflow is expected to account for more than 99% of the
+total PPM runtime.                                                                                                  raises peak memory requirements. While data chunking can reduce
+                                                                                                                    peak memory requirements by splitting computations, it is not a
+3.2               Activation Size Explosion                                                                         fundamental solution since it substantially increases the memory
+Typical attention-based models involve major activations such as                                                    footprint, causing significant performance degradation.
+input, Q, K, and V, which have dimensions of (Ns, H), while the                                                        We propose applying quantization to address the above challenge.
+attention score matrix for each head has dimensions of (Ns, Ns),                                                    Quantization can serve as a fundamental solution, as it reduces the
+where Ns is sequence length and H is the hidden dimension. In                                                       original data size, thereby reducing both the memory footprint
+contrast, as mentioned in Section 2.2, the main bottleneck of the                                                   and compute workload. We further propose leaving the weights
+PPM, Pair Representation dataflow, involves major activations with                                                  unquantized to preserve their information density, focusing instead
+dimensions of (Ns, Ns, Hz), and its attention score matrix for each                                                 on activation quantization, since the size of the weights is signifi-
+head has dimensions of (Ns, Ns, Ns). As a result, the memory foot-                                                  cantly smaller than that of the activations. This approach aims to
+print and computation cost scale cubically with sequence length in                                                  maximize the quantization efficiency while minimizing accuracy
+score matrix operations and quadratically for others. Although the                                                  degradation. Thus, we introduce an activation-only quantization
+hidden dimension is relatively small compared to typical models,                                                    scheme tailored for PPM.
+this difference does not alleviate the bottleneck.
+   Figure 4 shows the analysis of weight and peak activation size in                                                3.3    Token-Wise Distogram Pattern in Activation
+the PPM across varying sequence lengths. As shown in the figure,                                                    One of the most important considerations in quantization is main-
+the activation size increases significantly with sequence length and                                                taining model accuracy. Designing a suitable quantization scheme
+is very large compared to the weight size. At a sequence length of                                                  tailored to the characteristics of the data significantly impacts the
+2034, the activation size is already 24.15× larger than the weight                                                  model’s accuracy. Therefore, we analyze the distribution of activa-
+size, requiring 144 GB of memory, which exceeds the capacity of a                                                   tion values to identify the best quantization scheme for PPM.
+single state-of-the-art GPU [47]. This exponential growth in acti-                                                     It is widely recognized that general attention-based models ex-
+vation size not only increases memory footprint and computation                                                     hibit a large variance between channels, which leads to channel-
+demands but also decelerates model inference and significantly                                                      wise quantization [64]. However, activations in PPM show a rel-
+

@@ -1,0 +1,73 @@
+ISCA ’23, June 17–21, 2023, Orlando, FL, USA                                                                                                            Guo and Tang, et al.
+
+
+
+                         60                                                                          Algorithm 2: The abfloat encoding algorithm.
+ Normalized Mean Error
+
+
+
+
+                                                                     BERT-base   BERT-large
+                         50                                          BART-base   GPT2-XL
+                                                                                                      Input: Element 𝑒; Bias, 𝑏;
+                         40
+                                                                                                      Output: Quantized Element 𝑞;
+                                                                                                    1 def AbfloatQuant(𝑒, 𝑏):
+                         30
+                                                                                                          // Get exponent and base integer.
+                         20                                                                         2     𝑒𝑥𝑝 = ⌊𝑙𝑜𝑔2 (𝑎𝑏𝑠 (𝑒)) ⌋ − 1;
+                         10                                                                         3     𝑏𝑎𝑠𝑒_𝑖𝑛𝑡 = 𝑅𝑜𝑢𝑛𝑑 [𝑒/2𝑒𝑥𝑝 ];
+                                      E0M3          E1M2          E2M1           E3M0
+                                                                                                    4     if 𝑏𝑎𝑠𝑒_𝑖𝑛𝑡 == 4 then
+Figure 5: The rounding error of the largest outliers quan-                                          5         𝑒𝑥𝑝 = 𝑒𝑥𝑝 + 1;
+tized with different data types. Experiments were conducted                                         6         𝑏𝑎𝑠𝑒_𝑖𝑛𝑡 = 𝑏𝑎𝑠𝑒_𝑖𝑛𝑡 − 2;
+on BERT-base, BERT-large, BART-base, and GPT2-XL.                                                         // Encoded as abfloat data type.
+                                                                                                     7    𝑒𝑥𝑝 = 𝑒𝑥𝑝 − 𝑏;
+value also needs to eliminate one number. For instance, int8 can                                     8    𝑏𝑎𝑠𝑒_𝑖𝑛𝑡 = 𝑏𝑎𝑠𝑒_𝑖𝑛𝑡 & 1;
+represent [−128, 127] integers, and we can make 100000002 the                                        9    𝑢𝑛𝑠𝑖𝑔𝑛𝑒𝑑_𝑞 = 𝐶𝑜𝑛𝑐𝑎𝑡 (𝑒𝑥𝑝, 𝑏𝑎𝑠𝑒_𝑖𝑛𝑡 );
+outlier identifier for int8 and narrow its range to [−127, 127].                                    10    𝑞 = 𝐶𝑜𝑛𝑐𝑎𝑡 (𝑒 < 0, 𝑢𝑛𝑠𝑖𝑔𝑛𝑒𝑑_𝑞)
+Similarly, the encoding algorithm can easily extend to read two                                     11    return 𝑞
+8-bit elements simultaneously.
+
+3.3                           Data Type for Outliers: Abfloat
+Next, we quantize outliers using the outlier-specific data type. The                                and extend range to {24, · · · , 192} for flint4 data type. We de-
+large outliers usually have a wide range, for which we use float-                                   sign a new decoder and instruction to implement adaptive bias in
+based data to quantize. We propose a data type called adaptive                                      accelerators for the abfloat (Sec. 4.2).
+biased float, abfloat in short. The key idea is that by adding a                                    E2M1 Abfloat. The 4-bit signed float has four possible configu-
+proper bias to the exponent, all encoded values can skip the interval                               rations of exponent and mantissa: E0M3, E1M2, E2M1, and E3M0.
+where normal values lie and provide more range for outliers.                                        They have different ranges and precisions. We conduct the follow-
+Float-to-Fixed Conversion. To accommodate the normal values                                         ing experiments to choose the most appropriate configuration as
+and avoid fractions, we first convert the floating-point encoding to                                the final outlier-specific data type. To accommodate the broad range
+the fixed point with an exponent. Also, the fixed point is friendly to                              of outlier values, we quantize the largest outlier values (i.e., Max
+the hardware implementation and has a lower overhead than the                                       𝜎 in Fig. 2) in Transformer models using all abfloat types. Then,
+floating point. We transform the the floating point to fixed point                                  we collect the average absolute error, as shown in Fig. 5. We found
+with the following equation,                                                                        that E2M1 gives the least error in all tests, which provides both a
+                                                                                                    large enough range and a certain degree of precision, and it also
+                              sign × (1 ≪ mb + mantissa) ≪ (exponent + bias),                 (2)
+                                                                                                    presents the best results in our subsequent evaluations. Similarly,
+where mb is the mantissa bit-width. Therefore, this fixed-point                                     we adopt signed E4M3 for 8-bit abfloat.
+encoding scheme is more friendly and efficient for hardware im-                                        Algo. 2 shows in detail how an element is encoded as abfloat.
+plementation, as it only involves shift operations. Tbl. 4 shows the                                The outlier encoding is an element-wise function, which can be im-
+example of fixed-point E2M1 data type.                                                              plemented on software and hardware efficiently. Outlier encoding
+Adaptive Bias. Obviously, Tbl. 3 and Tbl. 4 show that the range of                                  should also eliminate the outlier identifier. Otherwise, the decoder
+fixed-point abfloat overlaps with the normal values. For example,                                   cannot distinguish the outlier-victim pair. Abfloat has two zero
+int4 and E2M1 contain the same numbers, 3, 4, and 6. Another                                        numbers: 1000 (-0) and 0000 (0). Therefore, we disable the 1000 and
+example is that flint4 and E2M1 have almost the same number                                         0000 for outlier values to avoid conflict with the outlier identifier.
+range except for 24. Therefore, we need the adaptive bias to ad-
+just the range of abfloat. For example, we set bias = 2 for E2M1,                                   3.4    Quantization Framework
+whose real values will be extended to {12, · · · , 96}, which is com-                               We now apply OVP (outlier-victim pair) encoding for quantizing
+plementary with the int4 normal value. Similarly, we set bias = 3                                   Transformer models. To decide the scale factor (i.e., outlier-victim
+                                                                                                    threshold), we embed the OVP encoding with the existing mean
+                              Binary     Exponent   Integer         Real Value                      squared error (MSE) minimization algorithm, which is commonly
+                                000          0         0                 0                          used by many quantization works [4, 6, 88]. The OVP-based quan-
+                                                                                                    tization algorithm determines the threshold for distinguishing out-
+                                001          0         3            3 × 20 = 3
+                                                                                                    liers and normal values. On one hand, a small threshold would lead
+                                01x          1        2, 3     2 × 21 = 4, 3 × 21 = 6               to more outlier-victim pairs, which could potentially minimize the
+                                10x          2        2, 3    2 × 22 = 8, 3 × 22 = 12               quantization error (i.e., MSE). On the other hand, it also increases
+                                11x          3        2, 3    2 × 23 = 16, 3 × 23 = 24              the ratio of outlier-outlier pairs, where both values are outliers in
+Table 4: The 3-bit unsigned E2M1, which means two bits for                                          the pair. If there are too many such outlier-outlier pairs, the MSE
+exponent and one bit for mantissa, with bias = 0.                                                   would increase owing to the pruning of outliers. Thus, we need to
+                                                                                                    control the ratio of outlier-outlier pairs for better accuracy.
+

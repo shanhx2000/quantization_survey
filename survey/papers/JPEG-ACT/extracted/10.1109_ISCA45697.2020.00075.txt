@@ -1,0 +1,1173 @@
+          JPEG-ACT: Accelerating Deep Learning via
+             Transform-based Lossy Compression
+              R. David Evans                                  Lufei Liu                                           Tor M. Aamodt
+  Electrical and Computer Engineering          Electrical and Computer Engineering                   Electrical and Computer Engineering
+      University of British Columbia               University of British Columbia                        University of British Columbia
+            Vancouver, Canada                            Vancouver, Canada                                     Vancouver, Canada
+            rdevans@ece.ubc.ca                        lucy.lufei@alumni.ubc.ca                                 aamodt@ece.ubc.ca
+
+
+
+   Abstract—A reduction in the time it takes to train machine
+learning models can be translated into improvements in accuracy.
+                                                                      a)
+                                                                      vDNN
+                                                                                     offload
+                                                                                   no compr.
+                                                                                                                     ⋯⋯    c   b)                          Error
+                                                                                                                                                           +0.0%
+
+                                                                                                                      ⋯⋯
+                                                                                                                       m
+An important factor that increases training time in deep neural                compr. offload
+                                                                      cDMA                                                                                 +0.0%
+networks (DNNs) is the need to store large amounts of temporary                sparse compr.
+
+data during the back-propagation algorithm. To enable training
+very large models this temporary data can be offloaded from lim-
+                                                                               sparse compr.
+                                                                      GIST reduced precision
+                                                                                                                       ⋯                                   +3.2%
+
+ited size GPU memory to CPU memory but this data movement                                                              ⋯
+                                                                                                                       ⋯
+                                                                      JPEG-     compr. offload
+                                                                              lossy transform
+                                                                                                                                                           +0.2%
+incurs large performance overheads.                                   ACT
+                                                                                                                                       2x   4x   6x   8x
+   We observe that in one important class of DNNs, convolutional                                          Time                      Average compr. ratio
+neural networks (CNNs), there is spatial correlation in these                                            compr.
+                                                                        memcpy            compress       memcpy       CNN kernels conv norm ReLU
+temporary values. We propose JPEG for ACTivations (JPEG-
+ACT), a lossy activation offload accelerator for training CNNs
+                                                                      Fig. 1: a) Forward pass offload schedules for repeating conv/
+that works by discarding redundant spatial information. JPEG-
+ACT adapts the well-known JPEG algorithm from 2D image                norm/ReLU (CNR) blocks in ResNet50/ImageNet. c: compute
+compression to activation compression. We show how to optimize        streams, m: memcpy stream, arrows: corresponding activation
+the JPEG algorithm so as to ensure convergence and maintain           offloads. b) Compression ratios on ResNet50/ImageNet, er-
+accuracy during training. JPEG-ACT achieves 2.4× higher               ror indicates change from no compression on the validation
+training performance compared to prior offload accelerators,
+                                                                      dataset.
+and 1.6× compared to prior activation compression methods. An
+efficient hardware implementation allows JPEG-ACT to consume
+less than 1% of the power and area of a modern GPU.
+   Index Terms—GPU, Hardware Acceleration, CNN Training,              which is greater than the memory available on consumer-grade
+Compression                                                           GPUs (e.g. 12GB, NVIDIA Titan V). State-of-the-art networks
+                                                                      contain more layers and larger input image dimensions [3],
+                       I. I NTRODUCTION                               [8]–[10]. E.g., GPIPE increases memory storage by 4.6× to
+   Reductions in training time of deep neural networks [1]            achieve 10% higher accuracy versus ResNet50 [9].
+played an important role in enabling dramatic improvements in            Cost-effective activation storage can be achieved via recom-
+accuracy [2]. Those accuracy improvements, in turn, led to an         putation, GPU memory compression, and transfer to CPU-
+explosion in the application of deep learning in recent years.        attached memory. Recomputing activations in the backward
+These speedups were due to the use of graphics processor              pass incurs compute overhead [11], [12]. Memory compression
+units (GPUs) in place of out-of-order superscalar processor           has been evaluated on GPUs and activations (GIST, Figure
+architectures. While many recent papers propose advances in           1) [13] and is well studied on CPUs [14]–[18] but is still
+specialized hardware acceleration of networks during inference        limited by the amount of GPU memory. Naively offloading
+(after a network has been trained) far less have discussed            activations to CPU DRAM (e.g., vDNN in Figure 1) [19] or
+hardware acceleration of the training process.                        disaggregated memory [20] is limited by PCIe throughput or
+   In this paper, we focus on accelerating the training of            requires expensive specialized interconnects (e.g., NVLINK
+Convolutional Neural Networks (CNNs). CNNs have produced              on the IBM Power9). However, the cost effectiveness of
+state-of-the-art results in image classification, object detection,   offloading can be enhanced by compressing the data before
+and semantic labelling [2]–[5]. Typically when training a CNN         it is transferred [21] (cDMA, Figure 1). We build upon the
+the output of each individual neuron, called its activation,          latter approach as it allows for lower cost interconnect and
+is computed, saved to memory and, later restored. Activa-             memory technologies (JPEG-ACT, Figure 1).
+tion values are needed again when updating weights using                 Activation compression for CPU offload has been studied
+backpropagation [6]. Saving these activation values requires          for shallow networks containing high sparsity [13], [19], [21].
+large memory capacities. For example, ResNet50 [3] trained            However, during training, ResNets and other extremely deep
+on the ImageNet dataset [7] requires over 40GB of storage,            networks have a high proportion of dense activations and
+                                   1.0                        Input Images
+                                    8
+                                   0.8
+
+
+
+
+                  Avg. Entropy (Bits)
+                                                                                           generic      ReLU      conv      norm     ReLU      loss
+                                    4
+                                   0.6
+                                                                                   Input
+                                                                                            layer        (1)       (2)       (3)      (4)
+                                                                                  Image
+                                   0.4
+                                    8           Conv. and Sum Activations
+                                   0.2
+                                    4                                                                                    CNR Block
+                                   0.0
+                                        0 8 0.216 24
+                                      0.0                32 0.6
+                                                    0.4 (low  40 48 56 64         Fig. 3: Training a Convolutional Neural Network using back-
+                                      Frequency Number       freq. 0.8      1.0
+                                                                    high freq.)   prop. conv: convolution, norm: batch normalization, ReLU:
+Fig. 2: Frequency entropy distribution for images and non-                        Rectified Linear Unit
+sparse ResNet50/CIFAR10 activations. Measured using Shan-
+non Entropy of a Discrete Cosine Transform.                                                            II. BACKGROUND
+                                                                                    This section reviews neural network training, related work
+                                                                                  on activation compression and the JPEG algorithm.
+sparse activations (average sparsity of ≈ 50%) causing large
+                                                                                  A. SGD and Backprop
+performance penalties. The sparse methods used by GIST [13]
+and vDNN [21] perform best when activation sparsity is high,                         Figure 3 illustrates the training process for a typical con-
+and have a maximum dense compression ratio of 4×.                                 temporary CNN. The backpropagation algorithm [6] has three
+                                                                                  stages: forward propagation, backward propagation, and up-
+   We propose JPEG-ACT, a compressing offload accelerator
+                                                                                  date. Forward propagation is performed by starting with an
+that exploits activation sensitivities and distributions to max-
+                                                                                  input image, and applying a sequence of layer functions from
+imize compression. JPEG-ACT extends compressed offload
+                                                                                  the first to last layer in the network. The loss (L in Figure 3)
+through the use of domain-specific lossy compression. The key
+                                                                                  is calculated from the final layer’s output and it quantifies the
+insights exploited by JPEG-ACT are (1) that dense activations
+                                                                                  error of the network output when compared with the desired
+are similar to images but with a modified frequency distri-
+                                                                                  or target output. To train the network the gradient of the loss is
+bution (Figure 2), and (2) that CNNs have error sensitivities
+                                                                                  propagated in the reverse direction by calculating the gradient
+that differ from human perception. JPEG-ACT adjusts JPEG
+                                                                                  of the loss with respect to each layer’s inputs (∇x ≡ ∂L/∂x,
+compression to optimize for use with CNNs. During the
+                                                                                  Figure 3). Then, the gradient of the loss with respect to each
+forward pass, JPEG-ACT compresses data before sending it to
+                                                                                  weight (∇wi ∈ ∇w, bottom, Figure 3) is calculated and
+CPU memory via Direct Memory Access (DMA). During the
+                                                                                  updated according to the SGD update:
+backward pass, JPEG-ACT decompresses data retrieved from
+CPU memory before placing it in GPU memory. JPEG-ACT                                                    wit+1 = wit − η∇wit                     (1)
+works with both dense and sparse activations and improves
+                                                                                  where t is iteration number and η is a learning rate parameter
+training performance versus accuracy loss.
+                                                                                  used to adjust how aggressively weights are updated.
+  The contributions of this paper are as follows:                                   Backpropagation requires that activations be saved after
+                                                                                  being computed in the forward pass to avoid recomputing
+  • We propose Scaled Fix-point Precision Reduction
+                                                                                  them in the backward pass. Most layer’s gradients (e.g. conv,
+    (SFPR), a method allowing JPEG-ACT to use an 8-bit
+                                                                                  norm, ReLU) are calculated using both the input activation
+    integer compression pipeline instead of floating-point.
+                                                                                  and output activation gradient. Recomputation approximately
+  • We optimize JPEG for activation compression of CNNs
+                                                                                  doubles floating-point operations (FLOPs) in the backward
+    to account for differing sensitivity to information loss
+                                                                                  pass, which can significantly increase training times.
+    during CNN training versus human perception. This
+                                                                                    Gradient calculations can be reformulated to modify which
+    achieves 5.8× (stock JPEG) and 8.5× (optimized JPEG)
+                                                                                  activations need to be saved. The ReLU layer has multiple for-
+    compression ratio over uncompressed, and 1.98× over
+                                                                                  mulations with similar computation cost. The ReLU forward
+    the state-of-the-art, GIST [13], with <0.4% change in
+                                                                                  and backward calculations are, respectively:
+    trained accuracy.
+  • We propose and evaluate JPEG-ACT, an offload acceler-                                                r = (x > 0)?x : 0                      (2)
+    ator for JPEG and SFPR, demonstrating a performance                                                ∇x = (x > 0)?∇r : 0                      (3)
+    improvement of 2.6× over uncompressed offload, and
+    1.6× over GIST, using <1% GPU area.                                           From Eqns. 2 and 3, either the input, x, or the output, r,
+                                                                                  can be used in the backward pass as (r > 0) = (x > 0).
+   We begin by giving an overview of algorithms for training                      Alternatively, a binary mask, (x > 0) can be used instead of
+CNNs, and activation compression (Section II), then detail our                    x [13] (discussed in Section II-B1).
+accelerator design (Section III), and optimization of the JPEG                       Frameworks choose which activations to save by examining
+parameters (Section IV). Finally, we report our experimental                      the overall network structure, minimizing the total compu-
+setup and evaluation of JPEG-ACT (Sections V and VI).                             tation, and then discarding unused activations. Determining
+which activations to store requires information about all net-                        3 0 2 -1 0 1 0 0 0    uncompressed
+work layers, hence dynamic CNN frameworks select on a per-                         10110100
+layer basis. Most (Caffe2, Pytorch, and Chainer [22], [23]) use                     Mask
+                                                                                                 3 2 -1 1   compressed
+the following strategy: save the conv input, norm input, and
+ReLU output (r, c and y, resp., Figure 3). These choices are        Fig. 4: An example of Zero Value Compression (ZVC) of 8
+based on knowledge of the computation required to calculate         values
+gradients from each activation. For instance, the conv input (r,
+Figure 3) is required for gradient calculation, and is expensive
+to recalculate from the output, c. This results in frameworks       sparse activations. The authors decreased activation storage by
+discarding c if it is not required by another layer’s gradient.     up to 4× using DPR [13].
+   We focus on applying compression to activations in the              In BFP, fix-point values are used with power-of-two scaling
+conv/norm/ReLU (CNR) block (Figure 3), used in nearly               factors for a group of activations [38]. Courbariaux et. al train
+all modern CNNs. CNR blocks smooth the loss landscape,              networks on 10-bit multiplications using BFP [32].
+allowing the training of a wide variety of deep CNNs [3], [9],         3) Run-length Encoding: ReLU and dropout activations
+[10], [24]–[26]. Previously, networks containing alternating        have 50-90% sparsity [21], lending to zero-based compres-
+conv/ReLU layers only required memoizing the sparse ReLU            sion methods. Run-length encoding [39] has previously been
+activation [21]. The introduction of norm ((3), Figure 3),          investigated for activation compression and found to give poor
+however, adds the requirement that the dense conv output must       results [21]. The method is highly sensitive to sparsity patterns,
+be saved. Due to this, ReLU compression, such as in [21],           as it compresses “runs” of zeros. As well, dense activations
+covers less than 50% of modern network storage. Although            (e.g. conv) cannot be compressed in this manner.
+we focus on the CNR block, the compression methods that we             4) Zero Value Compression (ZVC): Randomly spaced zero
+use are flexible enough for other sparse and dense activations      values are compressed easily using Zero Value Compression
+such as dropout, pooling, and summations.                           [21], a derivative of Frequent Value Compression [40]. In
+                                                                    ZVC, a non-zero mask is created, and the non-zero values
+B. Activation Compression                                           are packed together (Figure 4). The mask limits the maximum
+   To compress activations, we require a method that can sus-       compression ratio to 8× for 8-bit values. A key advantage of
+tain both a high compression rate and throughput to match the       this method is that it works equally well regardless of zero
+GPU memory system. Compression methods can be classified            value distribution. The authors achieve a compression ratio of
+as either lossless or lossy. Lossless compression algorithms        2.6× on ReLU and dropout activations using ZVC.
+allow the original data to be perfectly reconstructed, whereas         5) JPEG: JPEG is a commonly used image compression
+lossy compression permits reconstruction of an approximation        algorithm [41]. JPEG represents high-frequency spatial infor-
+of the original data. By allowing partial reconstruction, lossy     mation in an image with less precision as this is less important
+methods discard irrelevant portions of the data to greatly          to perception. Below we summarize relevant portions of JPEG.
+increase the compression rate. Moving between high compres-         Additional details can be found elsewhere [41]–[43].
+sion error and high compression rate is commonly called the            Figure 5 illustrates the JPEG algorithm. JPEG splits images
+rate-distortion trade-off. We will now detail prior works on        into 8 × 8 blocks of adjacent pixels and quantizes them in the
+activation compression and the JPEG algorithm for images.           frequency domain. Due to space limitations in Figure 5 we
+   1) Binary ReLU Compression (BRC): Binary ReLU Com-               represent these blocks as 3 × 3 matrices. A block of pixels,
+pression was formulated by Jain et al. [13] to compress ReLU        represented with integers ( 1 ), is passed through a Discrete
+activations to 1-bit. The sign bit of the input ReLU activation     Cosine Transform (DCT, 2 ), which converts them to the
+is saved, effectively saving (x > 0) instead of x in Eqn. 3.        frequency space ( 3 ). Next division quantization (DIV, 4 ) is
+BRC can be used on a ReLU activation provided it is not             applied. Here frequency values are quantized after dividing
+immediately followed by a conv layer. Networks involving            them by corresponding entries in the Discrete Quantization
+dropout, which include VGG [27] and Wide ResNet [25], can           Table (DQT, 5 ). As the division output is quantized to 8
+use BRC, but not ResNet [3].                                        bits, a high value in the DQT results in fewer bits kept and
+   2) Precision Reduction: Many studies focused on inference        thus a higher compression. Quantization produces a matrix
+have explored reducing the precision of activations [28]–[31],      with a large number of zeros ( 6 ). These are removed in
+however, few examine training [13], [32]–[37]. To the best of       the next stage, Run-length and Huffman coding (RLE, 7 ).
+our knowledge, most require extensive network modifications         RLE is lossless and removes zeros by storing run-value pairs.
+[33]–[37], with the exception of Dynamic Precision Reduction        Huffman coding converts these using variable width codes ( 8 )
+(DPR) [13] and Block Floating Point (BFP) [32], [38].               to produce the final output ( 9 ).
+   In DPR, 32-bit activations are cast to either 16-bit or 8-bit
+floating-point values after the forward pass to reduce activation               III. T HE JPEG-ACT ACCELERATOR
+storage, however, Jain et al. noted the difficulty in using 8-bit     JPEG was selected for this work as it was designed for
+activations for deeper networks, such as VGG. Jain et al. use       image compression. Convolutions, in essence, are image pro-
+this in addition to Compressed Sparse Row (CSR) storage for         cessing kernels, and it follows that activations resulting from
+                                                                            7                  9      A. Overview
+  1                 2           3       DIV           6      RLE
+                                                                           3,1              1110 1
+                             10 12 -9           4   3 2 -1
+              DCT            6 5 10
+                             10 10 10
+                                            ÷       0 0 0
+                                                    1 0 0
+                                                             Run-length
+                                                              Encoding
+                                                                           2,0
+                                                                          -1,1
+                                                                                  Huffman
+                                                                                  Coding
+                                                                                             110 0
+                                                                                              10 1
+                                                                                                         The baseline system comprises a GPU with High Bandwidth
+                                                                           1,3 10              0 3    Memory (HBM) and DMA over PCIe to CPU DRAM (Figure
+ 8x8
+Block                                 3 5 9                                                      11   7a) [45]–[47]. We assume each Streaming Multiprocessor
+                                 DQT: 13 15 30 5      Encoding          Huffman 1 0 2 110
+                                                       Order:            Table: -1 10 3 1110 8        (SM), L2 cache/memory controller partition (L2/MC), and
+                                        15 20 40
+
+                                                                                                      DMA unit, are connected using symmetric links to the GPU
+Fig. 5: JPEG encoding example. This illustration uses smaller
+                                                                                                      crossbar. Training using vDNN on this system involves off-
+blocks (3 × 3 instead of 8 × 8) due to space limitations.
+                                                                                                      loading each activation over DMA after its usage in the
+                                                                                                      forward pass (Figure 1). Similarly, in the backward pass,
+                                                                                                      activations are loaded over DMA into GPU HBM before their
+the convolution of images would also resemble images. To                                              first use and freed after use. This process is overlapped with
+test this hypothesis, we analyze the Shannon information                                              compute.
+entropy [44] in the spatial (before DCT) and frequency (after
+DCT) domains (Figure 6). Our experiments demonstrate that                                                  GPU HBM                        HBM                       HBM
+the spatial correlations persist deep into the network, even
+                                                                                                          MC         MC                   MC                        MC
+after 40 convolution layers. Frequency domain entropy is                                                  L2   ...   L2              ..   L2    CDU
+                                                                                                                                                    Collect,     . L2 CDU Buffers
+lower, especially in the early layers of the network, where                                                 crossbar      DMA
+                                                                                                                                                CDU Split
+                                                                                                                                                                              &
+                                                                                                                                                      &
+activation storage requirements are higher. This implies that                                             SM   ... SM                .. SM      CDU
+                                                                                                                                                CDU DMA          .. SM       DMA
+
+the frequency domain is a more compact representation for                                                                  PCIe
+                                                                                                           CPU DRAM                    DRAM                        DRAM
+convolution activations. We do not observe this trend for sparse
+activations (e.g. ReLUs).                                                                               a) Baseline GPU           b) DMA-side compr.           c) Cache-side compr.
+                                                                                                           (vDNN, GIST)              (cDMA+, JPEG-ACT)            (cDMA)
+   JPEG-ACT is a compressing offload accelerator, similar to
+cDMA (Figure 1). However, the goals of JPEG-ACT are to                                                Fig. 7: Compression/Decompression Unit (CDU) locations.
+address the issues introduced by modern networks. Offloading                                          a) supports no compression, or software compression. CDUs
+using cDMA or vDNN has a high overhead due to low                                                     represent ZVC/ZVD for cDMA or cDMA+, or the JPEG-
+PCIe bandwidth and, in networks such as ResNets, due to                                               BASE or JPEG-ACT CDU
+a low sparsity and/or high proportion of dense activations.
+GIST avoids the PCIe bottleneck by compressing to GPU                                                    For compressed offload, we augment the DMA with several
+memory instead. This removes offload times but uses precious                                          Compression/Decompression Units (CDUs), and a collector/
+computation resources to perform activation compression. As                                           splitter between the CDUs and DMA (Figure 7b). With this
+well, the compression rates provided by GIST (2.2× - 4.0×)                                            system, the maximum effective offload rate is the compression
+result in only moderate relief from activation storage, and                                           ratio multiplied by the PCIe bandwidth. We use a multi-link,
+still require large amounts of costly GPU memory. JPEG-ACT                                            multi-CDU design to avoid being limited by crossbar link
+instead addresses the PCIe bottleneck through an aggressive                                           bandwidth, explored further in Section VI-E. It is also possible
+lossy compression scheme, allowing for a cheaper memory                                               to store compressed data in the GPU HBM, however, we do
+solution, and addresses compute overheads through a custom                                            not investigate this as activations can be as large as 1GB,
+hardware implementation, avoiding the use of general compute                                          requiring a large amount of HBM. In this system, compressed
+resources.                                                                                            traffic from the multiple CDUs is aggregated by the collector
+   In this section, we present an overview of the system                                              when transferring to the CPU, and uncompressed traffic is
+and JPEG-ACT offload accelerator (Section III-A), how 2D                                              distributed among CDUs by the splitter when transferring to
+activations map onto the accelerator (Section III-C), and                                             the GPU.
+the implementations of the JPEG-ACT components (Sections                                                 DMA-side compression (Figure 7b) in this work differs
+III-B, and III-D to III-G).                                                                           from the cache-side compression (Figure 7c) used by cDMA
+                                                                                                      [21]. Cache-side compression requires a large area and power
+                                                                                                      overhead due to the replication of CDUs across the many
+                                                                                                      cache partitions on modern GPU architectures (e.g., 48 on
+                         8
+        Entropy (Bits)
+
+
+
+
+                                                                                                      Volta, [48]). Additionally, for load balancing, sequential cache
+                         7                                                                            lines are typically distributed across memory partitions [47].
+                         6                                                                            JPEG compression operates on eight rows of the activation,
+                                                              Spatial           Frequency             hence spans up to eight cache lines. This would require inter-
+                         5
+                                                                                                      cache communication across memory partitions for a cache-
+                                0       5      10 15 20 25 30 35 40
+                                                                                                      side design, thus we perform JPEG exclusively at the DMA-
+                                              Convolution Layer (0: input)
+                                                                                                      side. We examine locating parallel portions of the CDU at
+Fig. 6: Convolution activation entropy averaged over all epochs                                       the cache in Section VI-E. For comparison, we re-implement
+and activations in each layer for ResNet50/CIFAR10.                                                   cDMA (Figure 7c) as a DMA-side technique, cDMA+ (Figure
+Crossbar
+                                                                                     Naive casting to integers can cause large errors on activations
+
+
+
+
+                                                                  Collector
+  GPU
+                               BRC                                            128B
+           32B    SFPR                                                               with a dissimilar range to the target integer format. Thus,
+                         64B                                                         we develop SFPR to normalize the activation scale, while
+                   8B          8x8                   ZVC
+
+
+
+
+                                                                               DMA
+                               DCT          64B
+                                                                                     converting them to integers.
+ Compr.                                SH          DQT (64B)
+
+
+
+
+                                                                  Splitter
+                 Alignment      8x8                         72B                        SFPR involves a channel-wise max-scaling of a 4D input
+                   Buffer                            ZVD
+Decompr.                       iDCT                                           128B   activation tensor, x ∈ RN ×C×H×W , followed by clipping to
+                  (32x8B)                    64B
+                               BRD                                                   an 8-bit signed integer:
+
+Fig. 8: The JPEG-ACT CDU. SH: Shift unit, BRD: Binary                                                             sc = S/maxnhw (|xnchw |)                         (4)
+ReLU Decompression, ZVD: Zero Value Decompression                                                                    m−1                  m−1        m−1
+                                                                                                                                                             
+                                                                                                ynchw = clip [2            sc xnchw ], −2       ,2         −1      (5)
+
+7b). cDMA and cDMA+ have identical CDUs, and differ only                             where m is the integer bit width (i.e., 8), [...] denotes the
+in their CDU location and number.                                                    round-to-nearest function, and clip(..., A, B) trims values
+   We will start by giving a brief high-level overview of the                        outside of the range [A, B] to the nearest value within the
+JPEG-ACT CDU which operates in either compression or                                 range. xnchw and ynchw are the original and scaled activations,
+decompression mode (Figure 8). Scaled Fix-point Precision                            with n, c, h, w (< N, C, H, W ) indicating the batch, channel,
+Reduction (SFPR) is introduced to convert 32-bit floating-                           height, and width index, respectively. The global scaling factor,
+point values to 8-bit integers while keeping quantization error                      S, is a hyper-parameter specifying how much of the range of
+low (Section III-B). SFPR is located between the GPU cross-                          the activation should be clipped to the integer max. The per-
+bar and a 256B alignment buffer, allowing four JPEG blocks                           channel scaling factor, sc , is dependent on the maximum of
+to be loaded from GPU cache for simultaneous processing                              the channel over all batches, maxnhw . We compute sc on a
+(Section III-C). The DCT and iDCT units are pipelined units                          per-layer basis during training.
+composed of eight 8-point DCT units to operate on all 64                                 The SFPR global scaling factor, S is selected by minimizing
+values in a block at once (Section III-D). The last two stages                       the recovered activation error, both when compressing with
+of the JPEG-ACT compression pipeline are shift quantization                          SFPR alone, and when combining it with JPEG with different
+(SH) and ZVC/ZVD (Section III-F). In compression mode, the                           DQTs (Figure 10). By definition, S = 1 results in no
+result is sent to the collector, which combines the output from                      activations being clipped. Two effects increase activation error
+multiple CDUs for sending through the DMA unit (Section                              with varying S, clipping and truncation. A high value of S
+III-G). In decompression mode, the compressed input is read                          results in high magnitude activations being clipped to the
+from the splitter output (Section III-G).                                            integer min or max (S → ∞, Figure 10). A low value of
+   We find that JPEG standard DQTs (jpeg80 and jpeg60)                               S results in low magnitude activations being truncated to zero
+lead to poor results and that DQT coefficient selection has                          (S → 0, Figure 10). SFPR compression has a low sensitivity to
+a large impact on training accuracy. We tune the JPEG DQT                            the value of S, with an average increase in recovered activation
+for activation compression, by optimizing over the compressed                        error of 5.0 × 10−5 across the range [0.5, 1.25]. When SFPR
+entropy and recovered activation error on ResNet50 (Figure                           is combined with JPEG (SFPR+DCT+...), truncation error
+9). From this procedure, we select optimized low and high                            (S → 0) increases due to quantization following the DCT.
+compression DQTs, optL, and optH. Finally, we introduce                              We select a value of S = 1.125, which minimizes the overall
+a piece-wise DQT that trains in two stages (optL5H). The                             error of SFPR, JPEG-BASE (...+DIV+RLE), and JPEG-ACT
+selection of these DQTs is discussed in Section IV.                                  (...+SH+ZVC). A single value of S is used across all networks
+
+B. Scaled Fix-point Precision Reduction (SFPR)
+   We propose Scaled Fix-point Precision Reduction (SFPR),                                              SFPR                           SFPR+DCT+SH+ZVC (optH)
+a technique to cast from the 32-bit floating-point activations to                                       SFPR+DCT+SH+ZVC (optL)         SFPR+DCT+DIV+RLE (jpeg80)
+8-bit integers to reduce both hardware costs and compression                                          0.100
+                                                                                     Avg. Recovered
+
+
+
+
+                                                                                                      0.075
+                                                                                      Act. L2 Error
+
+
+
+
+error. Activations are generally represented by floating-point
+                                                                                                                           S = 1.125
+
+
+
+
+values, however, JPEG compression operates on integers.
+                                                                                                      0.050
+                                                                                                      0.025
+CIFAR10 Inputs Trained ResNet50                        JPEG Image DQTs:
+                                                         jpeg80, jpeg60                               0.000
+Simulated JPEG Compr. / Decompr.            DQT
+                                                                                                           0.0    0.5       1.0      1.5       2.0         2.5     3.0
+                                                       Optimized DQTs:
+                                                         optL, optH
+                                                                                                                              Scaling factor (S)
+Recovered Act.           Compr. Act.                                                 Fig. 10: Scaling factor landscape for ResNet50/CIFAR10 at
+                                        Optimizer      Piece-wise DQT:
+   L2 Error                Entropy
+                                                         optL5H                      epoch 5 with conv and sum activations. Each line represents
+                                                                                     a compression method, with optL, optH, and jpeg80 being
+                 Fig. 9: JPEG DQT optimization procedure.                            DQTs.
+and layers to avoid introducing additional hyper-parameters                                                    32
+                                                                                           1         or
+into training.                                                                             2
+                                                                                   32B          32
+                                                                                                               3                   4      SPE1 8
+
+
+
+
+                                                                        Crossbar
+   The channel-wise scaling factor, sc , could require the costly                                                                                5 8B
+                                                                                                                    ×              float_to_int
+
+
+
+
+                                                                          GPU
+
+
+
+
+                                                                                                                                                           Alignment
+                                                                                                                                                              Buffer
+calculation of the maximum of each channel in the activation                       32B
+                                                                                                                                                      8B
+map. To avoid this, the maximum can be calculated efficiently                                                                      int_to_float
+                                                                                       7                                                               6
+using the activation statistics (mean and variance) already
+determined by batch normalization [24]. Alternatively, prior                                                                                SPE8
+
+work on integer quantization has shown that activation statis-          Fig. 11: The SFPR unit showing 8 SFPR Processing Elements
+tics do not vary significantly between batches [49], making             (SPEs). In forward mode (grey arrows), 8× 32-bit float values
+a sampling-based method a promising approach. We do not                 are multiplied by sc and cast to 8× 8-bit integers, and in
+measure scaling factor calculation due to the many solutions            backward mode (green arrows), the integers are cast to floats
+with little or no performance or hardware overhead.                     and multiplied by 1/sc .
+   SFPR, when used as a pre-stage to JPEG, has the benefit of
+scale normalization. We find that without scale normalization,
+compression ratios vary greatly during training, and across             The buffer is sized to hold enough JPEG blocks to prevent
+different networks. Compression variation across channels also          duplicate cache line accesses. This requires that activations
+reduces trained network accuracy. This appears to result from           be padded and aligned such that the start of each cache line
+different input ranges to JPEG compression: activations with a          coincides with a JPEG block.
+small range will be truncated, giving a high compression ratio             The size of the alignment buffer is determined by the JPEG
+but also high compression error. For instance, activations with         block size, cache line size, activation data type, and SFPR
+a range smaller than 1.0 result in zeros after integer casting.         compression ratio. We assume an NCHW memory layout
+Scale normalization ensures that the entire 8-bit integer range         (batch, channel, height, width) for activation tensors, as it
+is utilized for all activation channels with SFPR and JPEG.             has the highest performance for training CNNs [50], and is
+   The SFPR compression unit used in the JPEG-BASE and                  the default for many frameworks [22], [23], [51]. As each
+JPEG-ACT accelerator designs is divided into eight identical            JPEG block has a height of eight elements, a single block can
+SFPR Processing Elements (SPE1 to SPE8), each of which                  span at most eight cache lines. A single 128B cache line [48]
+handle the conversion of one integer or float (Figure 11).              can contain values from up to four JPEG blocks with 32-bit
+   During the forward pass, sc is loaded when starting each             activations. Hence, the alignment buffer is sized to cover eight
+new channel ( 1 ). Then, after the return of a cache sector             cache lines compressed to eight bits per activation, i.e. 256B
+(32B) through the GPU crossbar, the eight 32-bit floating-              or four JPEG blocks (Figure 12). A smaller buffer would result
+point values on this sector are split among the SPEs ( 2 ). sc          in duplicate cache line accesses.
+is multiplied with the activation using a 2-stage floating-point           The JPEG-ACT CDU requires that blocks are aligned with
+multiplier ( 3 ), and cast to an 8-bit integer ( 4 ). Casting of out-   cache line boundaries. The access stride depends on whether
+of-range values saturates, rather than truncates the resulting
+value. The results of each SPE are concatenated and saved to
+the alignment buffer ( 5 ) to await JPEG compression.                   a) 5x1x6x6 Activation Tensor                      b) 1x2x7x14 Activation Tensor
+                                                                                                                                                W
+   During the backward pass, the inverse of the scaling factor                  W               C                                      C
+(1/sc ) is loaded ( 1 ). Inverse scaling factors can be calculated
+                                                                        H                                                          H
+at run time without significant overhead, as the computation
+cost is amortized for each channel due to the large spatial                                             N
+                                                                         Reshaped Act.                                                          N
+dimensions of the activations. Eight 8-bit integers (having been                   W                                           Reshaped Act.
+decompressed using JPEG) are loaded and split among the                                                                            W
+                                                                                                        1st Cache                                   1st Cache
+SPEs ( 6 ) and converted back to 32-bit floating-point values.                                             Line                                        Line
+                                                                                                                    ⋯                                           ⋯
+                                                                         NCH
+
+
+
+
+The values are multiplied by 1/sc ( 3 ) and concatenated before
+                                                                                                    ⋯                                           ⋯
+                                                                                                                         NCH
+
+
+
+
+being sent to the GPU crossbar ( 7 ).
+   SFPR has some similarities to DPR [13] and BFP [32].
+                                                                                   ⋯
+                                                                                                                        NCH
+                                                                                                                        Pad
+SFPR reduces hardware area versus DPR by converting to 8-                              W Pad
+bit integers instead of floats. The channel-wise scaling of BFP                                Alignment Buffer                            Alignment Buffer
+is similar to SFPR, however, SFPR adds scale normalization,
+                                                                            8
+which allows for better utilization of the integer data type.
+                                                                                                        32                       Block 1 Block 2 Block 3 Block 4
+C. Alignment Buffer
+   The alignment buffer is a structure designed to convert              Fig. 12: Memory layout and padding examples. Colors cor-
+between the linear address space and the 8×8 blocks (H ×W )             respond to different 8 × 8 JPEG blocks and padding. White
+required by JPEG. As the DCT is a 2D operation, it requires             outline: First cache block boundary, Black outline: Original
+that all 64 elements in a block be available before processing.         activation tensor boundary.
+the activation tensor has W ≤ 32. If W ≤ 32, eight sequential                                 0
+                                                                                                  1B                                         1D DCT 1
+                                                                                                                                                         0
+                                                                                              1                                                          4
+cache lines are loaded, containing exactly four JPEG blocks                           8B      2
+                                                                                                                               6
+                                                                                                                                                         2   8B
+
+
+
+
+                                                                   Alignment Buffer
+                                                                                              3                                                          6
+(Fig. 12a and 12b). If W > 32, eight cache lines with a                                       4
+                                                                                              5
+                                                                                                                                                         7
+                                                                                                                                                         3
+                                                                                              6                       1                                  5
+stride of W are loaded (not shown). To force alignment, we                                                        3
+
+
+
+
+                                                                                                                                                                       SH
+                                                                                              7                                                          1
+
+zero pad the input activations’ width up to a multiple of the                                                                                                     3
+                                                                                                                                             1D DCT 8
+JPEG block width, eight elements (W pad, Figure 12a). Rather
+                                                                                                  64B                                            64B
+than padding the height of each activation channel, we instead                                                    Transpose                                       >>
+pad a reshaped activation. The 4D tensors, RN ×C×H×W , are
+                                                                       Symbol Key:                                                    n
+reshaped to a 2D tensor, RN CH×W , and padded along the
+reshaped dimension (N CH pad, Figure 12b). Reshaping re-           Fig. 13: The JPEG-ACT 2D DCT unit. 1D DCT is reproduced
+quires no data movement as only the indices are changed, and       from the LLM fast DCT [52]. Bottom: DCT algorithm building
+padding in this manner requires no framework modifications.        blocks with cn = cos(nπ/16), sn = sin(nπ/16).
+   Padding increases the memory footprint of the activations
+and causes a performance overhead, however, this increase
+is usually small. Padding could be performed at the hard-          implementation with a two-pass structure and four pipeline
+ware level, however, this introduces additional hardware and       stages.
+unaligned access overheads. It is preferable to have N ∈
+8, 16, 32, ... due to warp sizing on GPUs, which results in        E. DIV and RLE (JPEG-BASE)
+no N CH padding. Similarly, activation tensors with W ∈               JPEG-BASE uses a hardware implementation of the JPEG
+8, 16, 32, ... result in no W padding. Out of the datasets         standard quantization and coding stages. DIV quantization is
+and networks this work examines, only ResNet18/ImageNet            a simple division by the DQT, and RLE coding combines run-
+and ResNet50/ImageNet [3] require padding, with a storage          length encoding and Huffman coding. We implement the DIV
+overhead of 6.4% for H, W padding, and 3.0% for N CH, W            unit as a parallel multiplier, and use designs from OpenCores
+padding on ResNet50. These overheads are low as most               for RLE (encoding) [53], and RLD (decoding) [54]. Hardware
+activation storage is in the widest layers of the network,         is duplicated as necessary to meet throughput requirements.
+making the relative size of the padded elements small.
+   The alignment buffer is designed with one 8B read/write         F. SH and ZVC (JPEG-ACT)
+port, and one 64B read/write port. During compression, the
+                                                                      The JPEG standard was designed for software compression
+SFPR unit may perform 8B writes, while the DCT and other
+                                                                   of images. We developed the shift (SH) and ZVC back-end,
+compression units perform 64B reads. Once the first JPEG
+                                                                   replacing steps from the standard JPEG algorithm to reduce
+block has been loaded, the DCT stage proceeds until all 4
+                                                                   hardware overheads and improve compression on activations.
+blocks have been read (4 cycles) and the buffer is freed for
+                                                                   SH quantization is designed to remove the multipliers used
+use by the next set of blocks. During decompression, roles are
+                                                                   in the DIV stage of JPEG-BASE. ZVC coding [21] is used
+reversed, with 64B writes from the decompression pipeline,
+                                                                   because of our observations that activation frequency distribu-
+and 8B reads by the SFPR unit. Structuring allows us to
+                                                                   tions vary drastically from images. SH and ZVC, combined
+maintain fewer read and write ports on the buffer.
+                                                                   with SFPR and the DCT, compose the JPEG-ACT accelerator.
+D. Discrete Cosine Transform                                          SH is motivated by our observations that exact quantization
+                                                                   is often unnecessary. By switching the division to a shifting
+   The DCT unit used by JPEG-BASE and JPEG-ACT is
+                                                                   operation (Figure 14), the area associated with the quantization
+implemented by utilizing eight 8-point 1D DCT units (Figure
+                                                                   operation can be reduced by 88%. This has the effect of limit-
+13). We use the well known 8-point DCT of Loeffler et al. (the
+                                                                   ing DQT values to powers of 2. In compression mode, 64 right
+LLM DCT) [52] due to its ease of pipelining, and efficient use
+                                                                   shift operations are performed in parallel. In decompression
+of multipliers. The LLM implementation requires 11 multipli-
+                                                                   mode, the right shifts are replaced by left shifts. SH comes at
+cations, and 29 additions for each 8-point DCT, resulting in 88
+                                                                   the expense of having only eight available quantization modes
+multipliers for the JPEG-ACT DCT. We implement the JPEG-
+                                                                   for each frequency. When performing activation compression,
+ACT DCT as two passes through the 1D DCT units. After
+computing the DCT along the first dimension, the block is
+transposed and processed again for the DCT along the second                                                  log(DQT) 64x3
+                                                                                                  64B                                      64B
+dimension. Each pass through the unit takes four cycles to
+                                                                                           DCT
+
+
+
+
+                                                                                                                                                 ZVC
+
+
+
+
+                                                                                                        1B                         1B                  Compr.
+complete. After being transformed by the 2D DCT, the block                                                   >>
+                                                                                                                          ⋯
+                                                                                                                              SH 64
+                                                                                                                  SH 2
+
+
+
+
+is sent to the DIV unit for JPEG-BASE (not shown) or the                                                     <<                                        Decompr.
+                                                                                           iDCT
+
+
+
+
+                                                                                                                                                 ZVD
+
+
+
+
+SH unit for JPEG-ACT (right, Figure 13 and Section III-F).                                        64B
+                                                                                                        1B SH 1                       1B
+                                                                                                                                           64B
+
+   The iDCT unit is fashioned similarly to the DCT unit. In
+brief, eight 8-point iDCT units are combined with a normal-        Fig. 14: Shift (SH) unit showing 64 parallel units. The log
+izing shift stage. The stages are inverted relative to the DCT,    DQT has 64, 3-bit outputs. Colored arrows indicate compres-
+i.e. multipliers become dividers, etc. This results in a similar   sion and decompression paths.
+we observe that fewer quantization modes are sufficient as the                          push bytes signal. When the IFIFO fill is greater than 128B,
+individual effect of single frequencies is reduced (Section IV).                        128B is popped from the head of the IFIFO and the filled
+   We use ZVC to compress the sparse result of the SH stage.                            packet is sent to the DMA unit ( 4 ). As pop operations are
+After the DCT and quantization, images have most zeros                                  always 128B, the IFIFO tail location is always at the 0th or
+at high frequency values (Figure 2). Conversely, activations                            128th byte.
+display a flatter profile, with zeros randomly distributed across                         The splitter unit operates during the backward pass (Figure
+mid and high frequencies (Figure 2). Thus, ZVC has a higher                             15b). 128B packets from the DMA are pushed onto a 256B
+compression than RLE on frequency domain activations.                                   Output FIFO (OFIFO, 5 ). Eight bytes, representing the mask
+   The modifications of SH and ZVC decrease hardware area                               of the next block to be read, are peeked from the front of
+by 1.5× (Section VI-F), and increase compression by up to                               the OFIFO ( 6 ). The mask is used to calculate the number of
+1.4× (Section VI-C).                                                                    bytes to pop from the OFIFO in the next cycle ( 7 and 8 ).
+                                                                                        As collection is deterministic, the distribution of blocks from
+G. Collector and Splitter                                                               the splitter occurs with the same round-robin policy ( 9 ).
+   The collector and splitter units are required to convert                               By utilizing a collector and splitter, multiple CDUs can be
+between the multiple CDU data streams and the single PCIe                               used while avoiding issues with inter-cache communication.
+DMA data stream. The collector joins the variable-sized
+                                                                                                      IV. O PTIMIZING C OMPRESSION
+streams from the CDUs into a single stream. The splitter splits
+the PCIe stream by calculating and tracking the number of                                  The JPEG DQTs for images (jpeg60, jpeg80, etc.) were
+bytes in each block. Both the collector and splitter connect                            created by extensively studying human perception, however,
+directly to the PCIe DMA unit.                                                          prior work indicates that CNNs have a different frequency
+   The scheduling policy for interleaving CDUs can have a                               sensitivity [55]. Optimization is performed by first defining
+large impact on collector and splitter designs, hence it needs                          metrics for approximating network convergence and compres-
+to be addressed first. The collector and splitter operate at                            sion, and the creation of an objective function (Figure 9). This
+a rate of one 8 × 8 block per cycle (Figure 15). The load                               results in a significantly higher activation compression rate
+or store rate to the GPU crossbar is one block per eight                                with similar error relative to a JPEG DQT for images.
+cycles per CDU. Hence, the entire JPEG-ACT accelerator will                                Network convergence is currently a poorly understood topic
+always be bottlenecked by either the PCIe interconnect at low                           [56]. However, an efficient way of measuring convergence is
+compression rates or the crossbar link at high compression                              required to optimize the JPEG DQT. There are no objective
+rates. As the CDU processing is 8× faster than the crossbar                             functions to gauge the final accuracy of a network without
+rate, we use a simple round-robin scheduling of the CDUs                                training. Therefore, we choose to maintain accuracy, rather
+accomplished with a simple mux (Figure 15), i.e. CDUs are                               than attempting to maximize accuracy.
+scheduled in order with one cycle each. This also solves the                               The effect of JPEG compression on training can be under-
+issue of splitting, as streams are deterministically interleaved.                       stood by considering a single layer of a network during train-
+   The collector unit operates during the forward pass (Figure                          ing, with reshaped and padded activations, x ∈ RN CH×W , and
+15a). One CDU writes to the collector on each cycle with a                              weights, w. For one iteration of backprop and no compression,
+round-robin policy ( 1 ). The ZVC mask is summed to obtain                              output activation and weight gradient are calculated as y =
+the total number of non-zero bytes in the block ( 2 ). The                              w ◦ x, and ∇w = ∇y ◦ x, respectively, where ∇y is the output
+primary structure for aligning non-zero values is the 256B                              activation gradient, and ◦ is a generic tensor dot product. If
+Input FIFO (IFIFO, 3 ). The IFIFO is designed to allow a                                the iteration is repeated using JPEG activation compression,
+variable-sized push operation from 0B to 72B, indexed by the                            the approximate weight gradient, ∇w∗ , is calculated as:
+                                                                                                                                          
+                                                                                                        q = qij = [DCT(x)ij /DQTuv ]                 (6)
+                                                                                                       x∗ = iDCT( qij DQTuv )
+                                                                                                                               
+ a)     CDU 1      ⋯ CDU 4                    b)               CDU 1      ⋯ CDU 4                                                                    (7)
+      64B         8B                 1                    64B        8B             9              ∇w∗ = ∇y ◦ x∗                                     (8)
+                                  sum
+                                                                 {vals, mask}
+                                                                                        where u, v ≡ i mod 8, j mod 8, [...] is the round-to-nearest
+            {vals, mask}
+                                     +8                                                 function, q ∈ ZN CH×W is the quantized frequency matrix,
+                  3  72B                                   7           8 72B
+                               push_bytes
+                                              pop_bytes         7                       and x∗ is the recovered activation.
+                                 7        2
+                  256B                             +8                    256B              The tensor dot product is a linear operation, hence the error
+                              OFIFO                             6               IFIFO
+                                                   sum
+                                                             8B                         relative to uncompressed can be expressed as:
+              4                                           front_8bytes     128B 5
+                       128B                                                                             ∇w∗ − ∇w = ∇y ◦ (x∗ − x)                     (9)
+                  DMA                                                    DMA
+                                                                                           Identical convergence to uncompressed is achieved as the
+Fig. 15: a) Collector and b) Splitter units for aggregating and                         error approaches zero. This can be accomplished by minimiz-
+splitting compressed streams. Pipeline registers and control                            ing the L2 activation error, using Eqn. 9 and a first order
+signals inserted as necessary.                                                          approximation: k∇w − ∇w∗ k ∝ kx − x∗ k.
+   To form the global objective function, a measure of com-                                               jpeg80       optL                                         optH        optL5H
+                                                                                               100                                                                                       VGG
+pression is also required for the optimization procedure. We                                                                                                        4
+                                                                                               10 1
+
+
+
+
+                                                                                                                               Compr. Act. Entropy (H, bits/act.)
+use the Shannon entropy (H, Eqn. 11) of the quantized
+                                                                                                                                                                    2
+frequency coefficients (q), which represents the minimum bits
+
+
+
+
+                                                                   Recovered Act. Error (L2)
+required per activation. This, combined with the average L2                                    10 2                                                                 0
+error per activation (L2 ), form the objective function, O:                                    100                                                                                  ResNet50
+                                                                                               10 1                                                                 4
+                                −1          ∗
+           L2 = (N CHW )             kx − x k              (10)
+                                                                                               10 2                                                                 2
+                   m−1
+                  2 X−1
+                                                                                               10 3                                                                 0
+            H=              P (q = v)log2 (P (q = v))      (11)                                100
+                  v=−2m−1                                                                                                                                           4                    WRN
+                                                                                               10 1
+            O = (1 − α)λ1 H + αλ2 L2                       (12)                                                                                                     2
+                                                                                               10 2
+where m = 8 is the quantization bit width, P (q = v) is the                                    10 3                                                                 0
+probability that q = v, determined by counting the number                                             0   5    10 15      20                                            0   5    10 15     20
+                                                                                                              Epoch                                                             Epoch
+of occurrences of v in q, and λ1 = 10 and λ2 = 10000
+are normalizing scaling factors. α is a hyper-parameter that               Fig. 17: Activation error and entropy for JPEG-BASE with
+controls the rate/distortion trade-off.                                    various DQTs on CIFAR10.
+   We minimize O with respect to the DQT for all convolution
+layers using 240 example activations from a generator network
+                                                                           The values of α for optH and optL were chosen as they have
+with frozen weights, ResNet50/CIFAR10 trained for 5 epochs.
+                                                                           a similar error to the jpeg80 and jpeg90 DQTs. This error
+The example activations are used to calculate L2 , H, and O
+                                                                           range was observed to be approximately where a decrease in
+for a given DQT. SGD is used as an optimizer (lr = 2.0,
+                                                                           accuracy begins.
+p = 0) with DQT gradients calculated using forward finite
+                                                                              We examine how compression error and entropy vary over
+difference (difference of 5). The first of the 64 DQT parame-
+                                                                           the course of training by evaluating each DQT on snapshots of
+ters, representing the activation mean, is fixed to 8 to prevent
+                                                                           the networks at different epochs (Figure 17). Activation error
+instability in the batch normalization parameters.
+                                                                           is highest in the first epochs for ResNet50 and WRN (Figure
+   We examine the rate/distortion trade-off for SFPR and
+                                                                           17, left), which is a consequence of weight decay. However,
+different JPEG DQTs to determine the efficacy of optimization
+                                                                           we observe that after the first 5 epochs, compression remains
+(Figure 16). Optimizing the DQTs for activation compression
+                                                                           constant. This is attributed to stable activation distributions
+results in lower error for the same compression than both
+                                                                           from batch normalization [24], combined with the scale nor-
+SFPR and JPEG-BASE with image DQTs, and decreases
+                                                                           malization of SFPR. We observe that these trends in error and
+entropy by 1 bit for the same error compared to image DQTs
+                                                                           entropy continue for the remainder of training.
+(optH vs. jpeg80, Figure 16).
+                                                                              The first epochs of training are critically important to the
+   Tuning of the DQT for the desired compression rate and
+                                                                           convergence of CNNs [57]. To address the critical first epochs,
+error is controlled using α, hence we select two values repre-
+                                                                           we propose a piece-wise approach to selecting DQTs, optL5H
+senting low and high compression variants, optL (α = 0.025)
+                                                                           (Figure 17). optL5H uses the optL DQT for the first 5 epochs
+and optH (α = 0.005), respectively. As α increases, a higher
+                                                                           of training, then switches to the optH DQT for the remainder
+cost is placed on L2 activation error, resulting in the error
+                                                                           of training. This avoids high errors in the critical period.
+decreasing from 0.10 to 0.02 with optH vs. optL (Figure 16).
+                                                                                                                   V. M ETHODOLOGY
+                                                                              We compress the activations in each CNN according to layer
+                                                                           type and dimensions (Table II). The use of BRC is determined
+                                                                           by whether a ReLU activation is followed by a conv layer,
+                     optH
+                                                                           hence they are divided by subsequent layer. Sum refers to
+                       jpeg60                                              dense activations produced by the addition of two activations.
+                                     SFPR (3-bit)                          JPEG compression is used on conv and sum activations with
+                                         jpeg80                            size ≥ 8, due to the 8 × 8 block size of the algorithm. We do
+                                                    optL
+                                                                           not use JPEG on the final four convolutions, or fully connected
+                                                                           layers, due to their small activation size.
+                                                                              Datasets and networks are selected from a variety of net-
+                                                                           work types and CNN applications. Extremely large networks,
+Fig. 16: Rate/distortion trade-off for SFPR (2-, 3-, and 4-bit),           e.g. GPIPE, are not examined in this work due to high
+and JPEG-BASE with image DQTs (jpeg40, 60, 80, and 90)                     memory requirements [9]. We evaluate JPEG-ACT using the
+and optimized DQTs (α = 0.001, 0.005, 0.01, and 0.025).                    CIFAR10 [58], ImageNet [7], and Div2k [59] datasets. We
+Based on ResNet50/CIFAR10 trained for 5 epochs.                            use six image classification CNNs: VGG-16 (VGG) [27],
+TABLE I: Compression rate trade-offs. Compression ratios are bracketed, bolded values indicate highest for lossy methods.
+                 Baseline     cDMA+       GIST           SFPR               JPEG-BASE                                            JPEG-ACT
+                                          8-bit          8-bit          jpeg80      jpeg60                          optL           optH             optL5H
+   CIFAR10       % Top-1 Val. Accuracy (Compression ratio)
+   VGG            92.1       - (1.5x)   92.7 (6.1x)    92.0 (4x)    91.4 (7.4x)                  89.0 (8.3x)     92.8 (9.4x)     91.9 (12.0x)     92.4 (11.9x)
+   ResNet50       94.5       - (1.1x)   94.4 (4.1x)    94.5 (4x)    93.6 (5.1x)                  93.0 (6.0x)     94.4 (5.2x)      93.8 (7.6x)      94.4 (7.5x)
+   ResNet101      94.7       - (1.1x)   94.4 (4.1x)    94.7 (4x)    94.0 (5.0x)                  92.8 (5.8x)     94.8 (5.0x)      94.0 (7.2x)      94.5 (7.2x)
+   WRN            95.4       - (1.6x)   95.8 (5.6x)    95.2 (4x)    92.6 (6.2x)*                91.9 (7.2x)*     95.7 (8.1x)     91.8 (11.0x)*    94.2 (10.9x)
+   ImageNet      % Top-1 Val. Accuracy (Compression ratio)
+   ResNet18       67.8       - (1.2x)   66.9 (3.6x)    67.9 (4x)      67.4 (5.7x)                66.6 (6.4x)     67.6 (6.1x)      66.9 (7.3x)     67.3 (7.2x)
+   ResNet50       71.7       - (1.2x)   68.5 (3.7x)    71.4 (4x)      71.8 (5.3x)                69.8 (6.1x)     71.8 (5.1x)     28.9 (6.0x)*     71.6 (5.9x)
+   Div2K         Val. PSNR (Compression ratio)
+   VDSR            35.6     - (1.3x)   34.8 (4.0x)      35.5 (4x)     35.5 (5.9x)                35.3 (6.4x)     35.5 (8.2x)      35.4 (9.2x)     35.4 (9.1x)
+   Average       % Change from Baseline (Compression ratio)
+   All Models       -       0 (1.3x)   -1.07 (4.5x)   -0.12 (4x)    -0.87 (5.8x)                 -2.27 (6.6x)   +0.07 (6.7x)     -9.58 (8.6x)     -0.38 (8.5x)
+                                                             ∗ run failed to converge
+
+
+
+
+TABLE II: Compression selection by activation type.
+SD=SFPR+DCT                                                                                    0.0     cDMA+                             SFPR optL
+
+
+                                                                          Avg. Accuracy/PSNR
+                                                                                               0.5                                                 optL5H
+
+
+                                                                             Change (%)
+ Method             conv or          ReLU           ReLU    pool or
+                      sum          (to other)     (to conv) dropout
+                                                                                               1.0                              GIST        jpeg80
+ cDMA+               None                           ZVC
+                                                                                                          Lossless
+ GIST                DPR              BRC              DPR+CSR                                 1.5        Precision Reduction
+ SFPR                                  SFPR                                                               JPEG-BASE
+                                                                                               2.0        JPEG-ACT
+ JPEG-BASE
+ JPEG-ACT
+                SD+DIV+RLE ∗
+                SD+SH+ZVC ∗
+                                      BRC
+                                      BRC
+                                                       SFPR
+                                                     SFPR+ZVC
+                                                                                                                                                 jpeg60
+                                                                                                 1.0             1.5          2.0           2.5                  3.0
+                ∗ for N CH, W ≥ 8, 8, otherwise SFPR.
+                                                                                                                 Performance (relative to vDNN)
+                                                                                        Fig. 18: Percentage accuracy loss vs. relative speedup.
+Wide ResNet (WRN) [25], and ResNet18, 50, and 101 [3].
+Networks are unmodified from the original sources [22], [60].                   We implement the JPEG-ACT accelerator as RTL and
+Additionally, we examine JPEG-ACT on super-resolution with                   synthesize using Synopsys Design Compiler to evaluate tim-
+VDSR [61], which is modified to use 64 × 64 random crops                     ing, area, and power requirements. Our synthesis targets the
+and batch normalization.                                                     interconnect clock frequency, and 45nm technology using the
+   We implement a functional simulation of each method in                    FreePDK45 design library [62]. Results are scaled to 15nm, as
+Chainer [22] to examine compression and its effects on trained               the 15nm library is no longer available, and 50% wire overhead
+neural network accuracy. The methods are implemented as                      added in a similar manner to prior works [21], [63].
+CUDA code that extends the framework. We skip lossless
+compression during functional simulation, instead calculating                                                     VI. E VALUATION
+compression ratios offline with a batch size of 8.                           A. Overall
+   Performance simulation uses GPGPU-Sim [45], [46], con-                      Figure 18 plots percentage change in accuracy versus perfor-
+figured to simulate an NVIDIA Titan V GPU [47], and PCIe                     mance improvement. The two JPEG-ACT variants, optL and
+3.0 with an effective transfer rate of 12.8GB/s (Figure 7a)                  optL5H achieve better performance gains for a given level of
+[19]. We model boost clocks of 1455MHz, 40 Streaming                         accuracy loss versus the alternatives considered in this study.
+Multiprocessors, an interconnect capable of 32B/cycle bi-
+directional bandwidth, and 850MHz HBM. Whole-network                         B. Compression and Accuracy
+performance is assessed by a microbenchmark, programmed                         We train all networks under compression and report the best
+in C++, CUDA, cuDNN, cuSPARSE, of three CNR blocks                           validation score, i.e. the Top-1 accuracy or Peak Signal-to-
+sampled from each network at a batch size of 16, as full                     Noise Ratio (PSNR), and average network compression ratio
+networks lead to prohibitive simulation requirements. A warm-                (Table I). ImageNet accuracies are lower (-4.2%) than the
+up of one ReLU is used to avoid cold start misses in the GPU                 original work [3], [64] as we use a more CPU-efficient aug-
+cache. As source code for GIST is not publicly available we                  mentation procedure and report the 1-crop validation instead
+reimplemented it both for performance (CUDA and cuSparse)                    of the 10-crop test accuracy.
+and functional (Chainer and CUDA) simulation. This includes                     cDMA+ is lossless, resulting in no accuracy change, how-
+the DPR, BRC, in-place optimizations and Sparse Storage                      ever, it has a low compression ratio of 1.3×. We observe ReLU
+Dense Compute, a Compressed Sparse Row (CSR) variant.                        and dropout compression ratios of 2.1× and 3.9×, similar to
+those of Rhu et al. [21]. Networks with batch normalization              Activation Type:            sum        ReLU     dropout        conv
+have up to 60% dense activations, leading to the low overall                  Baseline
+compression (Figure 19).                                                       cDMA+
+                                                                             GIST 8-bit
+   Training with GIST results in a significant decrease in                   SFPR 8-bit
+accuracy/PSNR when compared to SFPR (-1.07× vs. -0.12×),            JPEG-BASE (jpeg80)
+predominantly in ResNets and VDSR. Jain et al. also observed        JPEG-BASE (jpeg60)
+                                                                        JPEG-ACT (optL)
+this issue with VGG/ImageNet and 8-bit DPR [13]. We hy-                JPEG-ACT (optH)                                             VGG
+pothesize this is due to the truncation of small valued channels.
+We observe that the minimum per-channel range of activations                  Baseline
+in these networks is 0.16. With this range, 15% of the 256                     cDMA+
+                                                                             GIST 8-bit
+available 8-bit DPR values are utilized, while 66% are utilized              SFPR 8-bit
+for SFPR. This could be avoided at the expense of 2× lower          JPEG-BASE (jpeg80)
+compression by using 16-bit GIST [13]. SFPR generally has a         JPEG-BASE (jpeg60)
+                                                                        JPEG-ACT (optL)
+higher integer utilization than DPR due to scale normalization,        JPEG-ACT (optH)                                        ResNet50
+resulting in lower activation error and better accuracy.                                    0.0    0.2    0.4      0.6       0.8      1.0
+   GIST compression ratios are significantly higher on net-                                   Memory Consumption (Relative to Baseline)
+works that contain dropout (VGG, Figure 19, and WRN)
+versus those that do not (ResNets, Figure 19, and VDSR).            Fig. 19: Activation footprint breakdown by activation type for
+The CSR method used by GIST first compresses using 8-bit            CIFAR10 models.
+DPR, then extracts non-zero values and their column index.
+With the optimizations made by Jain et al., this requires the
+storage of an 8-bit DPR value and an 8-bit column index per         contribution of 1.1× to total compression (Figure 19).
+non-zero value [13]. When sparsity is <50%, size increases             Networks that do not converge were examined and found to
+over DPR alone, which is observed for ResNets on ImageNet           have diverging activation distributions, i.e. a diverging mean
+(Table I), making CSR a poor choice for networks without            or standard deviation over training. We suspect that activation
+dropout. CSR is advantageous when the compressed values             compression is affecting the activation mean, causing diver-
+are larger than the indices, i.e. with 16-bit DPR.                  gence of the mean-dependent batch normalization parameters.
+   JPEG-BASE provides improved compression over cDMA+,              Decreasing the compression of the first DQT coefficient, relat-
+GIST and SFPR, however, a lower accuracy than SFPR. WRN             ing to the mean, can reduce this behavior. Similarly, annealing
+is most sensitive to lossy compression, as it does not converge     for the first 5 epochs with lower compression (optL5H, Table
+with jpeg80. This non-convergence (* in Table I) is observed        I) also prevents divergence, implying that this is made worse
+as a sudden decrease in accuracy during training, which can         by rapid changes early in training. More investigation into the
+be used as a warning sign that the compression is too high.         training dynamics of CNNs under error is required to fully
+For jpeg80, this is only observed with WRN, and with an             understand this issue.
+average accuracy change of -0.54% across the remaining
+networks. Although jpeg60 provides high compression ratios,         C. Quantization and Coding Modifications
+the decrease in accuracy for it and lower quality settings (e.g.,      To isolate the effects of DQT optimization, quantization,
+jpeg40) is too severe to warrant use.                               and coding, we evaluate each DQT with each JPEG back
+   The modifications to create JPEG-ACT provide both a              end and measure the conv and sum compression ratio (Table
+significant increase in accuracy/PSNR and compression. The          III). The jpeg80 DQT has a significantly lower compression
+optimization procedure of optL reduces activation error to          than optH, highlighting the effectiveness of the optimization
+obtain a similar or better accuracy than SFPR, and the baseline     procedure to increase compression (Table III). However, this
+(Table I). Small decreases in error are likely due to CNN           high compression is at the expense of accuracy (Table I).
+training being a stochastic process. optH causes divergence for     Training with optL5H results in a compression ratio similar
+WRN/CIFAR10 and ResNet50/ImageNet, however, this is not             to optH while maintaining accuracies similar to optL (Tables
+observed with the piece-wise technique, optL5H. Annealing           I and III). Using optL5H over jpeg80 increases conv and sum
+the networks for the first 5 epochs using optL, then switching      compression by >1.38× for any back end.
+to optH, provides an average compression ratio of 8.5× while
+keeping the accuracy change at -0.38%, less than half that
+of GIST. JPEG-ACT with optL5H increases compression over            TABLE III: ResNet50/CIFAR10 conv+sum compression for
+JPEG-BASE with jpeg80 both by having a higher quantization          various DQTs (top) and JPEG back ends (left)
+from the DQT, and by using ZVC on sparse activations.                                       jpeg80     jpeg60   optL   optH    optL5H
+Higher quantization has a larger effect on sum activations,               DIV+RLE            5.29       6.43    3.52   7.79      7.72
+with conv activation compression remaining mostly unchanged               SH+RLE             5.26       6.32    3.99   7.43      7.38
+(Figure 19). ZVC can compress ReLU and dropout activations                DIV+ZVC            5.80       6.52    4.62   8.31      8.24
+to further decrease their size after SFPR, with a relative                SH+ZVC             5.77       6.46    5.08   8.01      7.96
+Performance (vDNN=1)   4                                                                                                    4.5                      vDNN
+                                                                                                                                                     cDMA+
+                       3                                                                                                                             GIST 8-bit
+
+                       2                                                                                                                             SFPR 8-bit
+                                                                                                                                                     JPEG-BASE (jpeg80)
+                                                                                                                                                     JPEG-BASE (jpeg60)
+                       1                                                                                                                             JPEG-ACT (optL)
+                                                                                                                                                     JPEG-ACT (optH)
+                       0                                                                                                                             JPEG-ACT (optL5H)
+                             VGG     ResNet50   ResNet101        WRN     ResNet18                 ResNet50        VDSR            Average            Infinite Memory
+                           CIFAR10   CIFAR10     CIFAR10       CIFAR10   ImageNet                 ImageNet        DIV2K
+                                                            Fig. 20: Relative performance to vDNN.
+
+
+        The use of ZVC over RLE increases the compression                                         DMA-side # CDUs:                   1          2           4          8
+                                                                                                  Cache- + DMA-side # CDUs:          48+4
+                                                                                              1.0
+
+
+
+
+                                                                               Relative Runtime
+     ratio by 1.12×. In JPEG-BASE, RLE is used because high-
+     frequency information has a low magnitude, leading to most
+     high-frequency values being zero after quantization. CNN                                 0.5
+     activations, however, have much larger high-frequency modes,
+     which are quantized to non-zero values. RLE performs poorly
+                                                                                              0.0
+     with randomly distributed zeros in contrast to ZVC. Addition-                                        1x           2x           4x          8x              12x
+     ally, the optimized DQTs have a flatter quantization profile                                                             Compression ratio
+     when compared to image DQTs. This low-frequency quanti-                     Fig. 21: Performance when changing the number of CDUs on
+     zation further randomizes zeros and is especially apparent in               ResNet50/CIFAR10 with a fixed compression ratio. Cache- +
+     the improvement of optL when using ZVC (1.3×).                              DMA-side refers to Cache-size SFPR CDUs, and DMA-side
+                                                                                 DCT+SH+ZVC CDUs.
+     D. Performance
+        Performance measurement is accomplished through micro-
+     benchmarking using CNR blocks with an optional dropout or                   ACT are caused by congestion on the GPU interconnect from
+     pooling layer. Due to simulation time and memory constraints,               the increase in DMA traffic. Despite this, JPEG-ACT obtains
+     we simulate three layers of each network (the first, middle,                2.61× performance versus vDNN.
+     and last), and use a batch size of 16. The algorithms used                     VDSR has 1.4× to 2.3× worse offload performance than the
+     are WINOGRAD, and WINOGRAD NONFUSED for 3 × 3                               other networks (Figure 20). VDSR has no dropout, pooling,
+     convolutions, and IMPLICIT GEMM and ALGO 0 for 1 × 1                        or bottleneck layers, however, the most important difference
+     convolutions. This is representative of software frameworks                 is that all activations have few channels and a large spatial
+     such as Chainer and Pytorch [46].                                           dimension. We have observed that cuDNN launches a different
+        GIST performance is strongly influenced by network                       set of compute kernels for VDSR, and hypothesize that the
+     structure (Figure 20). Poor performance on ResNet50 and                     method used has a lower compute density, resulting in poor
+     ResNet101 can be attributed to the presence of bottleneck                   offload performance.
+     layers [3], which involve 1 × 1 convolution to decrease the
+     number of channels. Bottlenecks involve up to 2048 channels,                E. CDU Count and Location
+     creating large activations with 9× fewer FLOPs than a sim-                     The effective offload rate available to JPEG-ACT is highly
+     ilarly sized 3 × 3 kernel. The non-zero scan in the cuSparse                dependent on the location and configuration of the CDUs in
+     dense2CSR conversion takes longer than a 1×1 kernel, in this                the GPU memory system. Most importantly, the number of
+     case, creating a large performance overhead.                                CDUs affects the available bandwidth into the GPU (Figure
+        By comparison, SFPR and JPEG-ACT display performance                     21). With DMA-side compression, there is little increase in
+     that is not network dependent. The SFPR-only design pro-                    performance over 1 CDU at 2× and 4× compression as the
+     vides 1.35× performance over GIST despite having a lower                    offload is bottlenecked by the PCIe offload rate. At 8× and
+     compression, primarily because CSR is slower than SFPR.                     12× compression, however, the bottleneck is removed, and
+     The PCIe bandwidth limitations are nearly eliminated by                     performance increases as CDUs are added. Performance for
+     JPEG-ACT with optL5H, giving a performance increase over                    12× compression increases by 1.08× when moving from 2
+     GIST of 1.59× and overhead of 1.13×. More consistent                        to 4 CDUs, but by less than 0.5% when moving from 4 to 8
+     performance is obtained by shifting the bottleneck to effective             CDUs. At this compression and number of CDUs, the memory
+     offload rate instead of compression throughput. Compression                 partitions become the bottleneck, preventing further increases.
+     increases that result from modifying JPEG for CNNs, improve                    We also examine the impact of moving the SFPR portion of
+     performance by 1.12× while decreasing the error change                      the CDU to the L2 cache in a combined Cache- and DMA-side
+     from baseline by 2.3× (JPEG-ACT optL5H vs. JPEG-BASE                        compression (Figure 21). In this configuration in the forward
+     jpeg80). We observe that the remaining overheads of JPEG-                   pass, values from the cache are immediately compressed by
+      TABLE IV: JPEG-ACT synthesis by component                     Stored activations can be removed entirely, either through
+        Component               Area (um2 )     Power (mW)        removing gradients [72] or by using reversible networks [12].
+        SFPR                            44924          34.3
+                                                                  These methods involve a much higher computational load than
+        DCT + iDCT                     229118         273.4       more conventional compression methods, as gradients [72]
+        Quantize (DIV)                  12507          14.4       or convolutional activations [12] need to be regenerated. In
+        Quantize (SH)                    1593           2.5       contrast to JPEG-ACT, this restricts the available layer types
+        Coding (RLE + RLD)             125890         176.0       of the network.
+        Coding (ZVC + ZVD)              21519          17.1
+        Collector + Splitter           173445         170.3                                VIII. C ONCLUSION
+        Crossbar (+3 ports)           2253427        1668.0
+                                                                     We have presented JPEG-ACT, a novel offload accelerator
+TABLE V: Designs comparison with buffers and 4 CDUs.              for CNN activation compression, and its fixed-point com-
+Crossbar excluded.                                                pression mechanism Scaled Fix-point Precision Reduction
+                                                                  (SFPR). Our results demonstrate JPEG-ACT can be effectively
+                   cDMA+       SFPR     JPEG-BASE     JPEG-ACT
+                                          (jpeg80)     (optL5H)   used on a wide variety of datasets and benchmarks, and
+  Power (W)         0.26       0.35         1.82          1.36
+                                                                  provides significantly higher compression ratios than the state-
+  Area (mm2 )       0.35       0.31         2.16          1.48
+                                                                  of-the-art. JPEG can be further tuned for CNNs, providing a
+  Compression       1.3x       4.0x         5.8x          8.5x    1.5× improvement in compression, while increasing trained
+  Offload (GB/s)    15.6       48.0         69.6         108.8    accuracy. Given hardware support, JPEG-ACT can be incor-
+                                                                  porated simply with any CNN architecture and framework
+
+SFPR, sent over the GPU interconnect, and compressed again                                     R EFERENCES
+by JPEG before the DMA unit. The minimum compression
+                                                                   [1] A. Krizhevsky, “Convolutional Neural Networks for Object Classifi-
+rate is 4× due to the mandatory use of SFPR. As there                  cation in CUDA,” University of Toronto, EECE1742S: Programming
+is one SFPR unit per memory partition, there are 48 SFPR               Massively Parallel Multiprocessors Using CUDA, April 2009.
+CDUs and 4 JPEG CDUs. This configuration has a high area           [2] A. Krizhevsky, I. Sutskever, and G. E. Hinton, “ImageNet Classification
+                                                                       with Deep Convolutional Neural Networks,” in Proc. Int. Conf. on
+overhead due to duplication of the SFPR units and results in a         Neural Information Processing Systems (NeurIPS), 2012.
+performance increase of 1% over a 4 CDU DMA-side design.           [3] K. He, X. Zhang, S. Ren, and J. Sun, “Deep Residual Learning for
+                                                                       Image Recognition,” in Proc. IEEE/CVF Conf. on Computer Vision and
+F. Synthesis                                                           Pattern Recognition (CVPR), 2016, pp. 770–778.
+                                                                   [4] T.-Y. Lin, P. Dollr, R. Girshick, K. He, B. Hariharan, and S. Belongie,
+   Power and area results for the individual JPEG-ACT compo-           “Feature Pyramid Networks for Object Detection,” arXiv:1612.03144
+nents (Table IV), indicate that the DCT is the most expensive          [cs], 2016.
+                                                                   [5] J. Yao, S. Fidler, and R. Urtasun, “Describing the scene as a whole:
+component of JPEG-ACT, followed by the required buffers.               Joint object detection, scene classification and semantic segmentation,”
+The overall area and power for each design are visible in Table        in CVPR, 2012, pp. 702–709.
+V. When compared to cDMA+, JPEG-ACT provides a signif-             [6] D. E. Rumelhart, G. E. Hinton, and R. J. Williams, “Learning internal
+                                                                       representations by error-propagation,” in Parallel Distributed Process-
+icant increase in effective PCIe bandwidth while maintaining           ing: Explorations in the Microstructure of Cognition, 1986.
+an area and power <1% of an NVIDIA Titan V GPU. This               [7] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei, “ImageNet:
+is even smaller relative to larger data center GPUs [65]. The          A Large-Scale Hierarchical Image Database,” in CVPR, 2009.
+modifications to the JPEG-ACT back end for CNNs reduce             [8] E. Real, A. Aggarwal, Y. Huang, and Q. V. Le, “Regularized Evolution
+                                                                       for Image Classifier Architecture Search,” in Proc. AAAI Conf. on
+overall area and power by 1.3× and 1.5× , respectively, while          Artificial Intelligence, 2019, pp. 4780–4789.
+increasing available PCIe offload bandwidth.                       [9] Y. Huang et al., “GPipe: Efficient Training of Giant Neural Networks
+                                                                       using Pipeline Parallelism,” in NeurIPS, 2019, pp. 103–112.
+                    VII. R ELATED W ORK                           [10] M. Tan and Q. Le, “EfficientNet: Rethinking model scaling for con-
+                                                                       volutional neural networks,” in Proc. Int. Conf. on Machine Learning
+   We compare favorably against the primary works examining            (ICML), 2019, pp. 6105–6114.
+activation storage during training, i.e. vDNN [19], cDMA          [11] T. Chen, B. Xu, C. Zhang, and C. Guestrin, “Training Deep Nets with
+                                                                       Sublinear Memory Cost,” arXiv:1604.06174v2 [cs], 2016.
+[21], and GIST [13]. However, there are many proposals
+                                                                  [12] A. N. Gomez, M. Ren, R. Urtasun, and R. B. Grosse, “The Reversible
+for compressing pre-trained neural networks to reduce costs            Residual Network: Backpropagation Without Storing Activations,” in
+at inference , which, unlike JPEG-ACT, do not decrease                 NeurIPS, 2017, pp. 2214–2224.
+activation storage during training [33]–[37], [66]–[70]. These    [13] A. Jain, A. Phanishayee, J. Mars, L. Tang, and G. Pekhimenko, “Gist:
+                                                                       Efficient Data Encoding for Deep Neural Network Training,” in Proc.
+methods include frequency transforms [68], [69] and precision          ACM/IEEE Int. Symp. on Computer Architecture (ISCA), 2018, pp. 776–
+reduction [33]–[37], [70]. Training networks with a reduced            789.
+precision (e.g. 1, 3, or 8 bits), while effective, requires       [14] G. Pekhimenko, V. Seshadri, O. Mutlu, P. B. Gibbons, M. A. Kozuch,
+                                                                       and T. C. Mowry, “Base-delta-immediate compression: practical data
+modification of the CNN framework, network architecture, and           compression for on-chip caches,” in Proc. ACM Int. Conf. on Parallel
+training schedule [33]–[37], which is not necessary with JPEG-         Architectures and Compilation Techniques (PACT), 2012, p. 377.
+ACT. Other works have examined reduced precision gradient         [15] M. Ekman and P. Stenstrom, “A robust main-memory compression
+                                                                       scheme,” in ISCA, 2005, pp. 74–85.
+storage for multi-GPU training, which does not decrease local     [16] E. Hallnor and S. Reinhardt, “A Unified Compressed Memory Hierar-
+memory consumption [71].                                               chy,” in HPCA, 2005, pp. 201–212.
+[17] R. B. Tremaine, P. A. Franaszek, J. T. Robinson, C. O. Schulz, T. B.            IEEE Int. Symp. on Performance Analysis of Systems and Software
+     Smith, M. E. Wazlowski, and P. M. Bland, “IBM Memory Expan-                     (ISPASS), 2009, pp. 163–174.
+     sion Technology (MXT),” IBM Journal of Research and Development,           [46] J. Lew et al., “Analyzing Machine Learning Workloads Using a Detailed
+     vol. 45, no. 2, pp. 271–285, 2001.                                              GPU Simulator,” in ISPASS, 2019, pp. 151–152.
+[18] B. Abali, H. Franke, Xiaowei Shen, D. Poff, and T. Smith, “Performance     [47] M. Khairy, J. Akshay, T. Aamodt, and T. G. Rogers, “Exploring Modern
+     of hardware compressed main memory,” in HPCA, 2001, pp. 73–81.                  GPU Memory System Design Challenges through Accurate Modeling,”
+[19] M. Rhu, N. Gimelshein, J. Clemons, A. Zulfiqar, and S. W. Keckler,              arXiv:1810.07269 [cs], 2018.
+     “vDNN: Virtualized deep neural networks for scalable, memory-efficient     [48] Z. Jia, M. Maggioni, B. Staiger, and D. P. Scarpazza, “Dissect-
+     neural network design,” in MICRO, 2016, pp. 1–13.                               ing the NVIDIA Volta GPU Architecture via Microbenchmarking,”
+[20] Y. Kwon and M. Rhu, “Beyond the memory wall: a case for memory-                 arXiv:1804.06826 [cs], 2018.
+     centric HPC system for deep learning,” in MICRO, 2018, pp. 148–161.        [49] B. Jacob, S. Kligys, B. Chen, M. Zhu, M. Tang, A. Howard, H. Adam,
+[21] M. Rhu, M. O’Connor, N. Chatterjee, J. Pool, Y. Kwon, and S. W.                 and D. Kalenichenko, “Quantization and training of neural networks for
+     Keckler, “Compressing DMA Engine: Leveraging Activation Sparsity                efficient integer-arithmetic-only inference,” in CVPR, 2018.
+     for Training Deep Neural Networks,” in Proc. IEEE Int. Symp. on High-      [50] H. Kim, H. Nam, W. Jung, and J. Lee, “Performance analysis of CNN
+     Performance Computer Architecture (HPCA), 2018, pp. 78–91.                      frameworks for GPUs,” in ISPASS, 2017, pp. 55–64.
+[22] S. Tokui et al., “Chainer: A deep learning framework for accelerating      [51] M. Abadi et al., “Tensorflow: A system for large-scale machine
+     the research cycle,” in Proc. ACM/SIGKDD Int. Conv. on Knowledge                learning,” in Proc. USENIX Symp. on Operating Systems Design and
+     Discovery & Data Mining. ACM, 2019, pp. 2002–2011.                              Implementation (OSDI), 2016, pp. 265–283.
+[23] A. Paszke et al., “Automatic differentiation in PyTorch,” in NeurIPS       [52] C. Loeffler, A. Ligtenberg, and G. Moschytz, “Practical fast 1-D DCT
+     Autodiff Workshop, 2017.                                                        algorithms with 11 multiplications,” in Proc. Int. Conf. on Acoustics,
+[24] S. Ioffe and C. Szegedy, “Batch Normalization: Accelerating Deep                Speech, and Signal Processing, 1989, pp. 988–991 vol.2, iSSN: 1520-
+     Network Training by Reducing Internal Covariate Shift,” in ICML, 2015.          6149.
+[25] S. Zagoruyko and N. Komodakis, “Wide Residual Networks,”                   [53] D. Lundgren, “JPEG Encoder Verilog,” 2009. [Online]. Available:
+     arXiv:1605.07146 [cs], 2016.                                                    https://opencores.org/projects/jpegencode
+[26] A. G. Howard, M. Zhu, B. Chen, D. Kalenichenko, W. Wang, T. Weyand,        [54] H. Ishihara, “JPEG Decoder,” 2006. [Online]. Available: https:
+     M. Andreetto, and H. Adam, “MobileNets: Efficient Convolutional                 //opencores.org/projects/djpeg
+     Neural Networks for Mobile Vision Applications,” arXiv:1704.04861v1        [55] I. J. Goodfellow, J. Shlens, and C. Szegedy, “Explaining and Harnessing
+     [cs.CV], 2017.                                                                  Adversarial Examples,” arXiv:1412.6572 [cs, stat], 2015.
+                                                                                [56] H. Li, Z. Xu, G. Taylor, C. Studer, and T. Goldstein, “Visualizing the
+[27] K. Simonyan and A. Zisserman, “Very Deep Convolutional Networks
+                                                                                     Loss Landscape of Neural Nets,” in NeurIPS, 2018, pp. 6389–6399.
+     for Large-Scale Image Recognition,” arXiv:1409.1556 [cs], 2014.
+                                                                                [57] E. Hoffer, I. Hubara, and D. Soudry, “Train longer, generalize better:
+[28] Y. Chen et al., “DaDianNao: A Machine-Learning Supercomputer,” in
+                                                                                     closing the generalization gap in large batch training of neural networks,”
+     MICRO, 2014, pp. 609–622.
+                                                                                     arXiv:1705.08741 [cs, stat], 2017.
+[29] Y.-H. Chen, T.-J. Yang, J. Emer, and V. Sze, “Eyeriss v2: A Flexible       [58] A. Krizhevsky, “Learning multiple layers of features from tiny images,”
+     Accelerator for Emerging Deep Neural Networks on Mobile Devices,”               Master’s thesis, Univ. of Toronto, 2009.
+     arXiv:1807.07928 [cs], 2018.                                               [59] E. Agustsson and R. Timofte, “Ntire 2017 challenge on single image
+[30] A. Delmas Lascorz et al., “Bit-Tactical: A Software/Hardware Approach           super-resolution: Dataset and study,” in CVPR Workshops, 2017.
+     to Exploiting Value and Bit Sparsity in Neural Networks,” in Proc. ACM     [60] S. Saito, “chainer-cifar10: Various CNN models including for CIFAR10
+     Int. Conf. on Architectural Support for Programming Languages and               with Chainer,” 2018, original-date: 2015-06-09T14:39:43Z. [Online].
+     Operating Systems (ASPLOS), 2019, pp. 749–763.                                  Available: https://github.com/mitmul/chainer-cifar10
+[31] J. Albericio, P. Judd, T. Hetherington, T. Aamodt, N. E. Jerger, and       [61] J. Kim, J. Kwon Lee, and K. Mu Lee, “Accurate Image Super-Resolution
+     A. Moshovos, “Cnvlutin: Ineffectual-Neuron-Free Deep Neural Network             Using Very Deep Convolutional Networks,” in CVPR, 2016, pp. 1646–
+     Computing,” in ISCA, 2016, pp. 1–13.                                            1654.
+[32] M. Courbariaux, Y. Bengio, and J. David, “Training deep neural net-        [62] J. E. Stine et al., “Freepdk: An open-source variation-aware design kit,”
+     works with low precision multiplications,” arXiv:1412.7024 [cs], 2014.          in Proc. IEEE Int. Conf. on Microelectronic Systems Education (MSE),
+[33] ——, “BinaryConnect: Training Deep Neural Networks with binary                   2007, pp. 173–174.
+     weights during propagations,” in NeurIPS, 2015, pp. 3123–3131.             [63] M. Martins, J. M. Matos, R. P. Ribas, A. Reis, G. Schlinker, L. Rech,
+[34] S. Wu, G. Li, F. Chen, and L. Shi, “Training and Inference with Integers        and J. Michelsen, “Open Cell Library in 15nm FreePDK Technology,”
+     in Deep Neural Networks,” in ICLR, 2018.                                        in Proc. Int. Symp. on Physical Design, 2015, pp. 171–178.
+[35] I. Hubara, M. Courbariaux, D. Soudry, R. El-Yaniv, and Y. Bengio,          [64] P. Mattson et al., “Mlperf training benchmark,” 2019.
+     “Binarized Neural Networks,” in NeurIPS, 2016, pp. 4107–4115.              [65] NVIDIA Corporation, “Tesla V100 Datacenter GPU: NVIDIA,”
+[36] M. Rastegari, V. Ordonez, J. Redmon, and A. Farhadi, “XNOR-Net:                 2018. [Online]. Available: https://www.nvidia.com/en-us/data-center/
+     ImageNet Classification Using Binary Convolutional Neural Networks,”            tesla-v100
+     in Proc. European Conf. on Computer Vision, 2016, pp. 525–542.             [66] S. Han, H. Mao, and W. J. Dally, “Deep Compression: Compressing
+[37] F. Li, B. Zhang, and B. Liu, “Ternary Weight Networks,”                         Deep Neural Networks with Pruning, Trained Quantization and Huffman
+     arXiv:1605.04711 [cs], 2016.                                                    Coding,” arXiv:1510.00149v5 [cs.CV], 2016.
+[38] D. Williamson, “Dynamically scaled fixed point arithmetic,” in Proc.       [67] F. N. Iandola, S. Han, M. W. Moskewicz, K. Ashraf, W. J. Dally,
+     IEEE Pacific Rim Conf. on Communications, Computers, and Signal                 and K. Keutzer, “SqueezeNet: AlexNet-level accuracy with 50x fewer
+     Processing, 1991, pp. 315–318.                                                  parameters and <0.5mb model size,” arXiv:1602.07360 [cs], 2016.
+[39] A. Robinson and C. Cherry, “Results of a prototype television bandwidth    [68] Y. Wang, C. Xu, S. You, D. Tao, and C. Xu, “CNNpack: Packing
+     compression scheme,” Proc. IEEE, vol. 55, no. 3, pp. 356–364, 1967.             Convolutional Neural Networks in the Frequency Domain,” in NeurIPS,
+[40] Y. Zhang, J. Yang, and R. Gupta, “Frequent value locality and value-            2016, pp. 253–261.
+     centric data cache design,” in ASPLOS, 2000, pp. 150–159.                  [69] C. Ding et al., “CirCNN: Accelerating and Compressing Deep Neural
+[41] G. K. Wallace, “The JPEG still picture compression standard,” IEEE              Networks Using Block-circulant Weight Matrices,” in MICRO, 2017, pp.
+     Transactions on Consumer Electronics, vol. 38, no. 1, 1992.                     395–408.
+[42] M. Brenon and C. Deltheil, “A lightweight and portable JPEG encoder        [70] E. Park, J. Ahn, and S. Yoo, “Weighted Entropy Based Quantization for
+     written in C.: Moodstocks/jpec,” 2018, original-date: 2012-01-06.               Deep Neural Networks,” in CVPR, 2017, pp. 7197–7205.
+     [Online]. Available: https://github.com/Moodstocks/jpec                    [71] Y. Lin, S. Han, H. Mao, Y. Wang, and W. J. Dally, “Deep Gradient
+[43] M. Rabbani, “JPEG2000: Image Compression Fundamentals, Standards                Compression: Reducing the Communication Bandwidth for Distributed
+     and Practice,” Journal of Electronic Imaging, vol. 11, no. 2, 2002.             Training,” arXiv:1712.01887 [cs, stat], 2017.
+[44] J. Aczl and Z. Darczy, On Measures of Information and Their Charac-        [72] M. Jaderberg, W. M. Czarnecki, S. Osindero, O. Vinyals, A. Graves,
+     terizations. Academic Press, 1975.                                              D. Silver, and K. Kavukcuoglu, “Decoupled Neural Interfaces using
+[45] A. Bakhoda, G. L. Yuan, W. W. L. Fung, H. Wong, and T. M. Aamodt,               Synthetic Gradients,” ArXiv e-prints, 2016.
+     “Analyzing CUDA workloads using a detailed GPU simulator,” in Proc.
+

@@ -1,0 +1,62 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                   Cong Guo, Chiyue Wei, Jiaming Tang, Bowen Duan, Song Han, Hai Li, and Yiran Chen
+
+
+combines them to produce the final output. The APE array has the             hardware-friendly framework for a fixed-length adaptive numer-
+same shape as the PPE, i.e., 𝑇 × 32 for 𝑇 -bit TranSparsity.                 ical data type. Olive [21] quantizes models by utilizing the space
+    As shown in Fig. 7 (a), we incorporate vector units (VPU) to             of normal values to accommodate outliers. Tender [36] decom-
+support operations beyond GEMM (e.g., de-quantization, softmax,              poses activation tensors along feature dimensions into sub-tensors,
+etc.), similar to previous studies [21, 23, 36]. According to the latest     with scale factors set to powers of two. BitVert [8] introduces bi-
+study [56], we utilize group-wise quantization to further improve            directional bit-level sparsity, ensuring at least 50% sparsity, and
+model accuracy. When the group size is 128, the vector unit applies          provides a bit-level binary pruning technique.
+an integer scale factor to re-scale the partial results for each 128/𝑇          Accelerator Implementation. We build a cycle-level simulator
+tile with 𝑇 -bit TranSparsity. Therefore, we can efficiently overlap         to analyze the performance of the Transitive Array. For other archi-
+the overhead.                                                                tectures, we use their open-sourced simulator, ANT [23], which all
+    TransArray inherently supports the mixed-precision design. First,        build on. The hardware architecture of both the Transitive Array
+for the weight tensor, the bit-slicing method decomposes arbi-               and the baselines is implemented using System Verilog. We synthe-
+trary bit-width weight tensors into binary matrices, making mixed-           size the RTL logic with Synopsys Design Compiler, utilizing ARM’s
+precision design inherently compatible with the TransArray design.           standard cell library in a commercial 28nm process to determine the
+For the activation tensor, since our processing elements (PEs) only          corresponding area and static/dynamic power consumption. We use
+use adders, it is straightforward to configure them for different            Cacti 7.0 to assess buffer area and power at 28nm. We maintained all
+bit widths. To support 8-bit activation, we employ a 12-bit Partial          baselines and the Transitive Array at the same 28nm process and a
+Product Engine (PPE) and a 24-bit Accumulation Processing Engine             frequency of 500MHz. We rewrite all baseline PE implementations
+(APE). Additionally, they can be easily split into two 6-bit PPEs and        according to their design to ensure a fair comparison. We evaluate
+two 12-bit APEs to support 4-bit activation.                                 most experiments with dynamic Scoreboard, except the Sec. 5.8, in
+                                                                             which we compare and explore the static and dynamic Scoreboard
+4.6     Scheduling                                                           using random and real data.
+                                                                                Benchmark. We run LLaMA versions 1, 2, and 3 [15, 51, 52]
+Due to the reordering of execution, we implement multiple double-            on the Wikitext dataset [43], using the perplexity (PPL) [5] of the
+buffering mechanisms to divide the computation into three stages:            generated sentences as the performance metric. Since TransArray’s
+(1) Dynamic Scoreboarding, (2) TPE array for prefix, and (3) APE             results depend on the data distribution of weights and activations,
+array for output.                                                            we extract all the model’s weights and activations and evaluate
+   First, Stages 2 and 3 utilize arrays of identical shapes to compute       them with our simulator. However, because TransArray requires
+the prefix and the final output, respectively. Specifically, TransRows       both activations and weights, resulting in an unacceptable memory
+with a prefix of distance 1 can complete the PPE and APE computa-            footprint trace, we only extract the first Transformer block with a
+tions within a single cycle. However, TransRows with distances > 1           prefill sequence length of 2048. This approach is feasible because all
+require additional cycles for the PPE to process. Consequently, the          Transformer blocks are identical and exhibit similar computational
+PPE array will consistently require more cycles than the APE. For            behavior.
+the PPE, if we have 𝑛 TransRows, the number of cycles required
+will exceed 𝑛 cycles. However, APE will have constantly 𝑛 cycles.
+   For Stage 1, due to the Hamming-weight sort, the dynamic                  5.2     Design Space Exploration
+Scoreboard can process a maximum number of nodes given by:                   The TranSparsity is a generalized design for arbitrary bit-widths.
+min(𝑛, 2𝑇 ) where 𝑛 is the number of TransRows, and 𝑇 is the bit-            Thus, we first explore the design space to determine our final hard-
+width of TranSparsity. To perform the sort, we implement a bitonic           ware implementation. We employ the tiling approach to divide the
+sorter [3] with 𝑂 (log2 𝑛) time complexity, resulting in significantly       large matrix into small tiles. Specifically, the performance of the
+fewer cycles. Futhermore, we configure an 𝑇 -way Scoreboard to               TransArray is significantly impacted by the tile size, i.e., the row
+provide parallel Scoreboarding for 𝑇 -bit TranSparsity, ensuring             number (𝑁 ) and the bit width (𝑇 ) of TransRows for a bit matrix. All
+       min(𝑛,2𝑇 )
+that:     𝑇      < 𝑇𝑛 , , which means Scoreboarding time is always           experiments on this sub-section are based on dynamic Scoreboard
+less than that of PPE and APE.                                               and random data.
+   Finally, this three-stage pipeline ensures that the critical path            Bit Width (𝑇 ). As illustrated in Fig. 9 (a), we explore the influ-
+of TransArray is still on the PPE array. Fortunately, according to           ence of tiling size on 𝑁 and 𝑇 . We find that 𝑇 determines the upper
+our analysis, only approximately 1.67% of TransRows in our design            bound and lower bound of sparsity and density for TranSparsity.
+have distances greater than 1. Thus, both the PPE and APE arrays             Even if we fully utilize the sparsity of TranSparsity, we can only
+achieve nearly full utilization.                                             achieve a lower-bound density around 𝑇1 because we must perform
+                                                                             at least one accumulation operation for every 𝑇 -bit element. For
+5 Evaluation                                                                 example, 8-bit TranSparsity requires one accumulation every 8 bits.
+                                                                             For 8-bit TranSparsity, we achieve Pareto Optimality with reason-
+5.1 Methodology                                                              able overhead. Beyond 8-bit, the density increases before reaching
+Accelerator Baselines. We compare our Transitive Array with                  a row size of 256. Notably, 10-bit TranSparsity requires 4× the hard-
+five baselines, including Bitfusion [48], ANT [23], Olive [21], Ten-         ware overhead of 8-bit TranSparsity but offers comparable sparsity
+der [36] and BitVert [8]. BitFusion [48] introduces bit-level dy-            at a tile row size of 256. Therefore, we choose 8-bit TranSparsity
+namic composability for DNN acceleration. ANT [23] proposes a                to implement in this study.
+

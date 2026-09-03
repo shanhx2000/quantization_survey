@@ -1,0 +1,109 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                           Akshat Ramachandran, Souvik Kundu and Tushar Krishna
+
+                                                                                          Standard FP Format                               MX-FP Format
+factor with high effective bit-width (EBW1 ) and (b) inefficient hard-                  sign exponent   mantissa                        sign    mantissa
+
+
+
+
+                                                                                                                                                              8
+ware and unaligned memory access.
+
+
+
+
+                                                                                                                                                                  ele
+                                                                                                                       8
+                                                                                                                              To MX
+
+
+
+
+                                                                                                                                                                     m
+                                                                                                                       ele
+
+
+
+
+                                                                                                                                                                      en
+                                                                                                                          m
+   On the other hand, techniques in group B , such as AWQ [53]
+
+
+
+
+                                                                                                                                                                         ts
+                                                                                                                           en
+                                                                                                                              t
+                                                                                                                              s
+(algorithm) and OliVe [29] (architecture co-design) quantize out-
+liers at the same precision as inliers following different strategies.                                                                                   Level-2 Scale Factor/
+                                                                                                                                                        Shared microExponent
+AWQ tries to identify a separate outlier-specific scale factor via
+                                                                                                                                           Level-1 Scale Factor
+channel-wise scaling. OliVe uses the “flint” data format [30] for
+inliers and “abfloat” [29] for outliers, both at 4-bit precision. These               Figure 1: Depiction of MX-FP data format with level-1 scale
+techniques mitigate the unaligned memory access while providing                       factor and level-2 microExponent (𝜇𝑋 ), with 𝑘 1 and 𝑘 2 the
+high compression. However, they suffer from significant accuracy                      group sizes over which these two factors are shared.
+degradation, particularly at ultra-low bit widths. This may be at-                       • To effectively deploy MicroScopiQ in a systolic array architec-
+tributed to the reduced representational range available to outliers                  ture we present a novel architecture supporting multi-precision,
+at ultra low-precision. Additionally, these methods [29] rely on a                    homogeneous PEs with a low-overhead NoC architecture (§5).
+specific kind of locality of presence for outliers, that might not be                    • To our best knowledge, MicroScopiQ is the first co-design
+true for all FMs, as we shall demonstrate in this work (§3.1).                        technique, to push the limits of PTQ compression for both LLMs
+   Based on the shortcomings of existing solutions discussed above,                   and VLMs with an EBW of ∼2.36-bits for weights; achieving SoTA
+we identify that assignment of higher bit-width for outliers is es-                   quantized model accuracy across different weight/weight-activation
+sential for good accuracy while for aligned memory and hardware                       quantization settings. Moreover, it demonstrates up to 3× improve-
+efficiency a consistent bit-budget and data type per tensor element                   ment in performance-per-unit-area (𝑇𝑂𝑃𝑆/𝑚𝑚 2 ) and up to 35%
+is desired. Here, by consistency we mean that on average each                         energy reduction compared to existing architectures (§7).
+scalar within a tensor should be represented by a fixed bit-width of
+a particular data-type. However, these demands are conflicting.                       2 Background
+Contributions. To provide a unified solution, we investigate on a                     2.1 Model Quantization
+fundamental question:                                                                 A typical quantization [51, 74, 76] process involves two steps: estab-
+ Question: Can pruning be effectively leveraged to complement                         lishing quantization parameters given the quantization data format
+ outlier-aware quantization in achieving high accuracy while main-                    (𝜏) and bit-width (𝑏), and mapping the high-precision tensor to
+ taining hardware efficiency?                                                         the quantized representation. For a typical symmetric quantization
+   Towards achieving this, we present a novel co-design technique                     [103] (zero-point is 0) of a tensor 𝑋 , the scale factor (𝑠) is given by,
+for the post-training quantization (PTQ) of FMs, namely Micro-                                                         max(𝑋 )
+ScopiQ. Our approach effectively leverages pruning with outlier                                                    𝑠=                                        (1)
+                                                                                                                         max𝑏𝜏
+aware quantization to achieve both memory alignment and im-
+proved accuracy. To effectively perform this for a layer, we quantize                 max𝑏𝜏 is the maximum representable value of a data format [74].
+outliers at twice the precision of inliers and prune the least impor-                 For 𝑏-bit INT quantization, max𝑏𝐼𝑁𝑇 = 2𝑏 −1 − 1. After determining
+tant weights based on the Hessian information. We then redistribute                   the quantization parameters, the quantized tensor is given by [74],
+the additional bits of the outlier weights in these pruned locations.                                                    j𝑋 m
+This ensures memory alignment while allowing outlier weights                                                                 , min𝑏𝜏 , max𝑏𝜏 )
+                                                                                                           𝑄 (𝑋, 𝑠, 𝑏) = clip(                            (2)
+                                                                                                                          𝑠
+to have higher precision. Additionally, to reduce error we use the
+                                                                                      In model quantization, the quantization parameters can be shared
+recently proposed MicroScaling (MX) FP data format [16, 78] to
+                                                                                      at different granularity for different accuracy-overhead trade-offs.
+quantize outlier weights as opposed to MX-INT inlier quantization.
+                                                                                      In increasing order of overheads, we have per-tensor quantization,
+While prior work such as SDQ [37] also combined pruning and
+                                                                                      wherein the scale factor is shared among all tensor elements. In per-
+quantization, it contrasts with our approach in its limited outlier
+                                                                                      channel quantization, the scale factor is shared per row/column of
+flexibility, lower compression factor, and unaligned memory access.
+                                                                                      a tensor. Finally, in group quantization, the parameters are shared
+   To efficiently support outliers in a different format with dif-
+                                                                                      at a finer granularity between groups of 𝑘 (64, 128 etc.) elements in a
+ferent bits at different locations in hardware, we present an in-
+                                                                                      row or column. These groups are formed by dividing channels into
+telligent NoC architecture called, Redistribution and Coordination
+                                                                                      multiple non-overlapping contiguous blocks. In this paper, we adopt
+NoC (ReCoN). It offers minimal overhead and high throughput out-
+                                                                                      MX-INT and MX-FP quantization for inliers and outliers, respectively.
+lier processing and reorganization. We then present an accelerator
+that leverages ReCoN with a simple, homogeneous INT-PE array.
+                                                                                      2.2      Microscaling Data Format
+Additionally, we extend the accelerator to be generic enough to
+support multiple bit-precision (2/4-bit operations). As summarized                    The MX data format proposed by prior works [16, 78], is standard-
+in Table 1, MicroScopiQ blends the advantages of group A and B                        ized by the Open Compute Project [70] with support from Microsoft,
+techniques while mitigating their specific drawbacks.                                 Intel, NVIDIA and others. As shown in Figure 1, MX is a variant
+   Our key contributions can be summarized as follows:                                of block data representation (BDR) [16] that defines a format to
+    • We present MicroScopiQ, a PTQ framework to efficiently inte-                    represent a group of values collectively using shared scale factors.
+grate pruning with outlier-aware quantization (§4).                                   It leverages multi-level, power-of-two scaling, at fine- (level-1, 𝑘 1 )
+                                                                                      and ultra-fine (level-2, 𝑘 2 ) granularity [15, 21]. The MX data format
+1 The average number of bits used to represent each quantized parameter of a model.   is characterized by four components: i) scale factors (level-1, 2), ii)
+

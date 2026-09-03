@@ -1,0 +1,111 @@
+Transitive Array: An Efficient GEMM Accelerator with Result Reuse                                                                                                                            ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+  Weight (FP16)                                          Weight (Int4) (4×4)                           Binary Weight                        T=4              T=4
+                                                                                                           (16×4)                                                                    Binary Weight Matrix
+ 1.2   0.2 -3.2 4.7                        1 (0 0 0 1 ) 0 (0 0 0 0 ) -3 (1 1 0 1 ) 5 (0 1 0 1 )                                            8-bit                                                                           Input          Output
+
+
+                            Quantization
+                                                                                                                0   0   1   0
+                                                                                                                                      N                                        Row 0 1               0     1       1
+ -4.6 3.2       6.6   3.2                  -5 (1 0 1 1 ) 3 (0 0 1 1 ) 7 (0 1 1 1 ) 3 (0 0 1 1 )
+                                                                                                                1   0   0   0             Quantized                                                                            6                 8
+                                                                                                                0   1   1   1              Weight           1-bit              Row 1 1               1     1       1        -5                   3
+ 1.7 -4.2 -1.3 -1.2                        2 (0 0 1 0 ) -4 (1 1 0 0 ) -1 (1 1 1 1 ) -1 (1 1 1 1 )
+                                                                                                                0
+                                                                                                                0
+                                                                                                                    0
+                                                                                                                    0
+                                                                                                                        1
+                                                                                                                        1
+                                                                                                                            0
+                                                                                                                            1
+                                                                                                                                                                                                                       ×             ＝
+                                                                                                                0   0   1   0                         8×N                      Row 2          0      0     1       1        -2                   2
+ 5.8   2.3 -7.3 3.8                        6 (0 1 1 0 ) 2 (0 0 1 0 ) -7 (1 0 0 1 ) 4 (0 1 0 0 )
+                                                                                                                0   1   1   1                               Binary                                                             4               -2
+                                                                                                                                      1   Bit-Slice
+Bit-slicing                                                                                                     1   0   0   1                               Weight             Row 3          0      0     1       0
+                                                                                                                0   0   0   0
+
+
+
+
+                                                                                                    Rearrange
+                                                                                                                1   1   1   1
+   0   0    1   0                     0    0   1   1          0   0   0   0         1   0   1   1
+                                                                                                                1   0   1   1
+   1   0    0   0                     0    0   1   0          1   1   1   1         1   1   1   1                                         Row Index             TransRows
+                                                                                                                1   1   0   0                                                                        Transitive GEMM
+   0   1    1   1                     0    1   1   1          1   0   1   1         0   0   1   1               1   0   1   1                (RI)                  (TRs)
+   0   0    1   0                     1    0   0   1          1   1   0   0         0   0   1   0               1   1   1   1              Row 0              11
+                                                                                                                                                              1011
+                                                                                                                                                                         2                    2
+                                                                                                                                                                                             0010   0001   0011
+                                                                                                                                                                                                               3
+                                                                                                                                                                                                                   1000
+                                                                                                                                                                                                                           11
+                                                                                                                                                                                                                           1011    0100
+                                                                                                                                                                                                                                          15
+                                                                                                                                                                                                                                          1111
+                                                                                                                                                                          0010
+                                                                                                                0   0   1   1
+ Bit-3 Matrix                  Bit-2 Matrix                 Bit-1 Matrix          Bit-0 Matrix                                                                15           3
+                                                                                                                0   0   1   0
+                                                                                                                                           Row 1                                    Input    -2                4            6             -5
+                                                                                                                                                              1111        0011
+                                                                                                                                                                                                    ＋              ＋               ＋
+Figure 2: Quantization and bit-slicing. A weight tensor (FP16)                                                                                                 3          11                 -2                2            8              3
+                                                                                                                                           Row 2              0011        1011
+
+is quantized into an Int4 weight matrix (4 × 4). Bit-slicing                                                                               Row 3               2
+                                                                                                                                                              0010
+                                                                                                                                                                          15
+                                                                                                                                                                          1111              Output       -2 2          3   8
+decomposes each bit level of the Int4 matrix and reorganizes                                                                                          2   Sort by the Number of 1             3 Store output by Row Index
+
+them into a binary weight matrix of shape (16 × 4).                                                                                      Figure 3: Motivation of Transitive GEMM.
+                                                                                                                                in hardware utilization or increased time overhead. In this study,
+2.2         Motivation: Transitive Sparsity                                                                                     we aim to address these issues efficiently.
+Following these preliminaries, Fig. 3 illustrates our motivation for
+transitive sparsity. We first slice ( 1 ) an 8-bit weight tensor with
+                                                                                                                                2.3       Efficient Representation
+𝑁 rows and 𝑇 = 4 columns into a matrix with 8 × 𝑁 rows and 𝑇                                                                    Fortunately, we have identified a beneficial and intriguing property
+columns, where each row represents a binary row with the 𝑇 -bit                                                                 within GEMM. As illustrated in Fig. 3, neighboring TransRows
+width. We define each binary row as a Transitive Row (TransRow,                                                                 inherently possess a partial ordering relationship characterized by a
+TR), which serves as the fundamental unit of our design. The width                                                              single bit flip. This indicates that result reuse exhibits strong partial
+of each TransRow denoted as 𝑇 , plays a crucial role in determining                                                             order relations. Inspired by this observation, we represent transitive
+the efficiency of our approach.                                                                                                 sparsity using a Hasse graph [26], a specialized Directed Acyclic
+    In this study, we exemplify transitive sparsity using a 4-bit Tran-                                                         Graph that depicts a finite partially ordered set. Fig. 4(a) illustrates
+sRow width. Transitive sparsity is also prevalent in higher bit widths                                                          all partial order relations within a 4-bit TransRow. Normally, we
+(e.g., 8-bit). Each TransRow is identified by an index that indicates                                                           ignore the Level 0, which can be skipped without computation. This
+its corresponding bit level in the original integer. These TransRows                                                            representation effectively and significantly reduces the complexity
+are then accumulated with appropriate shifts. We employ 2’s com-                                                                of our design, which will be detailed in the following section.
+plement representation for integers. In practice, we represent all                                                                 To conveniently present our design, we introduce three concepts:
+one-bits as positive 1, and all TransRows can be represented by                                                                 prefix, suffix, and distance within the Hasse graph, as shown in
+unsigned integers, as illustrated in Fig. 3 2 .                                                                                 Fig. 4(b). We define the preceding node (e.g., 3) that provides the
+    Subsequently, specific rows can be selected. For instance, con-                                                             reused result as the prefix, correspondingly, the latter as the suffix,
+sider four TransRows with values 11 (1011), 15 (1111), 3 (0011), and                                                            e.g., Node 11. Based on transitivity, a further subsequent Node 15
+2 (0010). Notably, some TransRows share identical 1s. For example,                                                              can continue to reuse the result of its prefix, i.e., 11.
+the TransRow representing 11 (1011) encompasses the same 1s as                                                                     The distance between two nodes with a partial ordering is de-
+the TransRow representing 3 (0011). Exploiting this property allows                                                             fined as the difference in their levels, corresponding to the difference
+us to eliminate redundant computations for TransRows. Originally,                                                               in the number of 1s they contain. As illustrated in Fig. 4(b)-bottom,
+the TransRow 11 (1011) required three accumulations of 6, −2, and                                                               the distance is transitive and depends on the presence of specific
+4, skipping the 0 bit. As illustrated in Fig. 3 3 , by reusing the result,                                                      TransRows and nodes. The distance is adjusted if an intermedi-
+we only need to perform an additional accumulation for 2 (the re-                                                               ate node is absent from the TransRows. For example, the distance
+sult of TransRow 0011) and 6, corresponding to the difference bits                                                              between Node 4 and Node 14 is 2 because Node 12 is absent. How-
+1000 (i.e., 1011⊕ 0011 = 1000). We term this approach Transitive                                                                ever, Node 14 still considers Node 12 as its prefix, requiring Node
+Sparsity, which reuses the results of preceding TransRows. Con-                                                                 12 to pass the result from Node 4 to Node 14. Therefore, a larger
+sequently, this characteristic of the bit-weight tensor significantly                                                           distance implies that more add operations are required from the
+reduces the computational load for GEMM.                                                                                        corresponding prefix TransRow. When the distance is 1, we achieve
+    Challenges. However, as discussed in Sec. 1, adopting transitive                                                            the most efficient result reuse between two different TransRows.
+sparsity in Deep Neural Networks (DNNs) introduces several chal-                                                                Additionally, TransRows with identical values have a distance of 0
+lenges. For example, as shown in Fig. 3(b), the execution order of                                                              and can directly reuse each other’s results.
+the four TransRows deviates from the original sequence. This strict
+execution order requirement renders parallel computing infeasi-                                                                 2.4       Parallelism and Load Balance
+ble. Additionally, generating the execution order is highly complex.                                                            After effectively representing transitive relations using a Hasse
+Specifically, we must determine which pairs of TransRows satisfy                                                                graph, we observe that nodes within the same level possess no
+the transitive sparsity criteria among potentially hundreds of rows,                                                            partial ordering relationships, as they cannot share results. For
+leading to significant overhead in computing the execution order.                                                               instance, Node 2 cannot share its result with Node 4 because they
+A naive implementation would result in substantial inefficiencies                                                               differ in their bit representations. Consequently, transitive sparsity
+

@@ -1,0 +1,68 @@
+ISCA ’23, June 17–21, 2023, Orlando, FL, USA.                                                                                   Tanner Andrulis, Joel S. Emer, and Vivienne Sze
+
+
+                                                                                           mostly-negative slices, yielding a negative average for the slices
+                                                                                           in each column. After dot products with hundreds of slices, even
+                                                                                           slight negative averages can accumulate to create large negative
+                                                                                           column sums. This effect can significantly increase ADC saturation
+Figure 4: Center+Offset weights. Standard dot products                                     and cause DNN accuracy loss, as shown in Table 4. By balancing
+create high-resolution values which are difficult to repre-                                positive/negative slices, Center+Offset reduces per-column biases
+sent in analog. Center+Offset digitally subtracts a center                                 and protects from accuracy loss.
+from weights, computing with near-zero-average offsets in-                                 4.1.2 Center+Offset Arithmetic. Given a weight 𝑤 and center 𝜙,
+crossbar.                                                                                  we calculate positive offset 𝑤 + = 𝑚𝑎𝑥 (𝑤 − 𝜙, 0) and negative offset
+                                                                                           𝑤 − = 𝑚𝑎𝑥 (𝜙 − 𝑤, 0). For weights above the center, 𝑤 + is the dif-
+   RAELLA uses a 512-row crossbar and a 7b ADC. Even with                                  ference between the weight and the center while 𝑤 − is zero. The
+minimal 1b input and 1b weight slices, column sum resolution may                           converse is true for weights below the center. Given weight filter 𝑊
+be 9b, so it is impossible to guarantee perfect fidelity. With minimal                     programmed as positive/negative offset vectors 𝑊+ , 𝑊− , RAELLA
+weight slice sizing, RAELLA reduces ADC-related fidelity errors                            computes a dot product with input vector 𝐼 as:
+                                                                                                                                 ∑︁ 
+to a rate on the order of one error in ten million psums, or one                                                  𝑊 ·𝐼 = 𝜙            𝐼 + (𝑊+ − 𝑊− )𝐼                 (1)
+incorrect psum per ResNet50 [16] inference.                                                                                                              Í
+                                                                                               RAELLA computes Eq. 1 at runtime, with 𝜙 𝐼 computed digi-
+4 IMPLEMENTING RAELLA’S STRATEGIES                                                         tally and (𝑊+ − 𝑊− )𝐼 in analog.
+4.1 Implementing Center+Offset Weights                                                     4.1.3 Calculating Optimal Centers. We calculate centers/offsets
+Shown in Fig. 4, we represent DNN weights as a center value plus                           with one-time preprocessing before programming RAELLA. We
+or minus a small offset. We select centers to make positive and neg-                       calculate a center for each weight filter independently, as weight
+ative weight slices approximately the same magnitude for each col-                         distributions and optimal centers vary for different weight filters.
+umn. RAELLA computes signed analog arithmetic, and sliced prod-                                We define an optimization problem to solve for the center value
+ucts from the magnitude-balanced positive/negative weight slices                           𝜙. First, we define a slice 𝑆 as a sequence of inclusive bit indices
+negate to produce near-zero column sums. This allows RAELLA to                             [ℎ . . . 𝑙] from the most to least significant index ℎ to 𝑙 (e.g., slice
+keep small column sums while accumulating sliced products from                             [7 . . . 4] contains the four most significant bits). Then, we define
+many crossbar rows. Meanwhile, RAELLA efficiently processes                                a slicing function 𝐷 (ℎ, 𝑙, 𝑥) that crops signed number 𝑥 to contain
+high-resolution centers in the digital domain.                                             the bits from indices ℎ to 𝑙 (shifted so bit 𝑙 is the least significant
+    We first discuss why Center+Offset is important for balancing                          position), preserving the sign. Given a weight filter 𝑊 and slices
+positive/negative weight slices, then show how RAELLA computes                             𝑆𝑖 ∈ {1,2,...,𝑁 } = [ℎ𝑖 . . . 𝑙𝑖 ], we solve for the center 𝜙 of 𝑊 as follows:
+arithmetic with Center+Offset encoding and describe how we cal-                                                                𝑁
+                                                                                                                                                              !4
+                                                                                                                             ∑︁        ∑︁
+culate optimal center values. Finally, we show the hardware for                                               arg min             2𝑙𝑖
+                                                                                                                                           𝐷 (ℎ𝑖 , 𝑙𝑖 , 𝑤 − 𝜙) ,      (2)
+computing dot products with Center+Offset encoded weights.                                              𝜙 ∈ {1,2,...,255} 𝑖=1      𝑤 ∈𝑊
+4.1.1 Why Balance Slices. While DNN weight distributions are                                  where 𝑁 is the total number of slices, and 𝑤 is a weight in 𝑊 .
+commonly cited as zero-mean [14, 73], a zero mean for all weight                           Eq. (2) balances positive/negative values in each column of weight
+values over a DNN does not necessarily mean any given weight                               slices, assigning higher costs for columns with larger nonzero sums.
+filter is zero-mean, nor that column sums are zero-mean. For that,                         The inner sum ( 𝑤 ∈𝑊 𝐷 (ℎ𝑖 , 𝑙𝑖 , 𝑤 − 𝜙)) 4 calculates the cost for a
+                                                                                                             Í
+we need each individual crossbar column to have weight slices with                         single column, equal to the sum of weight slices in the column
+a zero mean. This is often not the case, as individual weight filters                      raised to the power of four. Four is chosen empirically; we find that
+and columns of slices randomly converge to different distributions.5                       too low a power does not sufficiently penalize large sums, while
+    A growing body of works are exploring differential encoding,                           too high a power overvalues the largest-sum column and fails to
+which, like Center+Offset, computes signed analog arithmetic [3,                           consider all columns. The outer sum 𝑖=1
+                                                                                                                                       Í𝑁 𝑙𝑖
+                                                                                                                                             2 (...) weights cost by
+14, 28, 32, 67, 73, 81]. Differential encoding uses positive slices to                     bit position (e.g., the most significant bit in an 8b number has a
+represent positive weights and negative slices to represent neg-                           magnitude of 27 and the cost of a 1b slice containing only this bit
+ative weights; it can benefit from Center+Offset to balance posi-                          would also be scaled by 27 ) and sums costs for all columns. Costs
+tive/negative weight slices and reduce column sum resolution.                              are weighted by bit position as saturations in higher-order slices
+    Center+Offset can be especially beneficial for filters where                           have a greater impact on the psum.
+weight slice distributions have noticeable nonzero averages. This                             We calculate centers for each weight filter (i.e., a single dot prod-
+can occur in filters where there is a greater number of negative                           uct) in the crossbar independently. A coarser granularity, such as a
+than positive weights, such as the filter shown in Fig. 5. Differ-                         single center for a full crossbar (i.e., 100+ different filters), would not
+ential encodings represent these mostly-negative weights with                              be as effective, as different DNN filters can have different weight
+5 When we say “filter” we mean a set of weights from one dot product that fit in           distributions and require different centers.
+one crossbar. An output channel of a DNN layer (or “filter” in the traditional sense)         RAELLA’s per-filter centers have the drawback that each center
+may be partitioned over multiple crossbars if its weights do not fit in a crossbar.        balances multiple columns for one filter, and therefore may not
+The important aspect is that each crossbar column produces a unique column sum
+distribution, regardless of the characteristics of the overall DNN. To account for this,   be optimal for any one column. Ideally, per-column centers would
+Center+Offset attempts to balance positive/negative weight slices in each column.          be able to precisely zero the average weight slice value for each
+

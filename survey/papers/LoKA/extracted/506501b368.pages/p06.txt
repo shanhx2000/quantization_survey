@@ -1,0 +1,66 @@
+   To minimize overhead, LoKA Probe activates every 100
+training iterations and asynchronously saves statistical parame-
+ters every 10,000 iterations, translating to a negligible (≤ 1%)
+throughput overhead. This provides comprehensive coverage
+of distribution evolution throughout training while maintaining
+minimal performance impact.
+Sampling learned distributions. Given the tracked statistics                                               Diverging                           Oscillating
+(µ, Σ) for activations and (M, U, V ) for weights, LoKA Probe
+can synthesize representative inputs and weights for offline
+benchmarking.
+   (a) Input sampling. We draw a synthetic activation batch
+T ′ ∈ RB×K by sampling
+Z ∼ N (0, IK ),         T ′ = 1B µT + Z LTΣ ,          LΣ LTΣ = Σ + εI,
+                                                                                                            Vanishing                           Cycling
+where LΣ is the Cholesky factor of the (regularized) covari-
+ance.3
+  (b) Weight sampling. For weights modeled as W ∼
+MN (M, U, V ), we sample
+       Z ∼ N (0, IM ×N ),        W ′ = M + LU Z LTV ,
+              LU LTU = U + εI, LV LTV = V + εI.
+                                                                                                            Drifting                           Converging
+This procedure preserves both row-wise and column-wise
+second-order correlations, yielding realistic surrogate weights                        Fig. 6. Typical behaviors of bias norm of in Wukong training. Biases can
+and activations that match the training-time statistics without                        introduce instability during training, especially under low-precision conditions.
+storing full tensors.
+   2) Offline Error Quantification: Using the learned distri-                            dequantization before LayerNorm and requantization after-
+butions, LoKA Probe generates statistically representative                               ward, which is an overhead that often exceeds low-precision
+test cases and compares low-precision kernel outputs and                                 benefits, and prevents low-precision execution of such layers.
+performance against high-precision references. This reveals                              Modern LRMs employs LayerNorms aggressively in between
+layer-specific vulnerabilities that standard random testing                              layers in MLP for training stability, creating a sizable impact
+misses, and helps us prune layers that do not benefit from                               on the end-to-end latency.
+low precision acceleration.                                                            • Sigmoid-based activation instability LRM’s heavy use
+   For each linear layer, we compute MERE and speedup using                              of sigmoid functions (Swish activation [62]: x · σ(x),
+inputs and weights sampled from learned distributions rather                             SwishNorm: x·σ(Norm(x))) involves exponential operations
+than synthetic ones. Layers with high MERE scores or low                                 that amplify large elements while diminishing small ones,
+speedups are flagged as problematic for low-precision execution.                         dramatically increasing quantization loss.
+Figure 5 summarizes this workflow.
+                                                                                       B. LoKA Mods: Precision-Aware Model-Hardware Co-design
+   3) LoKA Probe Key Findings: We use LoKA Probe to
+analyze the Wukong model used in §II-C, sampling 100                                  The vulnerabilities identified by LoKA Probe (problematic
+realistic input-weight pairs for each linear layer and identified                  bias terms, normalization overhead, and sigmoid instability)
+three critical patterns that result in large losses and unoptimal                  cannot be fixed by tightening kernel precision alone. Instead,
+performance:                                                                       we take a model-kernel co-design approach, introducing
+• Problematic bias terms Figure 6 shows different modes of
+                                                                                   LoKA Mods: redesigned building blocks that improve both
+  L2 bias norm evolution during training. A significant portion                    numerical stability and execution efficiency under low-precision
+  of biases never converge, with some reaching values ≥ 0.1.                       conditions.
+  These diverging biases cascade through subsequent modules,                          1) No Bias: We draw inspiration from recent LLM archi-
+  causing out-of-bounds errors. When clamped and quantized,                        tectures that have moved away from bias terms. Models like
+  they can cause smaller values to vanish entirely.                                DeepSeek eliminate biases from all feedforward and normal-
+• Normalization overhead and errors LayerNorm [10]
+                                                                                   ization layers, while PaLM [4] and Falcon [2] remove them
+  operations require complex variance computations prone                           from feedforward layers while retaining them in normalization
+  to mean cancellation when values are similar. This forces                        components. Following this trend, we remove all bias terms
+  normalization to run in higher precision, requiring expensive                    from Wukong modules except the final prediction layers,
+                                                                                   where bias terms can be beneficial for different prediction
+   3We add a small jitter εI (e.g., 10−6 ×   trace(Σ)
+                                                      ) to maintain numerical      tasks. This modification also provides the benefit of potentially
+                                                K
+stability.                                                                         reduced communication overheads: with FSDP per-parameter
+
+
+
+
+                                                                                1373
+

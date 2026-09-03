@@ -1,0 +1,69 @@
+Ecco: Improving Memory Bandwidth and Capacity for LLMs via Entropy-aware Cache Compression                              ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+  coding to exploit entropy characteristics in LLM cache data,                    applying efficient compression methods, we can decrease memory
+  significantly enhancing memory efficiency.                                      bandwidth requirements and improve inference speed.
+• We design a parallel Huffman-based decoding process with a                      Takeaway 1: Compression mitigates bandwidth and capacity re-
+  multi-stage pipeline, reducing latency by two orders of magni-                  quirements in LLM decoding.
+  tude and achieving throughput comparable to GPU L2 caches,
+  thereby overcoming the limitations of traditional Huffman cod-                  2.2        Compression and Information Entropy
+  ing.                                                                            Quantization [20, 23, 25, 28, 42, 43] is a fundamental technique in
+• We develop an efficient encoder that complements our decoder                    model compression that reduces the precision of neural network
+  design, enabling seamless integration with existing cache ar-                   weights by mapping continuous values to discrete levels. This pro-
+  chitectures and supporting runtime encoding and decoding for                    cess can be mathematically described as:
+  dynamic cache data management.                                                                                                 𝑤      
+• Through comprehensive evaluations, we demonstrate that Ecco                                   𝑤˜ = Quantize(𝑤, 𝑆, 𝑍 ) = 𝑆 · 𝑄      +𝑍 ,            (4)
+                                                                                                                                  𝑆
+  achieves up to 2.9× speedup over AWQ framework and 2.4×
+  over the Olive accelerator while increasing memory capacity by                  where 𝑤 represents the original weights, 𝑤˜ are the quantized weights,
+  nearly 4× and maintaining SOTA LLM accuracy.                                    𝑆 is the scaling factor, 𝑍 is the zero point, and 𝑄 (·) denotes the
+                                                                                  quantization function. The granularity at which quantization is
+2 Background and Motivation                                                       applied significantly impacts both the compression ratio and the
+                                                                                  model’s performance. Quantization can be performed at various
+2.1 LLM Inference                                                                 levels, such as tensor-level, channel-level, or group-level. As il-
+Large language models (LLMs) have revolutionized natural lan-                     lustrated in Figure 2, finer-grained quantization—from tensor to
+guage processing tasks by adopting the Transformer architecture                   channel to group—results in a greater number of unique quantized
+[64]. The Transformer consists of two primary components: the                     values within each group. This increased diversity of quantized val-
+multi-head attention mechanism and the feed-forward network                       ues implies that the quantization codes are utilized more efficiently,
+(FFN). The multi-head attention can be formulated as:                             capturing more information and leading to less information loss.
+                                                                                     To quantify the effectiveness of different quantization approaches,
+          MultiHead(𝑋 ) = Concat(head1, . . . , headℎ )𝑊 𝑂 ,            (1)
+                                                                                  we employ the concept of information entropy 𝐻 , defined as:
+where each head is computed as:                                                                                   𝑛
+                                                                                                                 ∑︁
+                                         𝑄
+              head𝑖 = Attention(𝑋𝑊𝑖 , 𝑋𝑊𝑖𝐾 , 𝑋𝑊𝑖𝑉 ),                    (2)                               𝐻 =−         𝑝𝑖 log2 𝑝𝑖 ,                         (5)
+                                                                                                                 𝑖=1
+and the attention function is defined as:
+                                                 !                                where 𝑝𝑖 is the probability of the 𝑖-th quantized value occurring and
+                                            𝑄𝐾 ⊤                                  𝑛 is the total number of unique quantized values. A higher entropy
+              Attention(𝑄, 𝐾, 𝑉 ) = softmax √︁     𝑉.                   (3)
+                                              𝑑𝑘                                  indicates a richer representation of information in the quantized
+                                                                                  data, which often correlates with improved model performance.
+                         𝑄
+Here, 𝑋 is the input, 𝑊𝑖 , 𝑊𝑖𝐾 , and 𝑊𝑖𝑉 are the weight matrices for              However, finer-grained quantization schemes introduce additional
+the 𝑖-th head’s query, key, and value projections, respectively, 𝑊 𝑂              metadata overhead, such as an increased number of scaling factors
+is the output projection matrix, and 𝑑𝑘 is the dimensionality of the              and quantization parameters. This extra information can offset the
+keys. The FFN layer consists of several projection layers, includ-                benefits gained from the higher entropy of the quantized weights.
+ing an up-projection, a gating mechanism, and a down-projection,                  To account for this trade-off, we define a metric called bit effi-
+which apply transformations to the input. The major operations                    ciency 𝜂, which normalizes the information entropy by the actual
+in both attention and FFN can be classified into two types: general               bit overhead incurred:
+matrix multiplications (GEMMs) and batched GEMMs.                                                                      𝐻
+                                                                                                                𝜂=          ,                        (6)
+    During inference, LLMs generate text through two main phases:                                                    𝐵 real
+prefill and decode. The prefill phase processes the initial input                 where 𝐵 real represents the real bit overhead, including both the
+sequence, while the decode phase generates output tokens auto-                    quantized data and the associated metadata.
+regressively, one token at a time, conditioning on all previously                    Improving bit efficiency can be approached in two ways: by in-
+generated tokens. LLM decoding is memory-bound because the                        creasing the entropy 𝐻 or by reducing the real bit overhead 𝐵 real .
+batch size is usually small [41, 56, 70] for GEMM operations, limit-              Compression techniques like Huffman coding aim to minimize bit
+ing computational resource utilization. Additionally, the batched                 overhead by assigning shorter codes to more frequent quantized val-
+GEMMs degrade to batched general matrix-vector multiplications                    ues, theoretically achieving the lowest possible bit usage. However,
+(GEMVs) due to the auto-regressive nature of decoding. In this case,              in practical hardware implementations, the savings from Huffman
+the matrix dimension 𝑀 is always 1, leading to low arithmetic inten-              coding may not be fully realized due to constraints like data align-
+sity. As the context length increases during decoding, the KV cache               ment requirements. To mitigate this inefficiency, we can pad the
+grows linearly, imposing extensive memory capacity demands and                    bitstream with additional data, such as metadata and outliers, effec-
+intensifying the memory bottleneck. Given that LLM decoding is                    tively increasing the entropy without incurring significant extra
+memory-bound, compression techniques can effectively alleviate                    cost. As shown in Figure 2, our proposed method achieves higher
+memory constraints by reducing the size of the model weights and                  entropy and lower bit overhead compared to existing group-based
+the KV cache without substantially impacting performance. By                      quantization techniques like AWQ [42]. By optimizing the balance
+

@@ -1,0 +1,64 @@
+IBM z13 and many other systems have used FPGA based                           utility [8]. Therefore, Deﬂate represents a natural choice
+PCIe attached compression accelerators [2]–[5]. However, the                  for providing accelerated compression functionality in highly
+FPGA cost and limited number of PCIe slots restrict their                     interconnected enterprise and cloud environments.
+usage to high-end servers [2] and specialized applications such                  Deﬂate uses the LZ77 variant of the Lempel-Ziv (LZ)
+as storage controllers.                                                       compression algorithm [9], followed by an entropy coding al-
+   IBM POWER9 (launched in 2017), and IBM z15 (launched                       gorithm [7]. Few other compressed data formats and software
+in 2019) overcome the shortcomings of existing approaches by                  exist making various trade-offs between the compression ratio
+including a novel compression accelerator called NXU. Every                   and throughput. LZ4 has a minimum match length of 4 bytes
+z15 and POWER9 processor chip contains NXU. Product level                     and no entropy encoding. Snappy has a byte-oriented format
+software and libraries exploiting the accelerator are available               and no entropy encoding. ZSTD has large search windows
+for the IBM z/OS, zLinux, and AIX operating systems. For                      and uses the tANS encoder in addition to Huffman [10]–
+POWER Linux, open source drivers and libraries are currently                  [13]. Compression and decompression throughput of these are
+going through the Linux community upstreaming process.                        ordered highest to lowest as LZ4, Snappy, ZSTD, and Deﬂate
+   NXU is an industry-leading hardware accelerator imple-                     (as implemented by the zlib library and the gzip tool). Their
+menting the Deﬂate standard with signiﬁcantly higher through-                 average compression ratios are ordered from best to worst as
+put than any other implementation. On the largest z15 system                  Deﬂate (zlib/gzip), ZSTD, LZ4, and Snappy. For few excep-
+topology with 20 processor chips, 20 NXU units provide 280                    tional ﬁles ZSTD may compress better than zlib/gzip because
+GB/s total throughput [6]. We would need 68 PCIe based                        of its larger window size and other algorithmic improvements.
+compression cards such as [2], with 4GB/s peak throughput                     We chose to implement a Deﬂate accelerator because it is well-
+to match the NXU performance. Besides substantial improve-                    established with widespread support and has the potential for
+ments in performance, the compression function on IBM z15                     good compression ratio. We compare our work to previous
+features a novel approach to integrate hardware acceleration                  work in Sections VIII-IX.
+residing outside the processor core into the system stack:                       LZ77 replaces duplicate strings with references to earlier
+Although NXU utilizes classic I/O mechanisms like Direct                      copies in the most recent 32KB of the source stream [9], called
+Memory Access [DMA] in terms of data transmission and                         the sliding window or dynamic dictionary (called ”History” in
+memory interactions, it is operated on behalf of applications                 this paper). An LZ reference is a distance/length pair, a copy
+by an architected z15 machine instruction implemented with                    instruction from an earlier string to the current point in the
+millicode communicating with the hardware in lockstep, with-                  stream. Deﬂate distances are 1-32768 bytes and lengths are 3-
+out operating system or hypervisor support.                                   258 bytes. Source bytes not encoded with an LZ reference are
+   The z15 and POWER9 on-chip accelerators feature several                    encoded as LZ literals. The goal of an LZ77 encoder is to ﬁnd
+novel techniques to improve throughput and compression ratio:                 the longest matching string in the sliding window resulting
+1) CAM and pseudo-CAM based hybrid encoder that balances                      in the smallest encoded output. This goal challenges both
+area and compression ratio in different ranges of the compres-                hardware and software implementations, often resulting in a
+sion dictionary, 2) A processor-cache like area efﬁcient hash                 tradeoff between area (or memory), performance, and com-
+table that uses search tokens and data tags to search up to 64                pression ratio. We describe an area efﬁcient LZ77 encoding
+locations in the dictionary, 3) A dynamic Huffman encoder for                 hardware that improves state of the art in Section IV, where
+improving compression ratio, and various other optimizations                  the related work [2]–[4], [14]–[19] are also discussed.
+such as 2-pass, 1.1-pass modes, and cached code tables, 4) A                     Deﬂate uses variable length preﬁx-free codes produced by
+”length limited” code table generator that enables the dynamic                the Huffman algorithm to compress an LZ77 stream by another
+Huffman mode, 5) A decompressor including a parallel and                      10-20% [20]. Frequent symbols are encoded with fewer bits.
+speculative variable length code decoder designed for area                    For example, the most frequent character ’e’ in English may
+efﬁciency, which breaks the 1 code per cycle limit of prior                   be encoded with 6-bits vs. the usual 8-bits. Deﬂate speciﬁes
+art, decoding up to 8 codes per clock cycle.                                  a maximum code length of 15-bits, called “length limited
+   Overall, the resulting compression engine in IBM POWER9                    encoding” [21]. A ”Dynamic Huffman Table” (DHT) maps
+and IBM z15 provide signiﬁcant improvements in elapsed                        the LZ77 alphabet of symbols to 1 to 15-bit codes. DHTs are
+time, compression ratio, and higher capacity for existing                     custom made according to LZ77 symbol statistics.
+workloads and reduces the cost of ownership. This paper                          Producing a dynamic Huffman table (DHT) with a high
+describes the architecture, design, implementation, of the novel              throughput is a challenge. Many hardware designs do not
+on-chip POWER9 and z15 compression and decompression                          solve this problem and instead they implement a static table
+accelerators with emphasis on the design trade-offs.                          with a predetermined LZ symbol distribution which typically
+                                                                              degrades the compression ratio. In contrast, we implemented
+          II. BACKGROUND AND R ELATED W ORK                                   a true ”Dynamic Huffman” mode in both POWER9 and z15
+  Deﬂate (RFC1951) is a compressed data format [7] with                       to achieve highest possible compression ratio, as described in
+wide-spread support due to its inter-operability and software                 Section V, where related work [2]–[4], [7], [14], [20], [22]–
+implementations available virtually on all platforms, the most                [26] and hardware issues are also discussed.
+popular being the zlib library and the gzip ﬁle compression                      The preﬁx-free property allows concatenation of variable
+
+
+
+
+                                                                          2
+
+      Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:40 UTC from IEEE Xplore. Restrictions apply.
+

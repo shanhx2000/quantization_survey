@@ -1,0 +1,62 @@
+                Gist: Efficient Data Encoding for Deep Neural Network Training
+
+
+              Animesh Jain†? , Amar Phanishayee§ , Jason Mars† , Lingjia Tang† and Gennady Pekhimenko‡
+                    Microsoft Research§ , Univerity of Michigan, Ann Arbor† , University of Toronto‡
+     anijain@umich.edu, amar@microsoft.com, profmars@umich.edu, lingjia@umich.edu, pekhimenko@cs.toronto.edu
+
+
+   Abstract—Modern deep neural networks (DNNs) training                 limiting the size of the DNNs that a GPU can support [39],
+typically relies on GPUs to train complex hundred-layer deep            [40]. Modern DNNs are already facing this issue, prompting
+networks. A significant problem facing both researchers and             researchers to develop memory-efficient implementations of
+industry practitioners is that, as the networks get deeper, the
+available GPU main memory becomes a primary bottleneck,                 the networks [37].
+limiting the size of networks it can train.                                Many researchers have recognized this shortcoming and
+   In this paper, we investigate widely used DNNs and find that         proposed approaches to reduce the memory footprint of
+the major contributors to memory footprint are intermediate             DNN training. However, prior approaches are not able to
+layer outputs (feature maps). We then introduce a framework             simultaneously achieve all of the following three desirable
+for DNN-layer-specific optimizations (e.g., convolution, ReLU,
+pool) that significantly reduce this source of main memory              properties: (i) provide high memory footprint reduction, (ii)
+pressure on GPUs. We find that a feature map typically has two          low-performance overhead, and (iii) minimal effect on train-
+uses that are spread far apart temporally. Our key approach             ing accuracy. Most prior works propose efficient techniques
+is to store an encoded representation of feature maps for this          to reduce the memory footprint in DNN inference with an
+temporal gap and decode this data for use in the backward               emphasis on reducing the model size (also referred to as
+pass; the full-fidelity feature maps are used in the forward pass
+and relinquished immediately.                                           weights) [18], [19], [20], [17]. However for DNN training,
+   Based on this approach, we present Gist, our system that             weights are only a small fraction of total memory footprint.
+employs two classes of layer-specific encoding schemes – lossless       In training, intermediate computed values (usually called
+and lossy – to exploit existing value redundancy in DNN train-          feature maps) need to be stored/stashed in the forward pass
+ing to significantly reduce the memory consumption of targeted          so that they can be used later in the backward pass. These
+feature maps. For example, one insight is by taking advantage
+of the computational nature of back propagation from pool               feature maps are the primary contributor to the significant
+to ReLU layer, we can store the intermediate feature map                increase in memory footprint in DNN training compared to
+using just 1 bit instead of 32 bits per value. We deploy these          inference. This important factor renders prior efforts, that
+mechanisms in a state-of-the-art DNN framework (CNTK) and               target weights for memory footprint reduction, ineffective
+observe that Gist reduces the memory footprint to upto 2×               for training. State-of-the-art memory footprint reduction
+across 5 state-of-the-art image classification DNNs, with an
+average of 1.8× with only 4% performance overhead. We also              approaches for training transfer data structures back and
+show that further software (e.g., CuDNN) and hardware (e.g.,            forth between CPU and GPU memory but pay a performance
+dynamic allocation) optimizations can result in even larger             cost in doing so [39]. Finally, approaches that explore lower
+footprint reduction (upto 4.1×).                                        precision computations for DNN training, primarily in the
+  Keywords-DNN Training; Data Encodings; Compression;                   context of ASICs and FPGAs, either do not target feature
+                                                                        maps (and thus unable to achieve high memory footprint
+                       I. I NTRODUCTION                                 reduction) or, when used aggressively, result in reduced
+   The availability of large datasets and powerful computing            training accuracy [11], [15], [8].
+resources has enabled a new breed of deep neural networks                  The key insight of this work is in acknowledging that
+(DNNs) to solve hitherto hard problems such as image clas-              a feature map typically has two uses in the computation
+sification, translation, and speech processing [22], [24], [31],        timeline and that these uses are spread far apart temporally.
+[48]. These DNNs are trained by repeatedly iterating over               Its first use is in the forward pass and second is much later
+datasets. The DNN training process has large compute and                in the backward pass. Despite these uses being spread far
+memory requirements and primarily relies on modern GPUs                 apart, the feature map is still stashed in single precision
+as the compute platform. Unfortunately, as DNN models                   format (32-bits) when they are unused between these ac-
+are getting larger and deeper, the size of available GPU                cesses. We find that we can store the feature map data with
+main memory quickly becomes the primary bottleneck1 , thus              efficient encodings that result in a much smaller footprint
+                                                                        between the two temporal uses. Furthermore, we propose
+  ? Work done during an internship at Microsoft Research, Redmond.
+                                                                        that if we take layer types and interactions into account,
+  1 For GPU main memory (GDDR5/GDDR5X), the first order concern is
+                                                                        we can enable highly efficient layer-specific encodings –
+bandwidth as many GPU applications are bandwidth-bound. It is hard to
+get both high bandwidth and high-density DRAM-based memory at low       these opportunities are missed if we limit ourselves to a
+cost [33].                                                              layer-agnostic view. Using these key insights, we design two
+

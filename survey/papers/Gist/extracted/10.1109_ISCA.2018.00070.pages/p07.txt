@@ -1,0 +1,55 @@
+   Our usage of precision reduction differs significantly          feature map that are temporally far apart in the computation
+from the previous research that applies it immediately after       timeline – one in the forward pass and one much later in the
+computation finishes. We delay the precision reduction until       backward pass. In the baseline, the lifetime of this feature
+the feature map has been consumed in the forward pass, thus        map is very long and it is stored in FP32 format for this
+naming it Delayed Precision Reduction (DPR). This lets us          whole duration. Gist breaks this lifetime into three regions
+achieve more aggressive precision reduction on GPUs. DPR           – FP32 format that is live only for the immediate forward
+is applicable to any layer combination. We also apply it over      use, encoded (much smaller) format that is live for the long
+SSDC encoding, compressing the non-zero values array in            temporal gap between the two uses, and FP32 format for the
+the CSR format. We do not touch the meta array in CSR              decoded value that is live only for the immediate backward
+format and Binarize encoded data structures as these affect        use. The figure also shows the points at which Schedule
+control, and thus are not suitable for lossy encoding.             Builder inserts encode and decode functions.
+   Figure 6 lists the encode and decode functions for DPR
+encoding. We use three smaller representations of 16, 10 and       C. CNTK Memory Allocator
+8 bits, packing 2, 3 and 4 values, respectively, into 4 bytes.        Schedule Builder passes this liveness analysis to the
+For packing 3 values into 4 bytes, 10 bits is the largest length   CNTK static memory allocator that finds an efficient strat-
+possible (9 bits leave 5 bits unused, 11 bits requires one extra   egy to allocate the memory. CNTK, similar to other deep
+bit). For 16 bits, we use IEEE half precision floating point       learning frameworks, performs static memory allocation.
+format (1 sign, 5 exponent and 10 mantissa bits), referred         The other alternative, dynamic allocation, results in a lower
+to as FP16. For 8-bits (FP8), we choose 1 bit for sign, 4          footprint but at the expense of many expensive cudaMalloc
+for exponent and 3 for mantissa, and for 10-bits (FP10),           calls for each minibatch, resulting in performance overhead.
+we use 1 sign, 5 exponent and 4 mantissa bits. In FP10,            Nevertheless, we discuss the impact of dynamic memory
+three 10-bit values are stored in a 4-byte space, rendering        allocation on compression ratio in Section V-H.
+2-bits useless. We ignore denormalized numbers as they have           The key idea employed in the CNTK memory allocator is
+a negligible effect on CNNs accuracy. We use round-to-             memory sharing. It takes lifetimes of different data structures
+nearest rounding strategy for these conversions. The value         and their sizes as input, and finds an efficient memory
+is clamped at maximum/minimum value if the FP32 value is           sharing strategy. The memory allocator creates groups of
+larger/smaller than the range of the smaller format. We write      data structures whose lifetimes do not overlap and thus can
+CUDA implementations to perform these conversions. Since           share the same memory space. Therefore, the size of this
+conversions can happen in parallel, DPR results in minimal         group is the largest size of the member within the group, as
+performance overhead.                                              opposed to the sum of size of the members of the group.
+                                                                   To come up with an efficient strategy, it first sorts the data
+B. Schedule Builder                                                structures on the basis of size, and then forms these groups,
+   In Gist, the values in the forward pass are in FP32 format      so that large data structures can share the same memory
+(for both lossless and lossy encodings) while only the data        space. At the end of this process, memory allocator has
+that is required for the backward pass is stored in an encoded     multiple groups which are either dominated by feature maps
+format. However, since the feature maps are still generated        that are stored for the backward pass or by immediately
+in the original FP32 format in the forward pass before they        consumed feature maps or gradient maps. Gist encodings,
+are encoded, without any further optimization, the encodings       by reducing the lifetime of FP32 stashed feature map, create
+will result in increased memory footprint. This gives rise to      higher opportunities for memory sharing, resulting in lower
+the question that how does Gist leads to memory footprint          memory footprint.
+reduction.                                                         Example - Putting it all together. We present an example
+   This task is handled by Gist’s Schedule Builder that has        in Figure 7 to illustrate the interactions between static
+two responsibilities. First, identifying the applicable layer      memory manager and Gist encodings. The example shows
+encodings from the CNTK execution graph, performing a              lifetimes of five variables (X, A, B, C and D). In part
+static analysis to distinguish between forward and backward        (a), we show the output of CNTK memory allocator for
+use of a feature map, and inserting the encode and decode          the baseline. Memory allocator forms 2 groups, resulting
+functions in the execution graph, thus creating a new execu-       in a total size of 18 MB, 10 for stashed feature map (X)
+tion graph that is used at runtime. And, second, performing a      and 8 for immediately consumed. In part (b), we apply
+static liveness analysis for the affected stashed feature maps     SSDC encoding, which breaks the lifetime of original X
+and newly generated encoded/decoded representations, and           into three separate timelines. In this case, CNTK memory
+pass it on to the CNTK static memory allocator that finds          allocator again forms two groups, however, the total size
+an efficient memory allocation strategy (Section IV-C).            is reduced to 12, 2 for (encoded) stashed feature map and
+   Figure 2 illustrates the liveness analysis performed by         10 for immediately consumed. As shown in the figure, Gist
+the Schedule Builder. The figure shows the two uses of a           encodings convert the original FP32 stashed feature maps
+

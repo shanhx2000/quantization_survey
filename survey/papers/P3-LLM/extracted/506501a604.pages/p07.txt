@@ -1,0 +1,113 @@
+                                                                 WKV from Bank                     NPU FP16 / FP32 Op          PIM Low-precision Op   𝐺𝑊 : weight group size                           ... @
+                              PIM Channel                                   256                                                                       𝐻 : hidden size                                                  ...
+          ...                                                                                  Self-Attn           𝑋in         MLP      𝑋out          𝐷h : head size              𝑆𝑄          FP8
+                                                                                     zKV                                                              𝑁 : token number                     𝑄: (1 , 𝐷h)
+                        Even Bank         Even Bank        Input Reg
+                                                                            4         4        Pre-RoPE     LayerNorm
+                                                                                                                                         +            𝑆 : scaling factor                               ...
+
+
+
+
+                                                                                                                                                                                                                     ...
+    Host NPU                                           e 4 s 1m 5
+                                                                        Decoder
+                                                                                                 𝐾$
+                                                                                                                                                                                               × ...
+    Accelerator         Row Buﬀer         Row Buﬀer                                                             QKV Proj                              𝑆𝐴      𝐴: (1 , 𝐺𝑊)                                      𝐾T: (𝐷h , 𝑁)
+                                                                                                                                  Down Proj                                 ...
+   ...
+
+
+
+                ...                                                              6
+                                                                ×                                                                                                                         𝑆SF: (1 , 𝐷h)                PCU
+          ...                                                    12                                         RoPE
+                                                                                                                                         ×                        @
+                                                                                                                                                                                  NPU          𝑆𝐾: (1 , 𝑁)             ...
+                          3                 3
+                         P -LLM     8×     P -LLM               <<                                          𝑄⋅𝐾T
+                          PCU
+                                    ...     PCU
+                                                                       Mul�plier
+                                                                                                                                         Up Proj                     .. .
+                                                                                                                                                                                                .. . @
+                                                      4×          26   26       26        26               So�Max                                                                        FP8                               ...
+                                                                                                                                   Act
+
+
+
+
+                                                                                                                                                                 ...
+                                                              4:2 Compressor Tree              Post-RoPE            𝑃⋅𝑉                                                                𝑃: (1 , 𝑁)
+     HBM-PIM                                                                                                                                                 𝑊: (𝐺𝑊 , 𝐻)                        .. .
+
+
+
+
+                                                                                                                                                                                                                     ...
+                                                                  28                              𝐾$                            Gate Proj
+                        Row Buﬀer         Row Buﬀer
+                                                                                                                   O Proj                                  PCU                             × ...               𝑉: (𝑁 , 𝐷h)
+                                                                Fixed-point Acc                                                   LayerNorm                                                                            PCU
+                        Odd Bank          Odd Bank
+                                                                                                                     +                                                      ...        𝑆𝑉: (1 , 𝑁)
+                                                      16 × PE                                              𝑉$
+                                                                                     32                                                               NPU 𝑆𝑊: (1 , 𝐻)             NPU                        𝑆𝑉max
+
+                           (a) P3-LLM Architecture                                                               (b) Operator Mapping                             (c) Quantized GEMV Dataflow
+
+ Fig. 6: (a) The architecture of P3 -LLM. (b) Operator mapping on P3 -LLM during decoding. (c) The quantized dataflow of three GEMV operations: weights
+ @ activations, query @ key, attention-score @ value. For clarity, we use ”@” and ”×” to denote GEMV and element-wise multiplication, respectively.
+
+
+   To address these issues, we propose leveraging an 8-bit                                                    To address this, we choose to maintain the same number
+format that remains well-suited for activations even in the                                                of output registers as in HBM-PIM, and increase the input
+presence of outliers. Inspired by prior studies [85], [86], we                                             bandwidth to match the computational throughput. Fig. 6(a)
+explore FP8 as an alternative format for activation quanti-                                                right shows the proposed PCU microarchitecture containing
+zation without Hadamard transformation and smoothing. We                                                   16 processing elements (PEs). The PCU computes a 1×4×16
+find that the standard FP8-E4M3 format can achieve near-                                                   GEMV tile2 , which consumes 4 8-bit inputs, 64 4-bit weights,
+lossless accuracy for quantizing activations, owing to its wide                                            and produces 16 32-bit outputs. On the other hand, the baseline
+numerical range. Table III shows the perplexity of per-token                                               HBM-PIM’s PCU computes a 1 × 1 × 16 GEMV tile with
+activation quantization using FP8-E4M3 and SmoothQuant-                                                    one FP16 inputs, 16 FP16 weights, and 16 FP32 outputs.
+based [88] INT8. SmoothQuant causes large perplexity loss                                                  Thus, compared to the baseline HBM-PIM, P3 -LLM only
+under 4-bit weights. This is expected, because weights are al-                                             requires 16-bit additional input register per PCU with minimal
+ready difficult to quantize at 4 bits, yet SmoothQuant migrates                                            overhead. Inside the low-precision PCU, every PE computes
+additional difficulty to weights. On the other hand, FP8-E4M3                                              a 4-way dot product, where the multiplication involves a 6-
+significantly outperforms SmoothQuant as its large numerical                                               bit fixed-point multiplier that multiplies the signed (s) input
+range can accommodate outliers without affecting weight                                                    mantissa (m) with the decoded weight or KV-cache. The
+quantization.                                                                                              multiplier bit-width is determined in the following ways:
+                                                                                                           First, computing the attention-score requires a 5-bit mantissa
+                      V. P 3 -LLM A RCHITECTURE                                                            (including the hidden bit), and the activation requires a sign
+   This section outlines the architectural details of P3 -LLM,                                             bit, resulting in a total of 6 bits. Second, since KV-cache
+which features: (a) a high-throughput and area-efficient PCU                                               adopts INT4-Asym quantization, its precision is 5-bit after
+co-designed to support hybrid numerical formats, (b) an effi-                                              adding a 4-bit zero point (zKV ). On the other hand, weights
+cient operator mapping that maps memory-intensive operators                                                are encoded with the BitMoD data type [6], which requires 6
+to the low-precision PIM hardware during decoding, (c) a                                                   bits in fixed-point representation. After multiplication, the 4-
+quantized matrix multiplication flow that applies operator                                                 bit input exponent (e) is used to shift the product. The results
+fusion to minimize the runtime overhead of dequantization.                                                 from 4 multipliers are reduced through a 4 : 2 compressor
+                                                                                                           tree, followed by 32-bit fixed-point accumulation. Thus, the
+A. P3 -LLM Microarchitecture                                                                               proposed PE eliminates the area-hungry components such as
+   To support the proposed W4A8KV4P8 scheme with hybrid                                                    high-precision multipliers and exponent alignment modules in
+numerical formats in PIM, we design an efficient PCU on                                                    the conventional FP16/FP32 MAC unit.
+top of HBM-PIM [49]. Fig. 6(a) left shows the P3 -LLM
+architecture containing a host NPU and an HBM-PIM. One                                                     B. PIM Offloading Opportunities with P3 -LLM
+PIM channel contains 8 PCUs, each of them is shared by                                                        The proposed W4A8KV4P8 quantization allows memory-
+2 banks to amortize the area overhead. During the decoding                                                 bound matrix operations to be efficiently executed on the low-
+stage, the NPU sends activations and attention-scores to the                                               precision PCU, as illustrated in Fig. 6(b). During the decoding
+input register of PCU, while weights and KV-cache are read                                                 stage, the host NPU performs element-wise operations such as
+from DRAM banks to perform MAC operations. Given that                                                      RoPE and Softmax in high precision, while GEMM/GEMV
+weights and KV-cache are quantized to 4 bits in P3 -LLM,                                                   operators such as linear layers are offloaded to PIM. One
+we choose to equip each PCU with 64 multipliers to match                                                   exception is Q · K T , whose mapping depends on whether the
+the 256-bit column access granularity of HBM, effectively                                                  key cache is quantized pre-RoPE or post-RoPE. In the former
+quadrupling the compute throughput compared to the baseline                                                case, the quantized key cache lacks positional information
+HBM-PIM with 16 FP16 multipliers. However, scaling up                                                      during decoding, which can produce incorrect outputs if
+the number of multipliers makes the SIMD-based design of
+HBM-PIM inefficient, as every multiplier must be paired with                                                 2 Through the rest of this paper, we refer a n × k × l tile as the dot product
+a 32-bit accumulator, leading to substantial register overhead.                                            between n × k activations and k × l weights
+
+
+
+
+                                                                                                  610
+

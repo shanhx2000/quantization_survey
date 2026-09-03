@@ -1,0 +1,97 @@
+ISCA ’23, June 17–21, 2023, Orlando, FL, USA                                                                                                                       Guo and Tang, et al.
+
+
+                                                  Aligned              GPU                          Clipping Outlier   Pruning Victim      Pruning Normal Value     Source Accuracy
+  Accelerator            Encoding
+                                                 Memory?           Compatible?                     90
+                                                                                                   75
+
+
+
+
+                                                                                    Accuracy (%)
+                                                                                                   60
+  OLAccel [61]         Coordinate list               No                 No                         45
+                                                                                                   30
+    BiScaled-                                    Alined data                                       15    0
+                     Block sparse index                                 No                          0
+    DNN [39]                                   Unaligned index                                     -15
+                                                Unalined data                                             CoLA     SST-2     MNLI        QQP      QNLI     RTE        STSB     MRPC
+    DRQ [75]         Binary mask map                                    No                               (Matt.)   (Acc.)   (Acc.)      (Acc.)   (Acc.)   (Acc.)     (Pear.)   (Acc.)
+                                                Aligned index
+                                                                                   Figure 3: Accuracy comparison of multiple pruning meth-
+   GOBO [85]           Coordinate list               No             DRAM-only
+                                                                                   ods.
+
+  OliVe (Ours)      Outlier-victim pair             Yes                Yes
+                                                                                   the sparse values with sparsity-based encoding. For quantization,
+Table 1: Comparison between existing outlier-aware acceler-                        the quantized normal values are the majority and need computa-
+ators and our proposed method OliVe.                                               tion. Naturally, the outlier values can exploit the normal values to
+                                                                                   achieve memory alignment instead of sparsity-based encoding.
+                                                                                       As depicted in Fig. 1b in Sec. 1, we employ the insight of prun-
+                                                                                   ing but with a different perspective from prior works. The new
+BiScaled-DNN quantizes all values with the same bit-width but
+                                                                                   method employs the outlier-victim pair (OVP) mechanism. We
+different scale factors for normal values and outliers, which are
+                                                                                   first prune some quantized low-precision normal values, which we
+aligned. However, the extra index compressed in the block sparsity
+                                                                                   call victims. These victims are adjacent to the outliers and make
+method is unaligned. On the contrary, DRQ’s bitmap is aligned, but
+                                                                                   extra space for the high-precision outliers. Therefore, we can em-
+data is stored by mixed and thus unaligned 4- & 8-bit values.
+                                                                                   bed the outliers in their original location without explicit sparse
+   In summary, prior works design the outlier-aware architecture
+                                                                                   indexing. That can avoid the complex indexing hardware and make
+based on the sparsity of outliers, which leads to unaligned memory
+                                                                                   it compatible with GPU. To align the memory, we distinguish the
+storage and accesses. More seriously, the indices of sparsity-based
+                                                                                   “right outlier” and “left outlier” according to their position in the
+encoding and the outliers are separate. As such, they need the extra
+                                                                                   pair. We assign a right victim for the left outlier (e.g., 17.6 in Fig. 1b)
+outlier controller to parse indices for the outliers and orchestrate
+                                                                                   and a left victim for the right outlier (e.g., −98 in Fig. 1b).
+the computation between normal values and outlier values. For
+                                                                                       The OVP mechanism is based on our observation of large Trans-
+example, the extra outlier controllers of GOBO and OLAccel count
+                                                                                   former models, including BERT-base [19], BERT-large [19], GPT2-
+up to 55% and 71% overhead to the total area of the processing
+                                                                                   XL [66], and OPT-6.7B [90]. We collect all tensors, calculate their
+element (PE) array [61, 85]. The sparsity-based encoding for outliers
+                                                                                   standard variance 𝜎, and divide the values into normal values (< 3𝜎)
+is also incompatible with the memory sub-system of existing
+                                                                                   and outlier values (> 3𝜎) by the 3𝜎 rule. We then pair every two
+accelerators. For the GOBO design [85], it can only compress and
+                                                                                   adjacent values (no overlapping), which leads to three types: normal-
+decompress the memory at the DRAM level for GPU. This greatly
+                                                                                   normal pair, outlier-normal pair, and outlier-outlier pair, as shown
+limits the applicability of its proposed outlier-aware architecture.
+                                                                                   in Tbl. 2. These three types have two normal values, one normal
+   Therefore, a more hardware-friendly and applicable outlier de-
+                                                                                   value and one outlier value, and two outlier values, respectively.
+coding/encoding method should be proposed to fit the outlier-aware
+                                                                                       Tbl. 2 demonstrates that most (about 99%) pairs are normal-
+quantization. Our proposed OliVe architecture is able to align mem-
+                                                                                   normal pairs, with only around 1% of outlier-normal pairs. Outlier-
+ory accesses and is also compatible with existing accelerators based
+                                                                                   outlier pairs need to prune the smaller outlier in the pair. Fortu-
+on the OVP mechanism.
+                                                                                   nately, the outlier-outlier pairs only have an extremely low proba-
+                                                                                   bility of less than 0.06% in all studied models. Therefore, the outlier
+2.3     Outlier and Victim Analysis
+                                                                                   distribution is extremely dispersed, and we can retain most outliers.
+Generally, the sparsity-based encoding borrowed from DNN prun-                         We also conducted the accuracy experiments with the BERT𝑏𝑎𝑠𝑒
+ing is a straightforward and effective solution for sparse outliers.               model [82] on the GLUE dataset [78], as depicted in Fig. 3. First, we
+However, these works ignored that quantization is different from                   clip the outliers to the 3𝜎, where clipping is the common method
+pruning. For pruning, the pruned zero values do not participate                    adopted by quantization. Then, we prune the victims and normal
+in the computation. As such, the pruning method has to compress                    values to zero. The victims are adjacent to the outliers, and normal
+                                                                                   values are randomly pruned with the same amount as the outliers.
+    Pair Type        Normal-Normal        Outlier-Normal         Outlier-Outlier   We keep the rest values with full precision (FP32). Although such
+  BERT𝑏𝑎𝑠𝑒 [19]           99.12%                 0.84%                0.04%        few outliers (about 1%) are clipped, as shown in Fig. 3 clipping
+  BERT𝑙𝑎𝑟𝑔𝑒 [19]          99.24%                 0.71%                0.05%
+                                                                                   outlier, the accuracy loss is unacceptable for the BERT model. The
+                                                                                   results emphasize the importance of outliers in Transformer-based
+  GPT2-XL [66]            98.80%                 1.14%                0.06%        model. For comparison, pruning random normal values has almost
+  OPT-6.7B [90]           99.33%                 0.64%                0.03%        no accuracy loss than the source accuracy. The pruning of victim
+                                                                                   values only shows a negligible accuracy decrease than the pruning
+         Table 2: The percentage of three types of pair.                           of normal values because the victims include some outliers due to
+

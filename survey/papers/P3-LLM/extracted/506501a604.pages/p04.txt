@@ -1,0 +1,122 @@
+ Fig. 3: Analysis of LLM operands: (a) Memory footprint of various LLMs at a 4K context length across different batch sizes. (b) Impact of quantization
+ bit-width on the C4 perplexity (↓) of Llama-3.1-8B and Llama-3.2-3B. On the x-axis, operand bits represent the precision of quantizing each operand
+ independently. The perplexity of baseline FP16 LLMs and different quantization methods under W4A8KV4 are also highlighted. Note that all W4A8KV4
+ methods use FP16 attention-scores, except for P3 -LLM, which uses 8-bit attention-scores.
+
+                                                        PIM Compute Bound
+                                                                                                                   TABLE I. P3 -LLM vs. existing co-design solutions for quantized
+             11
+                                                                   P3-LLM                                          LLM acceleration. The precision ”WαAβKVγPδ” stands for α-bit
+             10
+                                                              Compute Throughput                                   weights, β-bit activations, γ-bit KV-cache, and δ-bit attention-scores.
+                                    s
+
+
+
+
+              9
+                                B/
+
+
+
+
+                                             GQA / BS 2          9.84 TOPS                     GQA (G 32)          By default, attention-scores are 16-bit.
+                            3T
+
+
+
+
+              8                                                                                 / BS 32
+ Peak TOPS
+
+
+
+
+                           1.2
+
+
+
+
+                                                                                  /   s
+              7
+                                            GQA (G 16) / BS 16
+                                                                         PU
+                                                                      N 307    GB                                                      Operand        Memory      Model      Hardware
+                           th
+
+
+
+
+              6                                                           th
+                                                                                                                      Framework
+                        wid
+
+
+
+
+                                                                    ndwid                                                              Precision      Saving     Accuracy    Efficiency
+                                                                 Ba                 FP16
+                      nd
+
+
+
+
+              5
+                      Ba
+
+
+
+
+                                     MHA / BS 1                                     𝑊4 𝐴8 𝐾𝑉4 𝑃8                      BitMoD [6]      W4A16KV16       Medium       High      Medium
+              4                                                                     NPU     PIM    P3-LLM
+              3                                                                                                       Oaken [42]      W16A16KV4       Medium       High         Low
+                                                GQA (G 8) / BS 8                 Compute Throughput
+              2                         GQA (G 4) / BS 4            HBM-PIM         1.23 TOPS
+                                                                                                                     MANT [29]         W4A8KV4         High      Medium      Medium
+              1                                                                                                         Ecco [8]       W4A8KV4         High        High         Low
+                                    MHA / BS 1
+              0
+                  0             5           10           15         20         25           30          35
+                                                                                                                      Pimba [44]      W16A16KV8        Low         High      Medium
+                                                 Arithmetic Intensity (OPs / Byte)                                  P3 -LLM (Ours)    W4A8KV4P8        High        High        High
+Fig. 4: Roofline analysis of different accelerators. The markers highlight the
+achievable throughput of various operators, including multi-head attention
+(MHA), grouped-query attention (GQA) with different group sizes (G), and
+                                                                                                                   HBM-PIM supporting FP16 arithmetic [49], which has 4×
+linear layer with different batch sizes (BS).                                                                      higher bandwidth than normal HBM during PIM operations.
+                                                                                                                   Fig. 4 reveals that the performance benefits of HBM-PIM grad-
+larger sensitivity to quantization, leading to worse perplexity                                                    ually disappear as the batch size (BS) and GQA group size (G)
+than weight and KV-cache under the same quantization bit-                                                          approach 4, due to the limited computation throughput. On the
+width. Furthermore, quantizing weight and KV-cache can                                                             other hand, NPU remains memory-bound even for moderate
+maintain acceptable perplexity until 4-bit.                                                                        BS ≥ 16, making it highly desirable to increase the compute
+   The above observations motivate our mixed-precision quan-                                                       throughput of PIM while exploiting its abundant bandwidth.
+tization scheme, namely W4A8KV4P8. In this scheme, weights                                                         To address this, P3 -LLM leverages W4A8KV4P8 quantization
+(W) and KV-cache (KV) are quantized to 4 bits to maximize                                                          to enable cost-effective LLM inference on compact, low-
+memory savings, while activations (A) and attention-scores                                                         precision hardware. Compared to HBM-PIM, P3 -LLM can
+(P) are retained at 8 bits to mitigate accuracy loss. Although                                                     integrate 4× PCUs under iso-compute-area constraints. Fur-
+attention-scores account for a small memory footprint, we ar-                                                      thermore, as we will discuss in Section V-D, the low-precision
+gue that quantizing attention-scores further enhances hardware                                                     PCU enables 2× higher operating frequency than the FP16
+efficiency by allowing the P · V operation of the self-attention                                                   PCU, which effectively doubles the peak throughput. Thus,
+module to run on low-precision compute units. Unfortunately,                                                       P3 -LLM offers a superior roofline with 8× higher throughput
+the naı̈ve W4A8KV4P8 quantization with the standard integer                                                        over HBM-PIM.
+format results in large perplexity degradation, as highlighted
+                                                                                                                   C. Limitations of Existing LLM Accelerator Co-Design
+in Fig. 3(b). To address this, P3 -LLM proposes an operand-
+dependent W4A8KV4P8 quantization strategy using hybrid                                                                Numerous co-design solutions have been proposed by the
+numerical formats (detailed in Section IV). This approach                                                          architecture community to accelerate quantized LLMs, as
+employs dedicated numerical format for each LLM operand                                                            summarized in Table I. BitMoD [6] and Oaken [42] focus on
+to minimize their quantization error. As a result, P3 -LLM                                                         4-bit quantization of weights and KV-cache, respectively. But
+achieves better model performance than SoTA W4A8KV4                                                                since all other operands remain in FP16, these two approaches
+integer quantization algorithms, QuaRot [2] and QoQ [53].                                                          provide moderate memory saving and hardware efficiency.
+                                                                                                                   MANT [29] and Ecco [8] achieve greater memory saving and
+B. Limitations of Existing NPU-PIM Systems                                                                         efficiency via W4A8KV4 quantization. Nevertheless, MANT
+   Existing PIM solutions for LLM inference mainly adopt                                                           exhibits noticeable accuracy drop under this aggressive quan-
+high-precision PCUs with limited computation throughput,                                                           tization scheme since it does not address the outlier issue
+thus facing challenges in low-batch decoding and GQA. To                                                           presented in activations and KV-cache. Whereas Ecco requires
+elucidate such limitations, we conduct roofline analysis on                                                        complicated online decompression of quantized operand back
+
+
+
+
+                                                                                                             607
+

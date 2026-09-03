@@ -1,0 +1,87 @@
+   4) Dataflow: The modified dataflow mainly consists of                    Quantization Method                 Weight-Activation                Buffer Size (bit)    1280      2560        3840      5120
+                                                                           Precision (Data, Scale)             (4, 8), (8, 16), (8, 32)          # Row Change        11.56x     4.17x      2.42x      2.47x
+three steps. Taking weight–activation quantization as an ex-                    QGroup (n,k)          (1, 16), (1, 32), (64, 64), (128, 128)        + Latency        392.98%   85.50%      37.96%    34.04%
+
+ample, the execution process is illustrated in Fig. 3(c). First,                Q0   Q1    Q2   Q3
+                                                                                                     (a) QConfig
+                                                                                                     Q4   Q5    Q6    Q7   Q8   Q9 Q10 Q11
+                                                                                                                                                            (c) Overhead of Scale Accesses
+                                                                                                                                                              Weight-Activation Quant. Lat.
+the scales of both operands, together with the values of the               S0 1.00 0.77 0.43 0.62 0.77 0.67 0.36 0.61 0.76 0.66 0.36 0.61
+                                                                           S1 0.98 1.00 0.88 0.80 0.95 0.87 0.75 0.79 0.91 0.82 0.75 0.79
+                                                                                                                                                      Basic      Data Buffer     Scale Buffer       Dequant
+                                                                                                                                                  Lat.
+stationary operand, are written into the SRAM buffer. Second,              S2 0.47 0.53 1.00 0.49 0.38 0.48 0.36 0.47 0.82 0.33 0.29 0.38
+                                                                                                                                                         40%
+                                                                           S3 0.92 0.91 0.63 1.00 0.92 0.49 0.62 0.67 0.92 0.88 0.31 0.67
+the values of the other operand are streamed from DRAM                     S4 0.98 0.96 0.54 0.77 1.00 0.89 0.50 0.81 0.97 0.86 0.50 0.81
+                                                                           S5 0.88 0.94 0.62 0.50 0.95 1.00 0.31 0.50 0.60 0.99 0.31 0.50
+and multiplied with the buffered values in the PUs; DRAM                   S6 0.88 0.84 0.99 0.57 0.86 0.89 1.00 0.67 0.85 0.81 1.00 0.67
+                                                                                                                                               Input                                                    Weight
+                                                                                                                                                  Lat.
+reads and PU computation are pipelined. Third, once a DRAM                 S7 0.91 0.90 0.64 1.00 0.92 0.49 0.63 1.00 0.93 0.88 0.31 1.00
+                                                                           S8 0.97 0.94 0.54 0.77 0.98 0.89 0.50 0.81 1.00 0.86 0.50 0.81
+                                                                                                                                                         28%    Weight-Only Quant. Lat.
+
+chunk has been fully consumed, the accumulated partial results             S9 0.88 0.94 0.62 0.49 0.95 0.99 0.31 0.50 0.91 1.00 0.31 0.50
+                                                                           S10 0.88 0.84 0.99 0.57 0.86 0.89 1.00 0.67 0.85 0.81 1.00 0.67
+are dequantized by the PU using scales in the buffer, and the              S11 0.91 0.90 0.64 1.00 0.92 0.49 0.63 1.00 0.93 0.88 0.31 1.00
+                                                                                Strategy
+                                                                                                                                               Input
+                                                                                                                                                                      Partition Strategy
+                                                                                                                                                                                                        Weight
+
+dequantized results are written back to the buffer or DRAM.                          (b) Performance of Exchanged Strategies                    (d) Dequant Overhead in W-A and W-Only Quantization
+
+   For weight-only quantization, since the PU requires                                                               Fig. 4. Motivation Experiment
+operands with the same precision, weights should be de-
+quantized to match the precision of the activations before                 single strategy is simultaneously optimal for all low-bit FP
+computation. It should also be noted that, due to the limited              formats. Therefore, for a given QConfig, we need to efficiently
+NDP buffer capacity, the buffer is typically not organized                 explore the compilation space to obtain the optimal NDP
+as a ping-pong structure. As a result, the dequantization                  performance.
+phase cannot be overlapped with DRAM reads of scales, and
+PU resources occupied by dequantization cannot be used to                  B. Necessity for Innovative NDP Compilation Strategies
+perform GEMM computation in parallel.                                         Even with the best matching compilation strategy found
+                                                                           in Sec. IV-A, we notice that simply selecting from existing
+C. Simulation Support
+                                                                           strategies is still insufficient. Two low-bit FP-induced critical
+   We extend the open-source NDP simulator UniNDP [63]                     challenges still exist and require further optimization.
+to quantify the overhead introduced by scale accesses and                     The first challenge is the increasing number of row
+dequantization operations, and to enable further compila-                  changes brought by scale access. On one hand, the limited
+tion optimizations. Firstly, to represent the aforementioned               SRAM buffer should also reserve capacity for storing scales,
+dataflow, we design a higher-level IR wrapper over the original            reducing the available buffer space for values. As a result, the
+UniNDP instruction format to carry quantization metadata                   number of value buffer refills increases, and fetching scales
+and enable future optimizations (e.g., dequantization hiding),             requires switching between the value region and the scale
+as shown in Fig. 3(e). Secondly, on the simulator side, we                 region in DRAM, further increasing DRAM row-changing
+modify UniNDP to support the conversion of these instructions              overhead. Fig. 4(c) shows, under different buffer sizes, the in-
+to commands for DRAM bank, the corresponding PU, and                       crease in DRAM row-changing and the corresponding latency
+buffers, which can be simulated in a cycle-accurate way.                   overhead of low-bit FP compared to coarse-grained quantized
+Finally, on the compiler side, we model the behavior of scale              INT with the same bit-width. Results show that processing
+buffers and partial-sum buffers, enabling the compiler to insert           group-wise low-bit FP on NDP increases DRAM row changes
+the corresponding instructions into the operator kernel.                   by 2.4∼11.6× and raises overall latency by 1.34∼4×.
+               IV. M OTIVATION E XPERIMENT                                    The second challenge is the overhead of dequantization.
+                                                                           The low-bit FP values need to be dequantized by multiplying
+A. Necessity for Compilation Space Exploration                             them with scales to reconstruct higher-precision data for subse-
+   To reveal the preference of different QConfigs on NDP                   quent accumulation. In NDP architectures, the dequantization
+compilation strategies, we apply different QConfigs on a                   is executed by reusing PU’s MAC units, but the high-precision
+weight-activation quantized MVM operator with the matrix                   multiplications introduce substantial DRAM idle and latency
+size of 5120×5120. The QConfigs contain different value/scale              overhead. This overhead also shows different complexities in
+precisions and QGroup sizes, as shown in Fig. 4(a). For these              weight-only and weight-activation quantization, as illustrated
+QConfigs, the compilation space is constructed by including                in Fig. 4(d). In the former one, the complexity of dequan-
+operator partition, loop tiling and traversal order, data map-             tization is related to the size of weight data, as a result,
+ping, and buffer allocation. We then exhaustively search for the           choosing an operator partition method that can avoid weight
+optimal compilation strategy to deploy each QConfig on the                 duplication, and a loop permutation method that can maximize
+NDP architecture. We denote the optimal compilation strategy               weight reuse, can effectively reduce the overhead. However,
+for QConfig Qi as Si . Fig. 4(b) shows the performance of                  for weight-activation quantization, the complexity of dequant
+pairwise combinations of different QConfigs (e.g., {Qi }) and              is only related to the computation bundle size (i.e., the number
+compilation strategies (e.g., {Si }). For simplicity, the perfor-          of dot-products prior to dequantization), which cannot be
+mance of each column in Fig. 4(b) is normalized to that of the             optimized through partitioning or loop optimization. Thus, we
+best compilation strategy (higher is better). The experimental             must explore other dequantization optimization techniques to
+results show that for each QConfig, the performance gap across             reduce the dequant overhead of weight-activation quantiza-
+different compilation strategies can be up to 70%, and no                  tion, which can account for up to 40% of the total latency.
+
+
+
+
+                                                                    1386
+

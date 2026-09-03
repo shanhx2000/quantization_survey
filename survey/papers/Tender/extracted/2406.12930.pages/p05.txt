@@ -1,0 +1,98 @@
+              80                                                          24                                                          24                                                   22.4 24
+                                                                                                                                                                                     S1:
+                                                                                                                                                                                            k
+Channel Max
+              60                                                          18                                                          18                                                        18
+
+              40                                                          12                                                          12                                             S2: 11.2 12
+                                                                                                                                                                                          k
+
+              20                                                           6                                                          6                                                         6
+                                                                                                                                                                                     S3: 5.1                                                         Matrix Multiplication
+                                                                                                                                                                                          k
+                   0                                                       0                                                          0                                                         0
+                       1 1    2 2    3    3 4 4 5 5 6 6 7                       1 1        2 2     3    3 4 4 5 5 6 6 7                    1 1     2 2     3    3 4 4 5 5 6 6 7                      1 1     2 2     3    3 4 4 5 5 6 6 7
+
+                        1.2    45.2 -4.1        7.1       1.5   15.5                -2.0 22.4 -3.1            7.2    -1.2   -1.6            -2.0 22.4 -3.1            7.2    -1.2   -1.6              -2.0    -3.1       -1.2   7.2   -1.6 22.4
+      Activation
+
+
+
+
+                        5.2    0.4       2.1    -7.3      3.9   10.0   - bias       2.0 -22.4 3.1             -7.2   1.2    -7.1            2.0 -22.4 3.1             -7.2   1.2    -7.1              2.0     A
+                                                                                                                                                                                                              3.1
+                                                                                                                                                                                                                3
+                                                                                                                                                                                                                         1.2    -7.2A -7.1 -22.4
+                                                                                                                                                                                                                                     2      A1
+                        2.3    18.9 -1.8        4.4       2.6   24.2                -0.9    -3.9       -0.8   4.5    -0.1    7.1            -0.9    -3.9       -0.8   4.5    -0.1   7.1               -0.9    -0.8       -0.1   4.5   7.1    -3.9
+
+
+                                                                   ① Bias                                                     ② Tensor                                             ③ Grouping                                                ④ Runtime
+                                                                 Subtraction                                                Decomposition                                       (Indirect Indexing)                                         Requantization
+
+                                                                                                       Figure 4: Decomposed quantization flow in Tender.
+                                                                                                                                                         multiplying α to an accumulated value. We use 2 for α, so
+                                                                           Partial Sums
+                                     W1
+                                                 W2
+                                                                                                       FP16
+                                                                                                                                                         that the requantization can be done with simple shifting. More
+                                                                 INT32
+                              𝑡!
+                                     𝑡!             𝑡"                                                                                                   details about the reason why we use the power of α approach
+                       A1                                 𝑡!                                                                         FP16
+                                                                                                                                                         and 2 for α will be discussed in the following section.
+                                                                            Dequantize                                      +
+                                                          𝑡"
+                                                                                                                                                         Power of 2. Here we explain our “power of 2” approach
+                   A2         𝑡"
+                                                                                                                                                         by answering the following three questions: 1) Why use
+                                                                       (a) Original                                                                      classification? 2) Why use coarse-grained thresholds for large
+                                                                                                                                                         values and fine-grained thresholds for small values? 3) Why
+                                                                                                                 32 bits
+                                                                                                                                                         use 2?
+                                               W2                 ×             +                Accumulator                    <<
+                                                                                                                                                            1) Why use classification?: We can decompose channels in
+                                               W1
+                                                                                                                                                         various ways. In the extreme scenario, we can use individual
+                                                                 INT32                                 FP16                                              scale factors for each channel, which can greatly reduce
+                                                                            Dequantize
+                   A2 A1                                                                                                                                 the quantization error [5], [65]. However, in this way, as
+                                                                                                                                                         Figure 5(a) shows, the number of operations including matrix
+                                                         (b) Runtime Requantization                                                                      multiplication, dequantization, and addition between partial
+                                                                                                                                                         products increases in proportion to the number of channels.
+Figure 5: Runtime Requantization. Compared to the original com-                                                                                          In the case of OPT-6.7B [72], for example, it increases
+putation flow, we retain the reduction axis length by shifting the
+accumulated partial product sum between decomposed matrices.                                                                                             4096 times compared to the original computation without
+                                                                                                                                                         channel decomposition. As such, grouping channels that have
+the decomposed quantized activation tensors and the linear                                                                                               a similar range of values to share a scale factor via clustering
+symmetrically quantized weight without explicit dequantiza-                                                                                              or classification is a more practical and scalable option.
+tion with negligible latency overhead. Finally, the bias mul-                                                                                            Clustering computes how similar the value range is between
+tiplied with weights is added to the output for mathematical                                                                                             every channel and then groups the channels with a small
+correctness. Note that all the weights can be quantized to INT8                                                                                          distance. Classification is based on pre-defined thresholds
+before inference. Also, channel decomposition, channel biases,                                                                                           where the channels are binned to fit within the threshold
+and scale factors are pre-computed during calibration.                                                                                                   range. Thus, clustering can group the channels more accurately
+Tensor Decomposition. Tender decomposes channels by set-                                                                                                 than classification but is not likely applicable at runtime
+ting thresholds that are in powers of integer relationships.                                                                                             (without complex hardware) due to the large computational
+Decomposition consists of three steps. First, Tender finds the                                                                                           overhead. So, we choose to use classification to make our
+absolute maximum values of each channel (CMax). Tender                                                                                                   algorithm simple and to be easily extended to support runtime
+also computes the maximum value from CMax, which corre-                                                                                                  decomposition.
+sponds to the absolute maximum of a given tensor (TMax).                                                                                                    2) Why use coarse-grained thresholds for large values
+Then, we set the boundaries for splitting channels by dividing                                                                                           and fine-grained thresholds for small values?: The maximum
+TMax with the power of α and assign i-th channel to an                                                                                                   quantization error is 0.5 × (scale factor) since the maxi-
+appropriate group g satisfying the following equation:                                                                                                   mum value of rounding error is 0.5. The scale factor is
+                                   TMax          TMax                                                                                                    set proportional to the absolute maximum of the group. So,
+                                        < CMaxi ≤ g−1 ,                                                g = 1, 2, ...G                       (3)          as the absolute maximum of the group becomes larger, the
+                                    αg            α
+where CMaxi is the i-th channel absolute maximum. This                                                                                                   quantization error grows linearly. Also, considering that there
+is simple classification, which is much faster than clustering.                                                                                          exist multiple channels in a group, the quantization error of
+Finally, every channel in group g is quantized using the same                                                                                            a group grows linearly to the number of channels that are
+scale factor αg−1TMax         . If we choose an integer for α                                                                                            included in the group. We can express the quantization error
+                   ·(2b−1 −1)
+and compute channel groups with an ascending group index,                                                                                                of a group as follows:
+rescaling can be done using integer arithmetic by simply                                                                                                              Qerr ∝ Absolute Maximum × Number of Channels
+
+
+
+                                                                                                                                                    5
+

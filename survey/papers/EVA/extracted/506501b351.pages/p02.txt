@@ -1,0 +1,170 @@
+  GEMV                                            N         GEMM Unit … … …                                  …         Idle         M=1                                           originates from the codebook, explicit reconstruction is un-
+                                                                                        2,0 1,1 0,2              …     2,0    1,0   0,0    0,0 0,1 0,2 0,3
+                                                               Output
+                  K=8
+                                                INT8/         Stationary
+                                                                                        1,0 0,1                  …     1,1    0,1          1,0 1,1 1,2 1,3                        necessary. As shown on the left side of Fig. 1 (c), instead of
+  M=1
+
+
+
+                                       K                                                0,0       Weight
+                                                                                                                                                                                  decoding the weight indices (WIs) on-chip to reconstruct the
+                                 +
+                 Input                           INT4        M=1                                   n=4           …     0,2                 2,0 2,1 2,2 2,3
+
+                                                             …   0,2   0,1    0,0       0,0 0,1 0,2 0,3          3,0                       3,0 3,1 3,2 3,3
+
+
+                             =
+                                                             …   1,1   1,0
+                                                                                                                                                                 0,3
+                                                                                                                                                                                  full weight matrix, we directly compute dot products between
+
+
+
+
+                                                                              m=4
+                  N                             Weight
+
+
+
+
+                                                                             put
+                                                                              In
+                                                                                                                                                                                  the input vectors and the weight codebook (WC), generating
+  M=1
+
+
+
+
+                                                             …   2,0
+                                                                         Idle                                           Weight                         0,2
+
+                Output                                       …                                                         Stationary                0,1
+                                                                                                                                                       M=1
+ (a) Computation Inefficiency: GEMV Underutilization
+                                                                                                                                           0,0                                    intermediate results that collectively form an output codebook
+                                                                                                                                      Bank Mapping                                (OC). To support this operation, the input is partitioned into
+  Offline                                                                                            Online                               Bank 0 Bank 1
+                   N                            2-bit              d=4                                                                      6                7
+                                                                                                                                                                                  multiple vectors (e.g., v0 and v1 ), each multiplied by the WC
+                                                                                                             Conflict!                      4                5
+                                                   N
+                                                                        0
+                                                                                                                                            2                3                    to produce corresponding intermediate results that together
+                                 Quantization
+  d=4
+
+
+
+
+                                                                                    #Entry=8
+                                                                        1
+
+
+
+
+                                                                                                   Dequant
+                                                                                                                                            0                1
+                                                                        2
+                                                1347025
+                                   Vector
+
+
+
+
+                                                                        3                                                                               d=4                       constitute the OC.
+
+
+
+
+                                                                                                                 +
+                                                                                                                 +
+
+                                                                                                                             +
+                                                                                                                             +
+                                                6720543                ……                                    1347025
+                                                                        7                                    6720543                      Lookup Table                               Step 2: Conflict-free lookup from the output codebook.
+                                                   Weight
+                                                                  Weight                                     Weight Index
+                                                   Index
+                 Weight
+                                                                 Codebook
+                                                                                                                                                 GEMV
+                                                                                                                                                                                  As shown on the right side of Fig. 1 (c), the final outputs are
+ (b) Memory Inefficiency: Lookup Table Conflict                                                                                                                                   obtained by performing lookup operations on the OC using
+ Efficient GEMM                                                                                   Conflict-Free Lookup                                                            the WI matrix. Unlike conventional VQ, where lookups in the
+                 d=4
+                                       #Entry=8
+                                                                 #Entry=8                                                           V0 Bank 0                                     WC frequently cause memory bank conflicts, this formulation
+        K/d=2
+
+
+
+
+                                                                                                                                    0 1 2 3 4 5 6 7
+                                                         = 11 0 1 2 3 4 5 6 7 V0                       1347025
+                          d=4
+
+
+
+
+                  V0                                          0 1 2 3 4 5 6 7
+                                   0 1 2 3 4 5 6 7
+                                                                                                       6720543                                                         +          eliminates such conflicts entirely. During OC computation,
+                         +
+
+
+
+
+                  V1                                                          V1                                                    0 1 2 3 4 5 6 7
+                 Input                                      Output Codebook
+                                                                                                        Weight Index
+                                                                                                                                     V1 Bank 1                                    matrix multiplication implicitly distributes OC elements across
+ (c) Efficient Vector Quantization Architecture (EVA)                                                                                                                             different banks, as each bank stores results derived from
+                                                                                                                                                                                  distinct input vectors. For example, when indices such as 5
+Fig. 1. Motivation of this work. (a) Conventional GEMV suffers from poor                                                                                                          and 3 in the rightmost column of the WI matrix are accessed
+utilization of compute units during LLM decoding. (b) Vector quantization
+introduces irregular and conflicting memory accesses during online lookup. (c)                                                                                                    simultaneously, they map to different banks (corresponding to
+EVA eliminates lookup conflicts and reformulates LLM decoding into GEMM-                                                                                                          v0 and v1 ), enabling fully parallel and conflict-free access.
+style computation, enabling efficient execution on modern accelerators.                                                                                                              Advantages. This approach improves both computational
+                                                                                                                                                                                  and memory efficiency. (1) Computation. The LLM decod-
+tors (e.g., GPUs); in fact, it can even be slower than FP16                                                                                                                       ing process is effectively reformulated from GEMV to
+inference [41]. This limitation arises from two fundamental                                                                                                                       GEMM, increasing arithmetic intensity and parallelism. Since
+challenges:                                                                                                                                                                       the codebook is small (e.g., 256 entries) while N is large (e.g.,
+   (1) Compute inefficiency (Fig. 1 (a)). While VQ effectively                                                                                                                    4096), the overall computation cost is significantly reduced. (2)
+reduces memory bandwidth requirements, it does not alter                                                                                                                          Memory. Compared with conventional VQ, accessing the same
+the computational structure of the decoding phase, which                                                                                                                          number of weight indices does not require additional memory
+remains a sequence of small-scale GEMV operations. Such                                                                                                                           banks. At the same time, the bandwidth requirement is reduced
+matrix–vector computation is inherently inefficient on modern                                                                                                                     from reading d = 4 weight elements per access to reading
+accelerators optimized for large GEMM workloads, leading                                                                                                                          a single OC element, and memory conflicts are completely
+to low parallelism and poor utilization. This inefficiency is                                                                                                                     eliminated. These optimizations make EVA efficient in both
+not unique to VQ but is a general limitation of weight-only                                                                                                                       computation and memory utilization.
+quantization in LLM decoding [1], [49].                                                                                                                                              In summary, EVA transforms the inefficient VQ decoding
+   (2) Memory inefficiency (Fig. 1 (b)). Even after com-                                                                                                                          process into a conflict-free GEMM-style computation. We fur-
+pressed weights are loaded into on-chip memory, the ensuing                                                                                                                       ther design a dedicated hardware architecture that implements
+dequantization via codebook lookup often suffers from severe                                                                                                                      this reformulation to achieve high utilization and scalability
+memory access conflicts. These conflicts stem from the irreg-                                                                                                                     based on a simple yet effective insight.
+ular and uncoalesced indexing patterns inherent to LUT-based                                                                                                                         Specifically, EVA makes the following contributions:
+quantization, which lead to serialization, limited memory                                                                                                                            • We propose a codebook-driven GEMM formulation
+throughput, and reduced cache efficiency. For example, as                                                                                                                               that replaces conventional weight decoding with direct
+shown on the right side of Fig. 1 (b), indices 5 and 3 attempt                                                                                                                          dot products between input vectors and the weight
+to access the same memory bank simultaneously, resulting                                                                                                                                codebook. This formulation transforms memory-bound
+in a memory conflict and serialized access. This bottleneck                                                                                                                             GEMV operations into compute-efficient GEMM com-
+fundamentally limits their attainable speedup, regardless of                                                                                                                            putations, significantly improving utilization.
+their impressive compression ratios.                                                                                                                                                 • We develop an output-codebook lookup mechanism
+   To overcome these challenges, we propose EVA, an Efficient                                                                                                                           that reorganizes memory access into a conflict-free struc-
+VQ-based Architecture that addresses both computational and                                                                                                                             ture. By distributing output codebook entries across mem-
+memory inefficiencies in the LLM decoding phase. EVA is                                                                                                                                 ory banks, EVA eliminates lookup conflicts and reduces
+built on a simple yet effective aha insight, consisting of two                                                                                                                          bandwidth demand.
+main steps that jointly restructure computation and remove                                                                                                                           • We design and implement a hardware–software co-
+memory conflicts.                                                                                                                                                                       optimized architecture tailored for efficient LLM de-
+   Step 1: From weight decoding to codebook dot prod-                                                                                                                                   coding while maintaining compatibility with conventional
+uct. Since each vector in the VQ-quantized weight matrix                                                                                                                                accelerator execution in the prefill stage.
+
+
+
+
+                                                                                                                                                                           1352
+

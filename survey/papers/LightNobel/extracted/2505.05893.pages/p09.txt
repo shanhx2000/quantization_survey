@@ -1,0 +1,66 @@
+LightNobel: Improving Sequence Length Limitation in Protein Structure Prediction Model via Adaptive Activation Quantization             ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                                                                                                        Global Crossbar Network (GCN)
+computation units). Similarly, in PPM operations, most iterations
+require 4 or 5 PE Lanes for computation. Therefore, the number of                           16bit           16bit                             ...
+PEs is determined to be 20, which is their least common multiple.                                                     VVPU                                               VVPU
+   However, this introduces two key challenges. First, scaling fac-                                                                  Local Crossbar Network (LCN)
+
+tors must be considered before accumulation, as inlier multipli-
+                                                                                                     Exp LUT
+cation results require scaling before being combined with outlier
+                                                                                                                        SIMD                            SIMD
+multiplication results. Second, 4-to-1 and 5-to-1 adder trees are                                                       Core                            Core
+incompatible, necessitating a dynamic approach to accumulation.                                                                               ...                          ...
+To address these challenges, DAL dynamically manages varying
+                                                                                                    ALU
+numbers of PE Lane outputs while ensuring correct scaling factor                                                                         SIMD Lane
+application. Figure 9(e) shows the architecture of DAL. Specifically,                            Scratchpad                       Scalar Support Unit (SSU)
+for computations requiring 4 PE Lanes, scale factors are applied                         16bit      16bit     16bit                    128 SIMD Lanes
+after accumulation. In contrast, for computations requiring 5 PE
+Lanes, inlier values are first accumulated and scaled before being                                          Figure 10: Microarchitecture of VVPU.
+combined with the outlier results. To achieve this, one adder tree in
+DAL is disabled, and the outputs of the remaining four adder trees
+are accumulated with the result of the fifth PE Lane. The Arbiter is                    parallelism on bitonic top-k sorting [56]. During the sorting process,
+employed at the front of DAL to rearrange PE Lane outputs before                        the indices of the values are continuously tracked, enabling the
+entering DAL, ensuring efficient computation.                                           controller to identify the locations of the top-k values in the final
+   At the highest level, as shown in Figure 9(d), the RMPU Engine                       stage. This approach eliminates the need for additional sorting
+comprises four PE Clusters. To accommodate various workloads,                           modules, making the VVPU highly efficient for top-k operations
+the RMPU Engine produces multiple types of output results. The                          required in quantization. Moreover, when configured with k=1, the
+sum of the 2 PE results corresponds to the output required for MHA                      VVPU can search the maximum in operations such as Softmax.
+with a head dimension of 32, as described earlier. The sums of 4                           Runtime Quantization. One of the key functionalities of the
+and 5 PE Lane results serve as computational outputs for quantized                      VVPU is the runtime quantization. Unlike weight, activations are
+tokens processed within the DAL, and the sums of 8 or 16 PE Lane                        dynamically generated during runtime. Therefore, runtime quanti-
+results serve as computational outputs for non-quantized tokens.                        zation is critical for reducing memory footprint and computational
+Additionally, the engine generates the sum of 80 PE results, enabling                   requirements while enabling the continuation of operations. The
+scalability for larger computations that require multiple RMPUs. As                     quantization process begins with the top-k operation, where the
+the last layer, it also performs ReLU operations. Ultimately, a single                  VVPU identifies outliers and scaling factors using SIMD lanes. Each
+RMPU Engine supports up to 20 tokens simultaneously, achieving                          value is then scaled by the identified scaling factor. Then, LCN
+a high level of token parallelism.                                                      reorders the quantized values according to the memory layout
+                                                                                        for quantized data. Finally, the SSU aligns the necessary values to
+                                                                                        conform to the memory layout.
+5.3     Versatile Vector Processing Unit
+The Versatile Vector Processing Unit (VVPU) is designed to sup-                         5.4         Token-wise Multi-head Attention
+port all vector operations required for PPM, including LayerNorm,                       LightNobel is designed to maximize the efficiency of PPM by lever-
+Softmax, residual connections, and the new operations required for                      aging token-wise dataflow. To align with this design principle, the
+AAQ. By having a unified structure, the VVPU eliminates the need                        MHA mechanism is also implemented using token-wise dataflow.
+for separate dedicated components for each operation, achieving                         During the MHA computation, LightNobel eliminates the need for
+both high resource utilization and operational flexibility.                             writeback and read of intermediate activations, such as the atten-
+   Figure 10 shows the microarchitecture of VVPU. The VVPU                              tion score matrix. This approach is similar to FlashAttention [16]
+comprises multiple SIMD Lanes, a Scalar Support Unit (SSU), and a                       but with optimizations tailored for token-wise operation.
+Local Crossbar Network (LCN). Each SIMD Lane includes a SIMD                               The RMPU first performs a multiplication operation between Q
+Core with an ALU that can process operations between two 16-bit                         and K in parallel for each head, while the VVPU handles dequan-
+operands for weights, scratchpad memory, and a two-level expo-                          tization and accumulation of intermediate results simultaneously.
+nent lookup table [26]. These SIMD Lanes are interconnected via                         This computation is repeated iteratively, and the VVPU applies the
+the LCN, which allows it to handle data alignment problems dy-                          softmax operation to the outputs, pipelined with the Q and K multi-
+namically during runtime. SSU enhances the overall efficiency of                        plication steps, minimizing latency in finding the maximum value.
+the VVPU by handling scalar operations such as averaging and data                       Finally, the V tokens are loaded, multiplied by the softmax results,
+formatting for quantization tokens. This offloading mechanism en-                       and written to memory, completing the MHA computation. This
+sures that the SIMD Lanes remain dedicated to higher-complexity                         process significantly alleviates the high peak memory requirement
+computations, optimizing the utilization of hardware resources.                         that arises when storing the entire score matrix.
+   Dynamic Top-k Selection. To determine varying numbers of                                In conventional attention-based models, token-wise approaches
+outliers in the quantization scheme, identifying the top-k values at                    are challenging due to the limited opportunities for memory reuse
+runtime, the k largest elements among all token values, is essential.                   due to large hidden dimensions. However, our system benefits
+The VVPU addresses this requirement by leveraging hardware                              from PPM having a very small hidden dimension. Since PPM has
+

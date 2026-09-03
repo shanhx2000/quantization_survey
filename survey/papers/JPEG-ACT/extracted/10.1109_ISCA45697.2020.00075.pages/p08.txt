@@ -1,0 +1,68 @@
+we observe that fewer quantization modes are sufficient as the                          push bytes signal. When the IFIFO fill is greater than 128B,
+individual effect of single frequencies is reduced (Section IV).                        128B is popped from the head of the IFIFO and the filled
+   We use ZVC to compress the sparse result of the SH stage.                            packet is sent to the DMA unit ( 4 ). As pop operations are
+After the DCT and quantization, images have most zeros                                  always 128B, the IFIFO tail location is always at the 0th or
+at high frequency values (Figure 2). Conversely, activations                            128th byte.
+display a flatter profile, with zeros randomly distributed across                         The splitter unit operates during the backward pass (Figure
+mid and high frequencies (Figure 2). Thus, ZVC has a higher                             15b). 128B packets from the DMA are pushed onto a 256B
+compression than RLE on frequency domain activations.                                   Output FIFO (OFIFO, 5 ). Eight bytes, representing the mask
+   The modifications of SH and ZVC decrease hardware area                               of the next block to be read, are peeked from the front of
+by 1.5× (Section VI-F), and increase compression by up to                               the OFIFO ( 6 ). The mask is used to calculate the number of
+1.4× (Section VI-C).                                                                    bytes to pop from the OFIFO in the next cycle ( 7 and 8 ).
+                                                                                        As collection is deterministic, the distribution of blocks from
+G. Collector and Splitter                                                               the splitter occurs with the same round-robin policy ( 9 ).
+   The collector and splitter units are required to convert                               By utilizing a collector and splitter, multiple CDUs can be
+between the multiple CDU data streams and the single PCIe                               used while avoiding issues with inter-cache communication.
+DMA data stream. The collector joins the variable-sized
+                                                                                                      IV. O PTIMIZING C OMPRESSION
+streams from the CDUs into a single stream. The splitter splits
+the PCIe stream by calculating and tracking the number of                                  The JPEG DQTs for images (jpeg60, jpeg80, etc.) were
+bytes in each block. Both the collector and splitter connect                            created by extensively studying human perception, however,
+directly to the PCIe DMA unit.                                                          prior work indicates that CNNs have a different frequency
+   The scheduling policy for interleaving CDUs can have a                               sensitivity [55]. Optimization is performed by first defining
+large impact on collector and splitter designs, hence it needs                          metrics for approximating network convergence and compres-
+to be addressed first. The collector and splitter operate at                            sion, and the creation of an objective function (Figure 9). This
+a rate of one 8 × 8 block per cycle (Figure 15). The load                               results in a significantly higher activation compression rate
+or store rate to the GPU crossbar is one block per eight                                with similar error relative to a JPEG DQT for images.
+cycles per CDU. Hence, the entire JPEG-ACT accelerator will                                Network convergence is currently a poorly understood topic
+always be bottlenecked by either the PCIe interconnect at low                           [56]. However, an efficient way of measuring convergence is
+compression rates or the crossbar link at high compression                              required to optimize the JPEG DQT. There are no objective
+rates. As the CDU processing is 8× faster than the crossbar                             functions to gauge the final accuracy of a network without
+rate, we use a simple round-robin scheduling of the CDUs                                training. Therefore, we choose to maintain accuracy, rather
+accomplished with a simple mux (Figure 15), i.e. CDUs are                               than attempting to maximize accuracy.
+scheduled in order with one cycle each. This also solves the                               The effect of JPEG compression on training can be under-
+issue of splitting, as streams are deterministically interleaved.                       stood by considering a single layer of a network during train-
+   The collector unit operates during the forward pass (Figure                          ing, with reshaped and padded activations, x ∈ RN CH×W , and
+15a). One CDU writes to the collector on each cycle with a                              weights, w. For one iteration of backprop and no compression,
+round-robin policy ( 1 ). The ZVC mask is summed to obtain                              output activation and weight gradient are calculated as y =
+the total number of non-zero bytes in the block ( 2 ). The                              w ◦ x, and ∇w = ∇y ◦ x, respectively, where ∇y is the output
+primary structure for aligning non-zero values is the 256B                              activation gradient, and ◦ is a generic tensor dot product. If
+Input FIFO (IFIFO, 3 ). The IFIFO is designed to allow a                                the iteration is repeated using JPEG activation compression,
+variable-sized push operation from 0B to 72B, indexed by the                            the approximate weight gradient, ∇w∗ , is calculated as:
+                                                                                                                                          
+                                                                                                        q = qij = [DCT(x)ij /DQTuv ]                 (6)
+                                                                                                       x∗ = iDCT( qij DQTuv )
+                                                                                                                               
+ a)     CDU 1      ⋯ CDU 4                    b)               CDU 1      ⋯ CDU 4                                                                    (7)
+      64B         8B                 1                    64B        8B             9              ∇w∗ = ∇y ◦ x∗                                     (8)
+                                  sum
+                                                                 {vals, mask}
+                                                                                        where u, v ≡ i mod 8, j mod 8, [...] is the round-to-nearest
+            {vals, mask}
+                                     +8                                                 function, q ∈ ZN CH×W is the quantized frequency matrix,
+                  3  72B                                   7           8 72B
+                               push_bytes
+                                              pop_bytes         7                       and x∗ is the recovered activation.
+                                 7        2
+                  256B                             +8                    256B              The tensor dot product is a linear operation, hence the error
+                              OFIFO                             6               IFIFO
+                                                   sum
+                                                             8B                         relative to uncompressed can be expressed as:
+              4                                           front_8bytes     128B 5
+                       128B                                                                             ∇w∗ − ∇w = ∇y ◦ (x∗ − x)                     (9)
+                  DMA                                                    DMA
+                                                                                           Identical convergence to uncompressed is achieved as the
+Fig. 15: a) Collector and b) Splitter units for aggregating and                         error approaches zero. This can be accomplished by minimiz-
+splitting compressed streams. Pipeline registers and control                            ing the L2 activation error, using Eqn. 9 and a first order
+signals inserted as necessary.                                                          approximation: k∇w − ∇w∗ k ∝ kx − x∗ k.
+

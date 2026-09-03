@@ -1,0 +1,106 @@
+                                                                                                     LLC bin 0 bin 1 … bin m SpZip Compressor
+       Queue Configuration
+  id    min max head tail              Range
+                                                                                1
+   0      0   64     0      0
+                                       Range        Range       Decom
+   1     64 320 64         64                                    press
+                                   0            3           4                   2
+                                                                                                                                        Scheduler
+                                                                                                                                               … ctxt k
+   2    320 832 320 320
+   3    832 896 832 832          Decompression Unit Contexts                 Indir
+                                                                                                        MQU        SWU        CU      ctxt 0
+                                                                         5
+
+                                                                                                                                    … qn
+   4    869 1408 896 896        type inQ outQs width lastVal
+   5    1408 1920 1408 1408     delta 4 2, 5     4      0
+                                                                                                             q0            q1
+
+
+
+
+                                                                                                                                                    configure
+       Access Unit Contexts                     For range fetch useEndAs marker
+  type inQ outQs idxSz (B) elemSz (B) baseAddr curIdx rangeEnd NextStart value
+ range 0       1      8        8       contribs   0        0       No      0                          min head tail max Scratchpad
+ range 0       3      8        4        offsets   0        0       No      0                                          enqueue    dequeue
+ range 3
+  indir 5
+               4
+               -
+                      4
+                      4
+                               4
+                               8
+                                       cNeighs
+                                        scores
+                                                  0
+                                                  -
+                                                           0
+                                                            -
+                                                                   Yes
+                                                                    -
+                                                                           1
+                                                                           -
+                                                                                                                                       Core
+                                                                                                         Fig. 12. SpZip compressor microarchitecture.
+Fig. 11. DCL pipeline (top right) and fetcher configuration (queue configuration
+and FU contexts) for Push PageRank with compressed neighbors.                               memory. The compressor shares many features with the fetcher:
+ 1     def PageRankIter ( Graph g, Array scores ,                                           it is a decoupled engine; the core communicates with it us-
+ 2                        Array contribs ):                                                 ing queues, and configures it using memory-mapped I/O; it is
+ 3       spzip_fetcher_cfg (...) # load Fig .11 pipe
+ 4       inQ = 0, contribsQ = 1, neighQ = 2                                                 programmable; and it uses a similar time-multiplexed implemen-
+ 5       enqueue (inQ , {0, g. numVertices })                                               tation. However, the compressor has two key differences. First,
+ 6       while contrib = dequeue ( contribsQ )                                              it issues LLC accesses rather than L2 accesses. This avoids
+ 7                         is not marker :
+ 8         while dst = dequeue ( neighQ )                                                   polluting private caches with data that is unlikely to be reused
+ 9                           is not marker :                                                before being evicted, and lets the engine use the larger LLC to
+10           scores [dst] += contrib
+                                                                                            buffer yet-to-be-compressed data. Second, compressors have a
+            Listing 4. Serial Push PageRank using SpZip fetcher.                            different mix of operators, to compress and write data streams.
+interpreted as a marker instead of data. The range fetch operator                              We focus our compressor design on handling either a single
+emits a marker after finishing each range, and the decompression                            stream (e.g., the frontier in BFS) or many streams (e.g., the
+operator interprets each range as the end of a compressed chunk.                            update bins in Update Batching). With simple extra functional
+Each range fetch operator can specify a value associated with                               units, the compressor could produce all elements of compressed
+each marker, and all operators have pass-through semantics for                              sparse data structures (like the CSR with compressed rows from
+markers: each marker at the input is copied to the output queues.                           Sec. II-B; the compressor can currently produce the rows, but
+This lets the core infer the semantics of dequeued elements. For                            not the offsets, which a core would need to produce). But we
+example, in the BFS pipeline from Fig. 6, the core can identify                             do not need this in the applications we study.
+the end of each neighbor set thanks to markers produced by                                  Compressor microarchitecture: Fig. 12 shows the design of
+the neighbor range fetch, and the end of each frontier range                                the compressor, which includes a scratchpad for local queues,
+thanks to markers produced by the earlier frontier range fetch.                             several functional units, and a scheduler, just like the fetcher.
+Fetcher usage and API: To load a DCL program in the fetcher,                                   The functional units include a compression unit (CU), a
+the core writes the configuration (sizes and locations) of all                              stream writer unit (SWU), and a memory-backed queue unit
+queues, as well as the configuration of each operator context.                              (MQU). The first two are used to compress a single stream, and
+Fig. 11 shows the configuration for a variant of Fig. 5’s PageR-                            the last one uses (cached) memory to implement a large number
+ank pipeline where, in addition, neighbor sets are compressed.                              of queues. This is needed when compressing many streams so
+This configuration is done rarely, through memory-mapped I/O.                               that we can leverage the LLC to buffer them. We explain these
+   Listing 4 shows pseudocode for an iteration of serial Push                               units through DCL pipelines for one and many streams.
+PageRank (similar to Listing 1) using the DCL program from                                  Compressing a single stream:                      Compressed Memory
+                                                                                                                              input             chunk
+Fig. 11. The spzip_fetcher_cfg(...) runtime function con-                                   Fig. 13 shows the DCL                     Compress          StreamWr
+figures the fetcher as described above, and enqueue() and                                   pipeline for compressing a Fig. 13. DCL pipeline to compress a
+dequeue() translate to specialized instructions. The initial                                single stream, like the frontier single stream.
+enqueue starts a traversal of the full compressed graph (by                                 or a sequence of rows. The compression operator processes
+enqueueing the range {0, g.numVertices} to queue 0 in                                       the uncompressed input stream, and the stream writer writes
+Fig. 11). The code then dequeues contribs and neighbor ids,                                 it sequentially to (cached) memory, starting at a configured
+and applies each source’s contrib to its neighbors’ scores. The                             address, and tracks the length of the compressed stream. The
+dequeue instruction reads the value and whether it is a marker,                             input stream uses markers to delimit the chunks to compress
+and the code exits each loop upon finding a marker. (Our imple-                             (e.g., to separate rows or denote the end of the frontier).
+mentation uses x86, so the marker bit is stored in the overflow                             Compressing many parallel streams: Fig. 14 shows the DCL
+flag; ISAs without flags can use a second output register in-                               pipeline for compressing the bins in Update Batching (UB),
+stead.)                                                                                     which is the most impactful use of on-the-fly compression in our
+                                                                                            applications. Conceptually, each bin is a separate stream. But
+C. SpZip compressor                                                                         UB needs many parallel streams, because each bin is limited to
+  The SpZip compressor is the dual of the fetcher: it com-                                  a cache-fitting slice. For example, a graph with 32 GB of vertex
+presses newly generated data before it is written back to main                              data and a 32 MB LLC needs 1024 bins. This would take 2048
+
+
+
+
+                                                                                     1075
+
+         Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:08:17 UTC from IEEE Xplore. Restrictions apply.
+

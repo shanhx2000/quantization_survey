@@ -1,0 +1,55 @@
+layer-specific lossless encodings and one lossy encoding that    •    Footprint Reduction on a Real System. We observe that
+are fast, efficient in reducing memory footprint, and have           Gist reduces the memory footprint by 2× across 5 state-
+minimal effect on training accuracy.                                 of-the-art image classification DNNs, with an average of
+   Our first lossless encoding, Binarize, specifically targets       1.8× with only 4% performance overhead. By reducing
+ReLU layers followed by a pooling layer. Upon careful ex-            memory footprint, Gist can fit larger minibatches in the
+amination of ReLU’s backward pass calculation, we observe            GPU memory, improving GPU utilization and speeding up
+that the ReLU output, that has to be stashed for the backward        the training for very deep networks, e.g., a speedup of 22%
+pass, can be encoded using just 1-bit values, leading to             for Resnet-1202. We also show that further optimizations
+32× compression for the ReLU outputs. Our second lossless            to existing DNN libraries and memory allocation can result
+encoding, Sparse Storage and Dense Compute (SSDC), that              in even larger memory footprint reductions (upto 4.1×).
+specifically targets ReLU followed by convolution layer,
+is based on the observation that ReLU outputs have high                       II. BACKGROUND AND M OTIVATION
+sparsity. SSDC facilitates storage in memory-space efficient        DNNs typically consist of an input and an output layer
+sparse format but performs computation in dense format, re-      with multiple hidden layers in between. Recently, convolu-
+taining the performance benefits of highly optimized cuDNN       tion neural networks (CNNs), a class of DNNs, have been
+dense computation, while exploiting sparsity to achieve          shown to achieve significantly better accuracy compared
+high reduction in memory footprint. Finally, in the lossy        to previous state-of-the-art algorithms for image classifica-
+domain, our key insight of representing the stashed feature      tion [32], [45], [46], [22], [34]. CNNs have been growing
+maps in smaller format only between the two temporal uses        deeper with every iteration, starting with few convolution
+enables us to be very aggressive with precision reduction        layers in the beginning (AlexNet) to hundreds of convolution
+without any loss in accuracy compared to baseline. This          layers in recent ones (Inception).
+lossy encoding, Delayed Precision Reduction (DPR), delays
+precision reduction to the point where values are no longer      A. Training vs. Inference
+needed in the forward pass and achieves significant bit             DNNs have two distinct modes of operation: (i) training,
+savings (as small as 8 bits).                                    when a model is trained based on a set of inputs (training
+   Utilizing all these encodings, we present Gist that specif-   set) and a corresponding set of expected outputs, and (ii)
+ically targets feature maps to reduce the training memory        inference, when an already trained network is used to
+footprint. It performs a static analysis on the DNN execution    generate predictions for new inputs.
+graph, identifies the applicable encodings, and creates a new       For this paper, we focus on two main differences between
+execution graph with relevant encode and decode functions        training and inference. First, training consists of two phases:
+inserted. Gist also performs a static liveness analysis of       forward and backward passes [41], [10]; inference only
+the affected feature maps and newly generated encoded            involves a forward pass. The goal of the backward pass
+representations to assist the DNN framework’s memory             in DNN training is to backpropagate error and find weight
+allocator, CNTK [43] in our case, to achieve an efficient        error gradients that can be applied to the weights to steer
+memory allocation strategy.                                      the parameters in the right direction. Training is performed
+This paper makes the following contributions:                    in batches of input samples, commonly known as a mini-
+ • Systematic Memory Breakdown Analysis. We perform              batch [3]. Training on minibatches as opposed to training on
+  a systematic memory footprint analysis, revealing that         an image-by-image basis has been shown to achieve better
+  feature maps are the major memory consumers in the DNN         accuracy and better hardware utilization [12], [21], [9].
+  training process. We also make a new observation that the         Second, in inference, the major part of storage overhead
+  feature maps have high data redundancy and can be stored       comes from weights. These weights are fixed after training,
+  in much more efficient formats between their forward and       and hence many different optimizations can be applied to
+  backward use.                                                  reduce their storage requirements [17], [2], [18], [5]. In
+ • Layer-specific Lossless Encodings. We present two             contrast, training has many distinct data structures, e.g.,
+  layer-specific encodings – (1) Binarize that achieves 32×      weights that change over the course of training, weight
+  compression for ReLU outputs for layer combination of          gradients, feature maps (intermediate layer outputs) that
+  ReLU followed by Pool, and (2) Sparse Storage and Dense        need to be stashed in the forward pass for use in the
+  Compute that exploits high sparsity exhibited in ReLU          backward pass, and backward gradient maps.
+  outputs for ReLU followed by convolution layers.                  1) Why Memory Can Be a Problem in Training?: To
+ • Aggressive Lossy Encoding. We present DPR, that ap-           understand the memory requirements of GPU-based training,
+  plies precision reduction only for the backward use of         we study the breakdown of memory footprint on five state-
+  the feature maps – values in the forward pass are kept in      of-the-art CNNs in CNTK. While using FPGAs [50] and
+  full precision – leading to aggressive bit savings without     ASICs [28], [25] is also possible, most of these designs are
+  affecting accuracy.                                            either proprietary or in relatively early development stages.
+

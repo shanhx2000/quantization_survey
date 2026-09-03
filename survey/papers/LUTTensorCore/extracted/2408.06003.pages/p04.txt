@@ -1,0 +1,106 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                             Mo et al.
+
+
+                                                                                                                                         DFG Trans.
+                      1 Table Precomputation                        2 Table Lookup
+                                                                         &MUX      3 Partial
+                                                                                      Addtion
+                                                                                             Sum
+                                                                                                                            Activation                           LUT Table
+                                                                                                                                    Pre-                          -A-B-C-D
+
+
+                      CD
+                                                                                                                       Norm
+
+
+
+
+                                                                                                                                                                                      MUX
+                                                                          W0 W1 W2 W3
+
+                                           Index   Act Bit widths                                                                 Compute
+
+                   AB
+                                           0000         0                               PSUM FSM SHIFTER
+                                                                                                                          Op. Fusion
+W0  A                                      0001         D                                     << (0,1,2,3)
+                                                                                                                                                  LUT-
+                                                                                                                                                         LMMA    -A+B+C+D
+
+
+  ● B
+W   1                         16 Entries
+                                                                                                                  Low-bit                       mpGEMM
+
+
+
+
+                                                                            MUX
+    C
+                                                                                           D Q                                                                  Low-bit Weight
+W                                                                                                                 Weight       Offline
+
+
+
+
+                                                                                                                                                                                      MUX
+    2
+
+W   D
+    3
+                                                                                                                             Remapping
+                                           1110  +A+B+C
+                                           1111 +A+B+C+D                                                                Software Optimization                       LUT Tensor Core Unit
+
+
+                                                                                                                               Figure 6: LUT Tensor Core workflow.
+Figure 5: Conventional LUT hardware in three steps. Table
+precomputation and storage introduce heavy overhead.
+                                                                                                                 Tensor Core. Different from conventional hardware-based LUT
+                                                                                                                 solutions where table precompute and storage introduce significant
+prevents completing a whole table lookup in a single instruction,                                                hardware overhead, LUT Tensor Core introduces software-based
+reducing throughput. Second, table location significantly affects                                                optimizations (§3.1) to optimize the table precompute and stor-
+performance. Storing lookup tables in the register file causes ex-                                               age: precomputing the LUT table for the input activation tensor is
+tensive data duplication across threads due to the broadcast nature                                              performed by operator fusion, while the input weight tensor is rein-
+of LUT methods, leading to register spillage when handling large                                                 terpreted to enable table storage optimizations. On the hardware
+tables. Conversely, placing tables in shared memory may result in                                                side, the LUT-based Tensor Core microarchitecture (§3.2)provides
+bank conflicts due to random accesses by threads within a warp,                                                  efficiency for mpGEMM processing and flexibility for different bit-
+severely affecting memory bandwidth. These issues lead to their                                                  width data types. To integrate LUT Tensor Core into existing deep
+reduced effectiveness compared to dequantization-based kernels on                                                learning ecosystem, LUT Tensor Core designs the LMMA instruc-
+existing LLM inference hardware, such as GPUs. Figure 4 compares                                                 tion set to expose the LUT-based Tensor Core for programming
+the performance of the LUT-based mpGEMM kernel in [53] to the                                                    mpGEMMs and implements a compilation stack to schedule the
+dequantization-based mpGEMM kernel in CUTLASS [50] on A100                                                       end-to-end LLM execution (§3.3).
+GPU. The results indicate that the dequantization-based kernel
+consistently outperforms the LUT-based kernel. Notably, when the                                                 3.1    Software-based Table Optimization
+batch size is large, the LUT-based kernel suffers from significant
+performance degradation due to table access overhead, performing                                                 As introduced in §2, LUT-based mpGEMM requires an additional
+several orders of magnitude worse. The “Seg. Error” annotation                                                   table precomputation process and storage to store the precomputed
+indicates a segmentation error observed in LUT-GEMM[53].                                                         results. Naively, the precomputed dot products of a length 𝐾 activa-
+    Hardware LUT Accelerator. At first glance, customized LUT                                                    tion vector on the 𝑊 _𝐵𝐼𝑇 weight require (2𝑊 _𝐵𝐼𝑇 ) 𝐾 entries for the
+hardware promises efficiency gains due to its simplicity, requir-                                                table. For each activation element, multiplying it with the 𝑊 _𝐵𝐼𝑇
+ing only registers for table storage and multiplexers for lookups.                                               weight has 2𝑊 _𝐵𝐼𝑇 possible results, constructing the precompute
+However, our study indicates that conventional LUT hardware                                                      table for this activation element. Therefore, the precomputed table
+designs fall short of delivering these gains. Figure 5 depicts a con-                                            has (2𝑊 _𝐵𝐼𝑇 ) 𝐾 entries for a length 𝐾 activation vector. Figure 3
+ventional three-step LUT-based hardware solution for mpGEMM:                                                     shows the lookup table with 24 entries for 𝐾 = 4,𝑊 _𝐵𝐼𝑇 = 1.
+table precomputation, table lookup, and partial sum addition. Nu-                                                   A commonly-used optimization is bit-serial [27], which repre-
+merous challenges and unexplored design aspects significantly                                                    sents a 𝑊 _𝐵𝐼𝑇 integer as 𝑊 1-bit integers and performs multipli-
+impact the overall performance: (1) Table precompute and storage.                                                cation over 1-bit integers with bit shift. This paradigm can reuse
+Precomputed tables can occupy excessive storage, incurring area                                                  the precompute table on 1-bit, and therefore reduces the table size
+and latency overhead and thus diminishing efficiency gains. (2) Bit-                                             to 2𝐾 . Nonetheless, even this reduced table size entails significant
+width flexibility. Supporting various bit-width combinations (e.g.,                                              hardware overhead. LUT Tensor Core proposes dataflow graph
+INT4/2/1 × FP16/FP8/INT8) may consume excessive chip area. (3)                                                   (DFG) transformation and operator fusion to eliminate the table
+LUT tiling shape. Suboptimal tiling increases storage costs and lim-                                             precomputation overhead, as well as weight reinterpretation and
+its table reuse opportunities, impacting performance. (4) Instruction                                            table quantization to reduce the table size.
+and compilation. A new instruction set is required for LUT-based                                                 3.1.1 Precomputing lookup table with DFG transformation
+mpGEMM. However, the conventional compilation stack, optimized                                                   and operator fusion. The LUT-based mpGEMM requires precom-
+for standard GEMM hardware, may not efficiently map and sched-                                                   puting the dot products between high-precision activations and
+ule the new instruction set, complicating integration with existing                                              a set of low-precision weights as a table for the later lookup op-
+software stacks.                                                                                                 erations. Conventional implementations position the precompute
+                                                                                                                 unit adjacent to the LUT unit, performing table precomputation
+3       LUT Tensor Core Design                                                                                   on-the-fly for each LUT unit. This approach introduces signifi-
+We introduce LUT Tensor Core, a software-hardware co-design                                                      cant hardware costs due to redundancy, as multiple precompute
+aimed at addressing the aforementioned efficiency, flexibility, and                                              units often perform identical operations. Considering an example
+integration challenges (§2.3). Figure 6 provides an overview of LUT                                              of [4096,12288]×[12288,12288] GEMM in OPT-175B, a naive direct
+                                                                                                             4
+

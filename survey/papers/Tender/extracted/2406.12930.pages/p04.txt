@@ -1,0 +1,71 @@
+in performing matrix multiplication due to the dequantiza-                 To this end, we propose Tender, an algorithm hardware
+tion that involves floating-point operations (Section III-B).           co-design technique for quantizing large language models en-
+SmoothQuant [65] addresses the quantization difficulty by               tirely into INT4/INT8 without using mixed precision, custom
+partially migrating it from the activations to weights. However,        datatypes, or re-training. The carefully designed post-training
+there exist inefficiencies because it does not explicitly isolate       quantization (PTQ) algorithm of Tender decomposes channels
+outliers from normal values, leading to a large quantization            to isolate outlier channels from normal ones in activation
+loss at ultra low-bit precisions (Section V-B).                         tensors. At the same time, Tender enables rescaling inside
+   There are also several outlier-aware accelerators that use           the tensor compute units, so it does not require explicit
+mixed precision to quantize normal values into low bits while           requantization and thus fully utilizes the integer pipelines. In
+separately handling the outliers. GOBO [70] is a weight-                the following sections, we discuss how the above rescaling can
+only quantization scheme that quantizes outlier weights using           be done inside the compute units with minimal extensions to
+higher precision. OLAccel [44] uses a few 16-bit MAC units              hardware through the software-hardware co-design of Tender.
+alongside 4-bit MAC units to deal with outliers. DRQ [52]
+                                                                                   III. A LGORITHMIC I MPLEMENTATION
+employs a fine-grained detection algorithm to identify sensitive
+regions in a tensor. All of these works use mixed precision,            A. Overview
+requiring complex hardware and unaligned memory access.                    In this section, we introduce tensor decomposition and
+OliVe [20] is the most recent work, which quantizes outliers            runtime requantization of Tender. As discussed in Section II-B,
+using custom number representations. Although there is no               outliers reside along the channels in the activation tensors
+mixed precision involved, it prunes adjacent normal values and          across the layers of LLMs. Thus, we decompose channels
+requires an encoder/decoder to support its custom datatype.             to minimize the quantization error by isolating the outlier
+                                                                        channels from the others. We propose a “Power of 2” channel
+D. Challenges and Opportunities                                         decomposition rule that aligns well with the value distribution
+   Intuitively, one can choose to split activation tensors along        of activation tensors. Also, we present runtime requantization
+the reduction axis (i.e., columns in 2D) and quantize each              that works harmonically with the decomposition rule. It en-
+group with different scaling factors instead of employing an            ables matrix multiplication between decomposed, quantized
+impracticable per-column approach. We can then represent the            activation tensors and linear symmetrically quantized weights
+matrix multiplication via the channel grouping as follows:              without involving floating-point operations but in a mathe-
+                                      G                                 matically equivalent way. We then present a walking example
+                    Xi × Wi           X
+             Pi =           ,   Y =     (si sw ) · Pi ,       (1)       of the Tender algorithm and optimizations at the end of the
+                     si sw            i=1                               section.
+where si and sw are the scale factors of activation of group i             While the explanation in this section is based on INT8
+and weight. Pi , Y , and G denote the partial sum from group            quantized activation-weight matrix multiplication, the same
+i, the final resulting matrix, and the number of groups.                algorithm is applied to INT4 or activation-activation matrix
+                                                                                                          T
+   The above execution model still suffers from lower utiliza-          multiplication (e.g., XQ × XK       in a Transformer block).
+tion of compute cores due to smaller submatrices and frequent           Furthermore, Tender can be easily extended to other bit widths
+rescaling to accumulate partial product Pi . Thus, to fully             (e.g., 5, 6, 7-bit integers) in the same way if the hardware
+benefit from quantization while preserving the accuracy of the          supports such datatype operations. This is possible due to the
+model, we need to address the following challenge—splitting             standard and symmetric quantization of Tender, whereas other
+channels along the reduction axis and grouping channels                 approaches typically need to define new custom datatypes.
+with similar ranges to isolate outliers from the others while           B. Tender: Decomposed Quantization
+retaining the reduction axis to better utilize compute cores.
+                                                                        Tender Computation Flow. As mentioned in Section III-A,
+   Our intuition is that we can retain the reduction axis of
+                                                                        we decompose activation tensors throughout the attention
+matrix multiplication by processing partial sums in a specific
+                                                                        and feed-forward layers for quantization. Figure 4 shows our
+order and rescaling the accumulated value before adding the
+                                                                        decomposed quantization strategy. First, we compute the bias
+next partial sum. Our execution model can be expressed as the
+                                                                        of each channel and subtract it from the activation tensor. The
+following equation:
+                                                                        bias is a similar concept to the zero-point used in asymmetric
+                                       si
+             A1 = P1 ,   Ai+1 = Ai ·      + Pi+1 ,                      quantization, and it is computed as the sum of the maximum
+                                     si+1                     (2)       and minimum values divided by two. By subtracting the bias,
+                       Y = AG · (sw sG ),
+                                                                        Tender ensures that the absolute values of the maximum and
+where Ai represents the results accumulated up to ith partial           minimum elements in the channel are equal, thus optimizing
+sums. Note that Equations 1 and 2 are mathematically equiv-             the bit usage.
+alent. For Equation 2 to operate efficiently in hardware, the              Then, to accommodate the presence of outliers in quantiza-
+rescaling needs to be performed by the integer MAC units                tion, we decompose the channels of the activation tensor into
+while preserving correctness. We will use the term rescale              multiple groups of subtensors and use separate scaling factors
+factor to denote si /si+1 between the channel groups.                   for each group. Through runtime requantization, we multiply
+
+
+
+                                                                    4
+

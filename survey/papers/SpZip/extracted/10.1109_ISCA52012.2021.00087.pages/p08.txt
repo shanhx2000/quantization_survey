@@ -1,0 +1,72 @@
+                    …   Uncompressed        Compressed       …                   1    def PageRankIter ( Graph g, Array scores ,
+                        bins         Memory       bins
+                                                                                 2                       Array contribs ):
+                                                                                 3      spzip_fetcher_cfg (...) # Fig .11 w/o indir
+               MemQ          Compress          MemQ                              4      spzip_comp_cfg (...) # Fig .14 pipe
+      input       Uncompressed      Compressed                                   5      inQ =0, contribsQ =1, neighQ =2, binsQ =8
+                     chunk            chunk                                      6      enqueue (inQ , {0, g. numVertices })
+                                                                                 7      # Binning phase
+     Fig. 14. DCL pipeline to compress UB bins (multiple streams).               8      while contrib = dequeue ( contribsQ )
+                                                                                 9                         is not marker :
+queues in the fetcher if we followed the single-stream approach                 10        while dst = dequeue ( neighQ )
+                                                                                11                           is not marker :
+in Fig. 13 (which uses two queues per stream). This would                       12           binId = dst / verticesPerBin
+demand a too-large queue scratchpad.                                            13           enqueue (binQ , {binId , {dst , contrib }})
+                                                                                14      # close bins & wait till they ’re produced
+    Instead, the memory-backed queue unit (MQU) implements                      15      for binId in range( numBins ):
+queues in conventional memory (without changing the inter-                      16        enqueue (binQ , {binId , endMarker })
+nals of the cache): both the queue storage and its pointers                     17      spzip_comp_drain () # wait
+                                                                                18
+are kept in memory. The MQU interacts with memory through                       19       # Accumulation phase
+conventional loads and stores (issued to the LLC in our imple-                  20       for cBin in compressedBins :
+                                                                                21         spzip_fetcher_cfg (...) # decompress cBin
+mentation). The MQU context is simply the number of queues,                     22         spzip_comp_cfg (...) # Fig .13 pipe
+and the starting address of an array that holds min, tail, and max              23         enqueue (inQ , {0, cBin.size })
+                                                                                24         while {dst , contrib } = dequeue (binQ)
+pointers of each queue. The MQU interprets its input queue as                   25                                  is not marker :
+(queueId, value) tuples, and enqueues value to the queue                        26           scores [dst] += contrib
+with queueId. This requires reading and writing the tail pointer,                    Listing 5. Serial UB PageRank using SpZip compressor and fetcher.
+and writing the value to memory. When an in-memory queue
+fills up or the input is a marker, the MQU streams the queue                    the fetcher fetches each compressed bin, and the code applies
+through its output (as the queueId followed by the contents of                  the updates in each bin to neighbor scores.
+the in-memory queue), and marks the queueId queue empty;
+or, if MQU has no output queue, it quiesces and interrupts a                    D. System-level integration
+core (e.g., to allocate more space for the queue).
+    Fig. 14 begins with an MQU that manages one queue per bin.                  Using SpZip: While we have so far shown code that uses
+These queues store uncompressed bin data, and their purpose                     SpZip explicitly, we do not expect application programmers
+is to build large enough chunks (e.g., 32 updates per bin) that                 to write DCL programs directly. Instead, application code can
+can be compressed efficiently. Once a queue fills up, the chunk                 use specialized runtimes or compilers. In fact, we use a Ligra-
+is passed through the compressor from the first MQU. The                        style graph processing framework (Sec. IV), and change only
+compressed chunk is then handled the second MQU, which                          framework code to use SpZip, not application code. The DCL
+manages the compressed bins. Software allocates an initial                      program is manually extracted via analyzing the data struc-
+amount of space per bin (e.g., 2 MB), and allocates more space                  tures and their traversal pattern in the graph processing frame-
+on demand, when the bin fills up, using the interrupt mechanism.                work. Moreover, domain-specific languages like TACO [37]
+With this approach, the first MQU manages a limited amount                      and GraphIt [18, 80] encode all the needed information to au-
+of space that the LLC holds easily, whereas the second MQU                      tomatically generate DCL programs from high-level code.
+appends to the much larger compressed bins. Compressed bins                     Parallelism and load balancing: Although prior examples
+typically exceed the LLC’s capacity, so conventional evictions                  show serial execution, we use SpZip in a parallel fashion. Our
+displace them to main memory.                                                   runtime divides either the vertices (in all-active) or frontier (in
+Compression optimizations for order-insensitive data: As de-                    non-all-active algorithms) into chunks, and divides them among
+scribed in Sec. III-B, we implement delta-encoding and                          threads. Threads then enqueue traversals to fetchers chunk by
+BPC [35] compression. In addition, we find that in many cases                   chunk, and perform work-stealing of chunks to avoid load im-
+compressed data is often order-insensitive: the order in which it               balance. In Update Batching, in the binning phase, threads (and
+is encoded is irrelevant. For instance, bins store sets of updates,             their compressors) produce bins in parallel; in the accumulation
+and the frontier stores the set of active vertices, so reordering               phase, each bin is also chunked and consumed in parallel by
+the elements in these streams does not affect semantics.                        multiple threads (and their fetchers).
+    We leverage this by optionally sorting the elements of a                    Virtual memory: SpZip operates on virtual addresses. Like
+chunk (32 elements in our implementation) before compressing                    prior indirect prefetchers and fetchers, each SpZip fetcher and
+it. This places similar values nearby, which improves compres-                  compressor use their core’s address translation hardware [5, 44,
+sion ratios in both delta encoding and BPC.                                     73]. Specifically, fetcher and compressor use the core’s L2 TLB.
+Compressor usage and API: Like the fetcher, the compressor                      If a unit causes a page fault, it interrupts the core, so the OS
+is configured by writing its queue and operator contexts through                can handle the page fault. The unit stops issuing accesses after
+memory-mapped I/O. Listing 5 shows pseudocode for serial                        a fault, and the OS reactivates it after the fault is handled.
+UB PageRank. In the binning phase, the fetcher fetches and                      Coherence and consistency: SpZip issues coherent memory
+decompresses contribs and neighbor ids (like in Listing 4), and                 accesses, and does not affect coherence or consistency. But
+the compressor compresses each bin. In the accumulation phase,                  SpZip engines operate autonomously, like separate threads,
+
+
+
+                                                                         1076
+
+       Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:08:17 UTC from IEEE Xplore. Restrictions apply.
+

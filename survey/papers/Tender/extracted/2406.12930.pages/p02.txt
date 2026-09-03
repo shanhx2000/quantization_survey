@@ -1,0 +1,72 @@
+shifter logic in the tensor compute units. This approach pro-          Input Tokens                                                               Output Token
+vides us with two key benefits. First, it makes requantization            Stars
+                                                                                            Transformer        Transformer          Transformer
+                                                                          shine                                               …                        night
+implicit, being it performed along with matrix multiplication               at
+                                                                                              Block 1            Block 2              Block L
+
+without involving explicit floating-point operations, leading to
+negligible overhead for rescaling when accumulating the par-                                               Transformer Block
+tial sums. Second, it enables higher model performance while                            Attention Layer                           Feed-Forward Layer
+                                                                                       𝑿𝑸
+being significantly less intrusive to the conventional tensor                     𝑾𝑸                      𝑿𝑺
+                                                                                                 𝒔𝒐𝒇𝒕
+compute units as it does not require complex hardware to                                    ×                                𝑿𝑶𝑿𝑶                𝑿𝑻
+                                                                           𝑿           𝑿𝑲        𝒎𝒂𝒙
+                                                                                  𝑾𝑲                      ×     𝑾𝑶     +        𝑾𝑭𝑪𝟏 𝑹𝒆𝑳𝑼 𝑾𝑭𝑪𝟐 +
+handle mixed-precision or custom datatypes, thereby offering
+                                                                                       𝑿𝑽
+more flexible and practical applicability than other algorithm-                   𝑾𝑽
+oriented schemes or outlier-aware architectures. While the
+Tender algorithm can be implemented in software, its full
+potential is realized through a custom accelerator design that             Figure 1: Illustration of the Transformer block architecture.
+supports implicit requantization, which we discuss in Sec-
+tion IV.                                                               (WV ), and output (WO ) projection matrices. Each projection
+   We apply our decomposed quantization technique to three             matrix has a dimension of dmodel × dmodel , where dmodel is
+representative LLMs for evaluation. To measure the perfor-             the dimension of an input embedding vector (i.e., the number
+mance improvement, we implement a cycle-level simulator                of features). For an input sequence length of n (i.e., n tokens),
+that models the Tender hardware with a detailed off-chip               the input (X) to the attention layer is an n × dmodel matrix.
+memory timing model. We use simulation parameters based                Then, each of the query (XQ ), key (XK ), value (XV ) matrices
+on our RTL implementation, which is synthesized with a 28              of the attention layer is computed by multiplying the input
+nm process node. Our evaluation shows that INT8 quantization           matrix (X) with their respective weight matrices (W ).
+via Tender offers better model performance than the state-of-                  X Q = X × WQ ;                 XK = X × WK ;          XV = X × WV
+the-art and retains comparable model performance to the FP16
+baseline (e.g., less than a 0.1 increase in perplexity for OPT-        After the QKV projection, we compute the attention score
+6.7B, OPT-13B, and OPT-66B). In INT4 quantization, Tender              (XS ) and the attention value (XS ×XV ) using the projected
+outperforms any other outlier-aware post-training quantization         matrices. Lastly, the output of the attention layer (XO ) is
+(PTQ) techniques (up to 10988× lower perplexity). Also,                computed by multiplying the attention value (XS ×XV ) with
+the Tender hardware achieves up to an average of 2.63×                 the output weight matrix (WO ) along with a residual add (X).
+speedup over the outlier-aware accelerators that we evaluate.                                   XS =                          T
+                                                                                                                softmax(XQ × XK )
+In summary, this paper makes the following contributions:
+                                                                                                XO =           XS × XV × WO + X
+   • We propose Tender, a PTQ approach for LLMs in pursuit
+      of hardware performance as well as model accuracy.                  The feed-forward network (FFN) in the Transformer block
+      Tender achieves high performance and accuracy without            takes as input the output of the attention layer (XO ). It consists
+      the need of mixed-precision compute units or custom              of two fully-connected (FC) layers, thus there are two weight
+      datatypes even for low-bit quantization.                         matrices, WF C1 and WF C2 , each of which has dmodel × h
+   • We propose the “power of 2” channel decomposition
+                                                                       and h × dmodel dimensions. The output of the feed-forward
+      rule, which effectively reduces the quantization error by        layer (XT ) is computed using the following equation.
+      harmonically working with LLM activation tensors.                            XT =           ReLU(XO × WF C1 ) × WF C2 + XO
+   • We present the Tender accelerator design, which over-
+      comes performance challenges in splitting activations               In addition, there exists a layer normalization operation
+      along the channels and enables implicit/runtime requanti-        (LayerNorm) at the start or the end of each attention and
+      zation with negligible rescaling overhead, with a minimal        FFN layer, which we omit in the figure for simplicity. The
+      extension to the commodity tensor compute hardware.              Transformer block produces an output with the same dimen-
+                                                                       sionality as the input, which makes Transformer-based LLMs
+            II. BACKGROUND AND M OTIVATION                             easily scalable by adjusting the number of Transformer blocks.
+A. Large Language Models                                               B. Outliers in Large Language Models
+   In essence, LLMs build on a series of Transformer                      The state-of-the-art post-training quantization (PTQ) meth-
+blocks [59], each of which consists of the attention and feed-         ods [16], [33] demonstrate that the weights in LLMs can be
+forward layers, as illustrated in Figure 1. In this section,           effectively quantized to eight or even four bits via standard per-
+for ease of understanding the subsequent sections, we briefly          tensor (e.g., a scaling factor for each tensor) or grouping-based
+describe the operation flow within the Transformer block using         (e.g., a scaling factor for g consecutive weights in a tensor)
+the terminology and notation used throughout the paper.                quantization techniques without a significant degradation in
+   In the attention layer, there are four weight matrices, which       model performance. In contrast, it is quite challenging to
+are used for linear projections: query (WQ ), key (WK ), value         quantize activations in LLMs using the same methods due
+
+
+
+                                                                   2
+

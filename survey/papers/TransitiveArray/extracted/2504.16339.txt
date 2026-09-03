@@ -1,0 +1,1390 @@
+                                                              Transitive Array: An Efficient GEMM Accelerator
+                                                                             with Result Reuse
+                                                              Cong Guo∗                                                Chiyue Wei                                     Jiaming Tang
+                                                         cong.guo@duke.edu                                        chiyue.wei@duke.edu                                 jmtang@mit.edu
+                                                           Duke University                                           Duke University                                       MIT
+                                                            Durham, USA                                               Durham, USA                                     Cambridge, USA
+
+                                                            Bowen Duan                                                   Song Han                                           Hai Li
+                                                       bowen.duan@duke.edu                                          songhan@mit.edu                                   hai.li@duke.edu
+arXiv:2504.16339v1 [cs.AR] 23 Apr 2025
+
+
+
+
+                                                          Duke University                                                 MIT                                         Duke University
+                                                           Durham, USA                                               Cambridge, USA                                    Durham, USA
+
+                                                                                                                        Yiran Chen
+                                                                                                                  yiran.chen@duke.edu
+                                                                                                                     Duke University
+                                                                                                                      Durham, USA
+                                         Abstract                                                                                Keywords
+                                         Deep Neural Networks (DNNs) and Large Language Models (LLMs)                            Matrix Multiplication, Quantization, Sparsity, Transitive Array
+                                         have revolutionized artificial intelligence, yet their deployment
+                                         faces significant memory and computational challenges, especially                       ACM Reference Format:
+                                                                                                                                 Cong Guo, Chiyue Wei, Jiaming Tang, Bowen Duan, Song Han, Hai Li,
+                                         in resource-constrained environments. Quantization techniques
+                                                                                                                                 and Yiran Chen. 2025. Transitive Array: An Efficient GEMM Accelerator
+                                         have mitigated some of these issues by reducing data precision,
+                                                                                                                                 with Result Reuse. In Proceedings of the 52nd Annual International Symposium
+                                         primarily focusing on General Matrix Multiplication (GEMM). This                        on Computer Architecture (ISCA ’25), June 21–25, 2025, Tokyo, Japan. ACM,
+                                         study introduces a novel sparsity paradigm, transitive sparsity,                        New York, NY, USA, 15 pages. https://doi.org/10.1145/3695053.3731043
+                                         which leverages the reuse of previously computed results to sub-
+                                         stantially minimize computational overhead in GEMM operations.
+                                         By representing transitive relations using a directed acyclic graph,                    1    Introduction
+                                         we develop an efficient strategy for determining optimal execution                      Deep neural networks (DNNs)[17, 35] have become foundational
+                                         orders, thereby overcoming inherent challenges related to execu-                        to modern artificial intelligence, demonstrating transformative po-
+                                         tion dependencies and parallelism. Building on this foundation, we                      tential across various applications. Among these, large language
+                                         present the Transitive Array, a multiplication-free accelerator                         models (LLMs)[7, 14] stand out for their ability to generate human-
+                                         designed to exploit transitive sparsity in GEMM. Our architecture                       like text, understand complex language, and perform advanced rea-
+                                         effectively balances computational workloads across multiple paral-                     soning, making them crucial in natural language processing[6, 53].
+                                         lel lanes, ensuring high efficiency and optimal resource utilization.                   However, as DNNs scale, they introduce substantial memory and
+                                         Comprehensive evaluations demonstrate that the Transitive Array                         computational overheads that challenge their deployment efficiency,
+                                         achieves approximately 7.46× and 3.97× speedup and 2.31× and                            particularly in resource-constrained environments [33, 50].
+                                         1.65× energy reduction compared to state-of-the-art accelerators                           Quantization [30] has thus emerged as a critical research avenue,
+                                         such as Olive and BitVert while maintaining comparable model                            offering methods to reduce model size and computational load by
+                                         accuracy on LLaMA models.                                                               representing parameters with lower precision while aiming to re-
+                                                                                                                                 tain model accuracy. Most quantization approaches aim to reduce
+                                         CCS Concepts                                                                            the data precision of general matrix multiplication (GEMM) opera-
+                                         • Computer systems organization → Single instruction, mul-                              tions, which are fundamental to DNNs [10, 32], as they represent
+                                         tiple data; Systolic arrays.                                                            the core computational workload in both training and inference.
+                                                                                                                                 Recently, quantization has regained popularity in LLMs. AWQ [38]
+                                                                                                                                 achieves a 4-bit compression of weights with negligible accuracy
+                                         ∗ Cong Guo is the corresponding author of this paper.
+                                                                                                                                 loss. Additional advanced algorithms (e.g., BitNet1.58 [57]) push the
+                                                                                                                                 limits further by targeting 1-bit weight quantization. Through such
+                                                                                                                                 innovations, quantization significantly enhances LLM efficiency
+                                                                                                                                 and deployability.
+                                         This work is licensed under a Creative Commons Attribution 4.0 International License.      Building on quantization, this study explores novel opportunities
+                                         ISCA ’25, Tokyo, Japan                                                                  to accelerate GEMM operations. Bit-slicing has proven to be an
+                                         © 2025 Copyright held by the owner/author(s).
+                                         ACM ISBN 979-8-4007-1261-6/2025/06                                                      effective technique in DNN accelerators [1, 9, 42, 49]. It decomposes
+                                         https://doi.org/10.1145/3695053.3731043                                                 each bit of a quantized matrix into multiple binary 1-bit matrices,
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                           Cong Guo, Chiyue Wei, Jiaming Tang, Bowen Duan, Song Han, Hai Li, and Yiran Chen
+
+
+                                     Row 0              6 ＋        -2 ＋ 4     ＝     8                   Fortunately, we identified certain properties within transitive
+           Binary
+        Weight Matrix                Row 1              6 ＋ -5 ＋ -2 ＋ 4       ＝     3                sparsity that help address these challenges. Leveraging these in-
+                             Input                                                        Output
+Row 0    1   0   1   1               Row 2
+                                                 10 OPs            -2 ＋ 4     ＝     2
+                                                                                            8
+                                                                                                     sights, we can represent the transitive relations of the transitive
+                               6
+Row 1    1   1   1   1               Row 3     Bit Sparsity        -2         ＝     -2      3
+                                                                                                     sparsity using a directed acyclic graph, precisely a Hasse graph [12,
+                              -5
+                         ×                                                               ＝ 2         26]. This representation enables us to reduce the overhead of gen-
+Row 2    0   0   1   1        -2
+                                               Result
+                               4
+                                     Row 0
+                                               Reuse          2 ＋ 6 ＝ 8                    -2        erating an optimal execution order, achieving linear complexity
+Row 3    0   0   1   0               Row 1                                                           compared to the cubic complexity typically associated with GEMM.
+                                                                        8 ＋ -5 ＝ 3
+         General Matrix              Row 2       -2 ＋ 4 ＝ 2                                          Following this, we assign rows of the bit-sliced matrix across mul-
+                                                                     4 OPs!
+      Multiplication (GEMM)                                                                          tiple parallel lanes and have proven that this approach eliminates
+                                     Row 3   -2 ＝ -2          Transitive Sparsity
+                                                                                                     dependencies among parallel lanes. Additionally, to address work-
+Figure 1: Comparison of bit sparsity and transitive sparsity
+                                                                                                     load imbalance, we introduce a simple yet effective method to
+(Ours) on the binary general matrix multiplication.
+                                                                                                     ensure balanced distribution across multiple lanes before execution,
+                                                                                                     making sparse execution more regular and highly efficient.
+as illustrated in Fig. 2. By leveraging bit-slicing, we transform quan-                                 This work presents a comprehensive solution and novel architec-
+tized integer-based GEMM into binary GEMM, as shown in Fig. 1.                                       ture to enable transitive sparsity in GEMM operations. This work
+Bit-slice accelerators exploit bit-level sparsity, achieving computa-                                provides a new perspective on transitive sparsity and insights for
+tional reductions of up to 50–60% [9]. However, our analysis reveals                                 future designs of more versatile GEMM accelerators. Compared
+even greater sparsity potential beyond bit sparsity, highlighting                                    to state-of-the-art accelerators like Olive [21], which leverages
+further opportunities for optimization.                                                              outlier-aware quantization, and BitVert [8], which employs bit-slice
+   This study introduces a novel sparsity paradigm termed tran-                                      techniques, our solution achieves an approximate 7.46× and 3.97×
+sitive sparsity, which leverages previously computed results to                                      speedup and 2.31×, 1.65× energy reduction, under similar model
+minimize overall computations. As illustrated in Fig. 1, consider                                    accuracy of LLaMA [51]. Our contributions are summarized as
+Row-0 of the binary matrix, represented by the bit pattern 1011,                                     follows:
+which requires the accumulation of values 6, −2, and 4, and Row-2,                                         • We define a novel sparsity paradigm, Transitive Sparsity,
+represented by 0011, which involves the accumulation of −2 and 4.                                            which leverages previously computed results to minimize
+Since both rows share the accumulation of −2 and 4, we can reuse                                             GEMM computations, thereby achieving significant reduc-
+the computed result of Row-2 for Row-0, significantly reducing the                                           tions in operational overhead.
+accumulation operations in GEMM. In the example shown in Fig. 1,                                           • We design a novel computer architecture, Transitive Array
+transitive sparsity enables a 2.5-fold reduction in operations (from                                         (TA), tailored to exploit transitive sparsity and effectively
+10 to 4) compared to bit sparsity and a 4-fold decrease over dense                                           address challenges related to execution order and parallelism.
+GEMM. Furthermore, it is worth noting that transitive sparsity is                                            Our design also efficiently supports the quantization of At-
+algorithm-agnostic and lossless, preserving the computational accu-                                          tention layers.
+racy of quantized GEMM operations. Our evaluation demonstrates                                             • Transitive Array is multiplication-free, achieving high
+that transitive sparsity theoretically reduces overall computations                                          efficiency by eliminating multiplication operations.
+by 8× (i.e., 87.5% sparsity) for the LLaMA-7B [51] compared to                                             • Through comprehensive evaluations, we demonstrate the
+dense GEMM without accuracy loss after the quantization.                                                     effectiveness of the Transitive Array architecture, showcas-
+   To harness the benefits of transitive sparsity, we propose a novel                                        ing substantial speedups and energy reductions compared
+computer architecture called the transitive array. However, we en-                                           to existing accelerators.
+countered several challenges in efficiently implementing transitive
+sparsity. First, transitive sparsity imposes strict requirements on
+                                                                                                     2     Background and Motivation
+execution order. For example, if Row-0 is computed before Row-2,
+it prevents reuse of Row-2’s results. For weight tensors, we can                                     This section presents the motivation for transitive sparsity, grounded
+precompute an optimal execution order offline. However, attention                                    in our novel observations of sparsity patterns within GEMM.
+operations [54] in LLM present a complication, as they involve
+dynamically generated activations (e.g., the Query and Key ten-                                      2.1     Background: Quantization and Bit-slicing
+sors). This dynamic nature makes it challenging to determine ex-                                     As illustrated in Fig. 2, quantization and bit-slicing [1, 9, 42, 49]
+ecution order on the fly without incurring significant overhead.                                     serve as foundational techniques for implementing transitive spar-
+This dynamic limitation is also observed in most existing accel-                                     sity. After quantization, a 4-bit integer matrix of shape (4 × 4) is
+erators [9, 21, 42], which consequently lack adequate support for                                    decomposed into four bit-level matrices. These matrices are then
+attention layers in their designs. Instead, these accelerators predom-                               reorganized into a binary weight matrix with a shape of (16 × 4).
+inantly focus on fully connected (FC) layers with pre-processed                                         In general, for an 𝑆-bit quantized matrix of shape (𝑁 ×𝐾), we can
+weights. Second, even with an optimized execution order, the strict                                  reorganize it into a (𝑆 · 𝑁 × 𝐾) binary matrix. Building on previous
+dependencies within transitive sparsity result in inherently serial                                  work [1, 49], we demonstrate that maintaining sufficient precision
+execution, greatly restricting parallelism. Additionally, the irregu-                                in addition and accumulation operations—thereby preventing over-
+larity of sparsity patterns makes it difficult to balance workloads                                  flow or underflow—ensures that the bit-slicing method achieves
+across multiple parallel lanes, as varying sparsity levels lead to                                   the same results as the original quantized GEMM without any loss,
+inconsistent computational loads and underutilization.                                               even when adjusting the accumulation/reduction order for integers.
+Transitive Array: An Efficient GEMM Accelerator with Result Reuse                                                                                                                            ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+  Weight (FP16)                                          Weight (Int4) (4×4)                           Binary Weight                        T=4              T=4
+                                                                                                           (16×4)                                                                    Binary Weight Matrix
+ 1.2   0.2 -3.2 4.7                        1 (0 0 0 1 ) 0 (0 0 0 0 ) -3 (1 1 0 1 ) 5 (0 1 0 1 )                                            8-bit                                                                           Input          Output
+
+
+                            Quantization
+                                                                                                                0   0   1   0
+                                                                                                                                      N                                        Row 0 1               0     1       1
+ -4.6 3.2       6.6   3.2                  -5 (1 0 1 1 ) 3 (0 0 1 1 ) 7 (0 1 1 1 ) 3 (0 0 1 1 )
+                                                                                                                1   0   0   0             Quantized                                                                            6                 8
+                                                                                                                0   1   1   1              Weight           1-bit              Row 1 1               1     1       1        -5                   3
+ 1.7 -4.2 -1.3 -1.2                        2 (0 0 1 0 ) -4 (1 1 0 0 ) -1 (1 1 1 1 ) -1 (1 1 1 1 )
+                                                                                                                0
+                                                                                                                0
+                                                                                                                    0
+                                                                                                                    0
+                                                                                                                        1
+                                                                                                                        1
+                                                                                                                            0
+                                                                                                                            1
+                                                                                                                                                                                                                       ×             ＝
+                                                                                                                0   0   1   0                         8×N                      Row 2          0      0     1       1        -2                   2
+ 5.8   2.3 -7.3 3.8                        6 (0 1 1 0 ) 2 (0 0 1 0 ) -7 (1 0 0 1 ) 4 (0 1 0 0 )
+                                                                                                                0   1   1   1                               Binary                                                             4               -2
+                                                                                                                                      1   Bit-Slice
+Bit-slicing                                                                                                     1   0   0   1                               Weight             Row 3          0      0     1       0
+                                                                                                                0   0   0   0
+
+
+
+
+                                                                                                    Rearrange
+                                                                                                                1   1   1   1
+   0   0    1   0                     0    0   1   1          0   0   0   0         1   0   1   1
+                                                                                                                1   0   1   1
+   1   0    0   0                     0    0   1   0          1   1   1   1         1   1   1   1                                         Row Index             TransRows
+                                                                                                                1   1   0   0                                                                        Transitive GEMM
+   0   1    1   1                     0    1   1   1          1   0   1   1         0   0   1   1               1   0   1   1                (RI)                  (TRs)
+   0   0    1   0                     1    0   0   1          1   1   0   0         0   0   1   0               1   1   1   1              Row 0              11
+                                                                                                                                                              1011
+                                                                                                                                                                         2                    2
+                                                                                                                                                                                             0010   0001   0011
+                                                                                                                                                                                                               3
+                                                                                                                                                                                                                   1000
+                                                                                                                                                                                                                           11
+                                                                                                                                                                                                                           1011    0100
+                                                                                                                                                                                                                                          15
+                                                                                                                                                                                                                                          1111
+                                                                                                                                                                          0010
+                                                                                                                0   0   1   1
+ Bit-3 Matrix                  Bit-2 Matrix                 Bit-1 Matrix          Bit-0 Matrix                                                                15           3
+                                                                                                                0   0   1   0
+                                                                                                                                           Row 1                                    Input    -2                4            6             -5
+                                                                                                                                                              1111        0011
+                                                                                                                                                                                                    ＋              ＋               ＋
+Figure 2: Quantization and bit-slicing. A weight tensor (FP16)                                                                                                 3          11                 -2                2            8              3
+                                                                                                                                           Row 2              0011        1011
+
+is quantized into an Int4 weight matrix (4 × 4). Bit-slicing                                                                               Row 3               2
+                                                                                                                                                              0010
+                                                                                                                                                                          15
+                                                                                                                                                                          1111              Output       -2 2          3   8
+decomposes each bit level of the Int4 matrix and reorganizes                                                                                          2   Sort by the Number of 1             3 Store output by Row Index
+
+them into a binary weight matrix of shape (16 × 4).                                                                                      Figure 3: Motivation of Transitive GEMM.
+                                                                                                                                in hardware utilization or increased time overhead. In this study,
+2.2         Motivation: Transitive Sparsity                                                                                     we aim to address these issues efficiently.
+Following these preliminaries, Fig. 3 illustrates our motivation for
+transitive sparsity. We first slice ( 1 ) an 8-bit weight tensor with
+                                                                                                                                2.3       Efficient Representation
+𝑁 rows and 𝑇 = 4 columns into a matrix with 8 × 𝑁 rows and 𝑇                                                                    Fortunately, we have identified a beneficial and intriguing property
+columns, where each row represents a binary row with the 𝑇 -bit                                                                 within GEMM. As illustrated in Fig. 3, neighboring TransRows
+width. We define each binary row as a Transitive Row (TransRow,                                                                 inherently possess a partial ordering relationship characterized by a
+TR), which serves as the fundamental unit of our design. The width                                                              single bit flip. This indicates that result reuse exhibits strong partial
+of each TransRow denoted as 𝑇 , plays a crucial role in determining                                                             order relations. Inspired by this observation, we represent transitive
+the efficiency of our approach.                                                                                                 sparsity using a Hasse graph [26], a specialized Directed Acyclic
+    In this study, we exemplify transitive sparsity using a 4-bit Tran-                                                         Graph that depicts a finite partially ordered set. Fig. 4(a) illustrates
+sRow width. Transitive sparsity is also prevalent in higher bit widths                                                          all partial order relations within a 4-bit TransRow. Normally, we
+(e.g., 8-bit). Each TransRow is identified by an index that indicates                                                           ignore the Level 0, which can be skipped without computation. This
+its corresponding bit level in the original integer. These TransRows                                                            representation effectively and significantly reduces the complexity
+are then accumulated with appropriate shifts. We employ 2’s com-                                                                of our design, which will be detailed in the following section.
+plement representation for integers. In practice, we represent all                                                                 To conveniently present our design, we introduce three concepts:
+one-bits as positive 1, and all TransRows can be represented by                                                                 prefix, suffix, and distance within the Hasse graph, as shown in
+unsigned integers, as illustrated in Fig. 3 2 .                                                                                 Fig. 4(b). We define the preceding node (e.g., 3) that provides the
+    Subsequently, specific rows can be selected. For instance, con-                                                             reused result as the prefix, correspondingly, the latter as the suffix,
+sider four TransRows with values 11 (1011), 15 (1111), 3 (0011), and                                                            e.g., Node 11. Based on transitivity, a further subsequent Node 15
+2 (0010). Notably, some TransRows share identical 1s. For example,                                                              can continue to reuse the result of its prefix, i.e., 11.
+the TransRow representing 11 (1011) encompasses the same 1s as                                                                     The distance between two nodes with a partial ordering is de-
+the TransRow representing 3 (0011). Exploiting this property allows                                                             fined as the difference in their levels, corresponding to the difference
+us to eliminate redundant computations for TransRows. Originally,                                                               in the number of 1s they contain. As illustrated in Fig. 4(b)-bottom,
+the TransRow 11 (1011) required three accumulations of 6, −2, and                                                               the distance is transitive and depends on the presence of specific
+4, skipping the 0 bit. As illustrated in Fig. 3 3 , by reusing the result,                                                      TransRows and nodes. The distance is adjusted if an intermedi-
+we only need to perform an additional accumulation for 2 (the re-                                                               ate node is absent from the TransRows. For example, the distance
+sult of TransRow 0011) and 6, corresponding to the difference bits                                                              between Node 4 and Node 14 is 2 because Node 12 is absent. How-
+1000 (i.e., 1011⊕ 0011 = 1000). We term this approach Transitive                                                                ever, Node 14 still considers Node 12 as its prefix, requiring Node
+Sparsity, which reuses the results of preceding TransRows. Con-                                                                 12 to pass the result from Node 4 to Node 14. Therefore, a larger
+sequently, this characteristic of the bit-weight tensor significantly                                                           distance implies that more add operations are required from the
+reduces the computational load for GEMM.                                                                                        corresponding prefix TransRow. When the distance is 1, we achieve
+    Challenges. However, as discussed in Sec. 1, adopting transitive                                                            the most efficient result reuse between two different TransRows.
+sparsity in Deep Neural Networks (DNNs) introduces several chal-                                                                Additionally, TransRows with identical values have a distance of 0
+lenges. For example, as shown in Fig. 3(b), the execution order of                                                              and can directly reuse each other’s results.
+the four TransRows deviates from the original sequence. This strict
+execution order requirement renders parallel computing infeasi-                                                                 2.4       Parallelism and Load Balance
+ble. Additionally, generating the execution order is highly complex.                                                            After effectively representing transitive relations using a Hasse
+Specifically, we must determine which pairs of TransRows satisfy                                                                graph, we observe that nodes within the same level possess no
+the transitive sparsity criteria among potentially hundreds of rows,                                                            partial ordering relationships, as they cannot share results. For
+leading to significant overhead in computing the execution order.                                                               instance, Node 2 cannot share its result with Node 4 because they
+A naive implementation would result in substantial inefficiencies                                                               differ in their bit representations. Consequently, transitive sparsity
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                Cong Guo, Chiyue Wei, Jiaming Tang, Bowen Duan, Song Han, Hai Li, and Yiran Chen
+
+
+                                                      Present           Present     Present   Present
+L0
+                           0
+                                                         2                   3        11        15
+                                                                                                          Dynamic. The static Scoreboard operates offline, generating ex-
+                          0000
+                                                        0010              0011        1011     1111
+                                                                                                          ecution information at the tensor level. In contrast, the dynamic
+             1      2             4      8
+L1          0001   0010          0100   1000          Prefix: 0   Prefix: 2   Prefix: 3   Prefix: 11      Scoreboard processes smaller sub-GEMM operations online, ensur-
+                                                      Suﬃx: 3     Suﬃx: 11 Suﬃx: 15 Suﬃx: -
+      3      5                                        Distance: 1 Distance: 1 Distance: 1 Distance: 1
+                                                                                                          ing compatibility with all GEMM kernels and enabling seamless
+L2                  6             9     10     12
+     0011   0101   0110          1001   1010   1100
+                                                      Present           Absent      Present               deployment for large language models (LLMs). To accommodate
+             7     11            13     14               4                   12       14                  the dynamic nature of attention mechanisms in Transformer ar-
+L3          0111   1011          1101   1110
+                                                        0100                 1100     1110
+
+                                                                                                          chitectures, the Scoreboard efficiently determines the execution
+                          15                          Prefix: 0   Prefix: 2   Prefix: 3
+L4                        1111
+                                                      Suﬃx: 3     Suﬃx: 11 Suﬃx: 15
+                                                                                                          order through dedicated hardware design, while simultaneously
+                                                      Distance: 1 Distance: 1 Distance: 2                 optimizing parallelism and workload balance at runtime. Both static
+             (a) Hasse Graph                          (b) Prefix, Suﬃx, and Distance                      and dynamic mechanisms leverage the same Scoreboard algorithm,
+Figure 4: Hasse graph and definition of prefix, suffix, and                                               as illustrated in Fig. 5, Alg. 1, and Alg. 2
+distance.
+                                                                                                          3.1     Hamming-order Execution
+exhibits parallelism horizontally across each level of the Hasse
+graph.                                                                                                    Unlike general applications, which handle irregular and dynamic
+   Parallelism. Specifically, for an 𝑆-bit width transitive sparsity,                                     instructions, the instructions and data accesses in GEMM operations
+the maximum parallelism is achieved at Level- 𝑆2 , corresponding                                          within DNN models exhibit strict regularity. This regularity enables
+                                                                                                          us to predefine execution orders for all instructions before they are
+to the binomial coefficient 𝑆𝑆 =  𝑆  𝑆! 𝑆  . For example, Level
+                                
+                                               2
+                                                        2      !·   2    !                                issued. Based on our analysis using the Hasse graph, the level of a
+2 in a 4-bit graph exhibits a parallelism of 6, while Level 4 in an                                       node corresponds to the number of 1s (i.e., PopCount) in its binary
+8-bit graph exhibits a parallelism of 70. However, leveraging the                                         representation. For instance, Node 11 (1011) belongs to Level 3.
+maximum parallelism would result in the underutilization of other                                         Leveraging this property, we sort the incoming TransRows based on
+levels. Therefore, we typically utilize the granularity corresponding                                     their Hamming weight (i.e., PopCount) [34] instead of their integer
+to Level 1, which is 4 for a 4-bit width and 8 for an 8-bit width                                         values, defining this execution order as Hamming-order.
+TranSparsity. This strategic choice of granularity ensures balanced                                          As shown in Fig. 5 1 , TransRows are sorted exclusively by their
+utilization across all levels of the Hasse graph, optimizing both                                         number of 1s. Moreover, since there is no inherent partial ordering
+computational efficiency and hardware resource allocation.                                                within nodes at the same level, the sorting mechanism does not
+   Data Independence. Additionally, each node in the Hasse graph                                          enforce any order among nodes with identical PopCount. This
+can be transitioned by only one prefix node. For example, Node 11                                         approach significantly simplifies the sorter design, reducing its
+can be transitioned from only one of its prefix nodes, such as Node                                       complexity and hardware overhead.
+3, Node 9, or Node 10. Therefore, we can assign only one prefix to
+every node in the graph. Consequently, we can divide the graph                                            3.2     Scoreboarding
+into a forest comprising 𝑇 independent trees starting from Level                                          To achieve a balanced forest with independent trees, we design an
+1 for 𝑇 -bit transitive sparsity. Therefore, we can safely divide the                                     efficient Scoreboarding algorithm optimized for hardware imple-
+Hasse graph into multiple independent trees, each node having                                             mentation, as depicted in Fig. 5 2 - 5 .
+one in-degree edge, as shown in Fig. 4(a). This division ensures                                             First, we record (Step 2 ) all present TransRow and their counts
+parallelism and that each node has a prefix node with correct partial                                     in the Hasse graph. Subsequently, we perform forward and back-
+ordering.                                                                                                 ward passes to build and prune the Hasse graph for transitive
+   Load Balance. After dividing the Hasse graph to enable par-                                            sparsity, maintaining prefix information with the smallest distance
+allelism, it is essential to balance the resulting trees to prevent                                       for each node.
+extreme workload imbalances across parallel lanes, which can lead                                            Forward Pass for Prefix. As shown in Alg. 1 and Step 3 , we
+to inefficient resource utilization and performance bottlenecks. We                                       hierarchically update each node’s prefix information without in-
+design an effective round-robin-like traversal method by leveraging                                       terdependencies. Therefore, we need to traverse all nodes by the
+the rule that each node has only one prefix. This method allows                                           Hamming order (Line 3) in Step 3 . Initially, we initialize the nodes
+us to select an available prefix node for each node, thereby evenly                                       (Lines 1-2) and traverse all nodes in a forward partial ordering
+distributing workloads among the trees only using a simple node                                           (Lines 3-4). For transitive sparsity, we select node prefixes with a
+number counter for supervision.                                                                           distance of less than 4 (Line 7). In practice, even in an 8-bit Tran-
+   Finally, this section presents a streamlined representation of                                         sRow, nodes with a distance of 3 are rarely observed (< 0.1% within
+transitive sparsity and theoretically addresses the challenges of                                         128 TransRows). In Line 8, we set a temporary distance of 0 for
+parallelism and load balancing. This framework paves the way                                              nodes with a valid distance and Count > 0. This indicates that the
+for more efficient architectural designs, which are detailed in the                                       node will be executed and has a valid prefix, as at least one Tran-
+subsequent sections.                                                                                      sRow has been processed. Consequently, the node can serve as a
+                                                                                                          prefix, resetting the distance for subsequent suffixes. Following this,
+3    Scoreboard Design                                                                                    we generate locally the suffix based on the Hasse graph and send
+In this section, we introduce the Scoreboard mechanism, designed                                          the prefix information to all its suffixes with an incremented (+1)
+to efficiently compute the execution order using a Hasse graph                                            distance (Lines 9-10), embodying the transitivity of TranSparsity.
+representation. We propose two types of Scoreboard: Static and                                            Lines 11-13 set the distance and prefix bitmaps.
+Transitive Array: An Efficient GEMM Accelerator with Result Reuse                                                                                                                                                                                        ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                        2       Record                                                         4        Backward Pass: Keep Connections with Smallest Distance                                                                                                                           Transitive
+                                                                                                   1       2           4         8                           1         2         4         8                               1       2       4        8         6: Has Suffix 14,   Lane 1                  Sparsity
+                                        1       2         4       8                                                                                                                                                                                          keep connections.
+                                                                                                                                                                                                                                                                                  TransRow      Prefix     (XOR)
+ Row Trans
+Index Row         RI TR
+                                                                                         3         5       6           9      10       12            3       5         6         9        10        12            3        5       6       9       10         12                      1 0001      0         0001
+                                3       5       6         9       10       12
+     0   2        0   2
+                                                                                                   7   11           13        14                             7         11        13       14                               7       11      13      14                                 5 0101      1         0100
+                                        7       11        13      14
+     1   5   L1 4     1                                                                                                         15: Remove                                                 14: All connections
+                                                                                             Level 4 15                                              Level 3                15                                        Level 2 15
+                                                                                                                                                                                                                                                    10: No Suffix , remove            7 0111      5         0010
+                                                                                                                              connections with                                              are Distance>1.                                            all connections.
+     2 15         6   2         Present              15                   Absent                                                Distance>1.                                                Keep the first one.
+                                                                                                                                                                                                                                                                                      15 1111     7         1000
+     3 14    L2 1     5
+                                                                                                   3   Forward Pass: Find All Candidate Connections                                                                                    1       2        4        8                Lane 2
+     4   1        3 14                                                                                                                                                                                                                                                            TransRow      Prefix
+             L3                             1       2         4       8                                1           2         4        8                                     1         2        4         8                     3       5       6        9       10      12
+     5   7        5   7                                                                                                                                                                                                                                                               2 0010      0         0010
+                                    3       5       6         9    10       12                 3       5           6         9        10    12                    3         5        6         9     10      12                        7    11          13      14
+     6   2   L4 2 15                                                                                                                                                                                                                                                                  6 0110      2         0100
+
+                                            7    11          13    14              3: Has Prefix,      7           11        13       14         12: No Prefix,             7        11        13    14                  Lane 1:                   15            Lane 2:
+                                                                                                                                                                                                                                                                                      14 1110     6         1000
+                                                                                connect candidates.                                                  Skip.                                                                4 OPs                                   4 OPs
+                                                                                                                                                                                                                        1, 5, 7, 15                             2, 2, 6, 14
+     1 PopCount Sort            Level 1                 15                                    Level 2                   15                                        Level 3                 15
+                                                                          Distance = 1                                               Distance > 1                                                                      5   Balance & Result (Forest)                              6    Scoreboard Info (SI)
+
+Figure 5: Scoreboarding process. Step 1 : Sort TransRows by Hamming order. Step 2 : Record present TransRows in the Hasse
+graph. Step 3 (Forward pass): Assign candidate prefixes to all nodes. Step 4 (Backward pass): Propagate suffix requests for
+nodes without a Distance = 1 prefix, searching for the prefix with the shortest distance and retaining the closest prefix for all
+nodes. Step 5 : Generate a balanced forest. Step 6 : Output the final Scoreboard information (SI).
+
+ Algorithm 1: 4-bit Scoreboarding Forward Pass.                                                                                                                       Algorithm 2: 4-bit Scoreboarding Backward Pass.
+   Input: Node list, 𝑁 [16] { int Count; int Distance; Bitmap Prefix[4];                                                                                             Input: Node list, 𝑁 [16] { int Count; int Distance; Bitmap Prefix[4];
+           Bitmap Suffix; }                                                                                                                                                  Bitmap Suffix; }
+ 1 for i in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] do                                                                                                 1 for i in [15, 7, 11, 13, 14, 3, 5, 6, 9, 10, 12, 1, 2, 4, 8] do
+ 2     N[i].Distance = +∞                                                                                                                                          2     Backward(i)
+ 3   for i in [0, 1, 2, 4, 8, 3, 5, 6, 9, 10, 12, 7, 11, 13, 14] do                                                                                                3 def Backward(int idx):
+ 4       Forward(i)                                                                                                                                                4     int dis = N[idx].Distance
+ 5 def Forward(int idx):                                                                                                                                           5     if 1 < dis < 4 and N[idx].Count > 0 then
+ 6     int dis = N[idx].Distance                                                                                                                                   6          prefix = GetPrefixFromHasse(N[idx].Prefix[dis - 1])
+ 7     if (dis >= 4 and idx != 0) then return                                                                                                                      7          SetSuffix(prefix[0], idx) // Only the first prefix.
+ 8     if ((N[idx].Count > 0) or idx == 0) then dis = 0                                                                                                            8 def SetSuffix(int idx, int suffix):
+ 9     while suffix ∈ GetSuffixFromHasse(idx) do                                                                                                                   9     N[idx].Suffix.insert(suffix)
+10          SetPrefix(suffix, dis + 1, idx)                                                                                                                       10     N[idx].Count = 1
+11 def SetPrefix(int idx, int Distance, int prefix):                                                                                                              11   Keep PB with the smallest distance; remove others.
+12     N[idx].Prefix[Distance - 1].insert(prefix)
+13     N[idx].Distance = min(N[idx].Distance, Distance)
+
+                                                                                                                                                                  Subsequently, we set the suffix information and update the prefix
+                                                                                                                                                              node’s Count to 1 (Lines 8-10). For example, Node 6’s Count is set to
+   For example, as depicted in Fig. 5 3 , Nodes 1 and 2 will have their                                                                                       1, designating Node 14 as its suffix. If Node 6 has a distance > 1 and
+temporary distances set to 0 due to their Count > 0. Subsequently,                                                                                            < 4, the backward pass would continue tracing the path to the first
+Node 5 receives prefix information from Node 1 with a distance of                                                                                             node with distance 1, forming a complete path to Node 14 within
+1, recording them into prefix bitmap. Similarly, all nodes update                                                                                             a distance of 4. After that, we will only keep the prefix bitmap
+their prefix information with corresponding distances. A special                                                                                              with the smallest distance (Line 11). This mechanism ensures each
+case is Node 14, which has a distance of 2 from Node 2. Due to                                                                                                node maintains a single prefix, facilitating efficient parallelism and
+its Count > 0, Node 14 still sends a distance of 1 to Node 15. This                                                                                           preserving correct partial ordering within the Hasse graph.
+mechanism retains more available prefix information, forming a                                                                                                    Balanced Forest. As shown in Fig. 5 5 , after the forward and
+more effective graph.                                                                                                                                         backward passes, we maintain a concise Hasse graph with valid
+   Backward Pass for Suffix. As shown in Alg. 2 and Step 4 , the                                                                                              prefixes having the smallest distances, thereby constructing the
+backward pass is a reverse process of the forward pass to retrieve                                                                                            forest. We implement a workload counter and priority supervision
+suffix information. The algorithm primarily constructs paths for                                                                                              to assign each node a Lane ID, ensuring balanced distribution across
+nodes with Count > 0 and distance > 1 to their valid prefix nodes                                                                                             the trees. For example, Node 15 has two prefixes, Node 7 and Node
+(Lines 5-7). Notably, we select only one prefix (defaulting to the first                                                                                      14. Since Node 2 corresponds to two TransRows, Node 15 is assigned
+available) from the first valid Prefix Bitmap (PB) field to build the                                                                                         to Lane 1 to achieve load balancing.
+path (Line 7). Selecting multiple prefixes could result in redundant                                                                                              Scoreboard Information (SI). Using this approach, we success-
+paths for a node. For instance, in Fig. 5 4 , Node 14 has two prefix                                                                                          fully construct a balanced forest through the Scoreboard mecha-
+nodes, 6 and 10, each with a distance of 2. If both prefixes are                                                                                              nism. In practice, the Hasse graph is transformed into a simplified
+selected, two paths would be formed: 2 → 6 → 14 and 2 → 10 →                                                                                                  table, referred to as Scoreboard Information (SI), which contains
+14. This redundancy leads to unnecessary computations. Therefore,                                                                                             two key elements: each TransRow and its corresponding Prefix, as
+we retain only one path by keeping the first prefix.                                                                                                          illustrated in Fig. 5 6 . The overhead of SI is minimal. The total
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                     Cong Guo, Chiyue Wei, Jiaming Tang, Bowen Duan, Song Han, Hai Li, and Yiran Chen
+
+
+      0b           3b 4b     11b 12b        15b 16b                  27b 28b            31b 32b        33b
+                                                                                                               indices by applying a 1-to-0 bit flip to the prefix bitmap, while the
+       Node           Count Prefix Bitmap 1 Prefix Bitmap 2,3,4 Suﬃx Bitmap                       Lane ID
+                                                                                                               Suffix Translator reconstructs suffix indices through a 0-to-1 bit flip.
+            10                    2           8       For distance              11         14
+            1010      0~255 1010 0010        1000
+                                                       with 2 3 4.
+                                                                      0101     1011        1110     0~3        This design eliminates the need to explicitly store prefix and suffix
+                                       3                                              12                       data, significantly reducing significant (𝑇 times for 𝑇 -bit) memory
+                                   0011                                               1100
+                                             Bitmap                                                 Bitmap
+                    - 1000                                            0000                                     overhead. Moreover, the method achieves fast and accurate decod-
+            11        0000             9     1011            8     + 0100             10             0111
+            1011    - 0010         1001                     1000   + 0010             1010
+                                                                                                               ing with minimal hardware complexity, making it highly suitable
+                    - 0001             10
+                                                                   + 0001              9
+           Prefix Translator       1010                     Suffix Translator         1001                     for high-performance systems.
+                                                                                                                  Finally, we get only one prefix for each node. It is important to
+Figure 6: Bit field diagram of 4-bit Scoreboard and prefix and                                                 note that the distance in the algorithm is a conceptual construct.
+suffix translators.                                                                                            In the hardware implementation, a straightforward logic circuit
+                                                                                                               utilizing bitmaps can accurately determine the distance without
+memory requirement for SI is: 2 × 𝑇 × 2𝑇 bits, where 𝑇 is the Tran-
+                                                                                                               introducing conflicts or dependencies, thanks to the efficient data
+sRow width. When 𝑇 = 8, the SI needs only 512 Bytes of memory,
+                                                                                                               structure design. Consequently, we are able to fully exploit the
+which is insignificant and stored in the on-chip buffer.
+                                                                                                               inherent parallelism of the Hasse graph by processing each level
+                                                                                                               concurrently. This is facilitated by a multi-way Scoreboard design,
+3.3         Static Scoreboard                                                                                  which achieves high efficiency during on-the-fly operations.
+The execution order for all tensors in a DNN model, including
+weight and activation tensors, can be precomputed. For activation                                              4     Transitive Array
+tensors, a small calibration dataset is used to generate the activation
+                                                                                                               Fig. 7 and Fig. 8 shows Transitive Array design and an example of
+tensors. We first transform the quantized tensor into a binary matrix,
+                                                                                                               processing TransArray computation.
+which is then divided into 𝑇 -bit TransRows. All TransRows within
+the tensor are recorded, and the final static Scoreboard Information
+                                                                                                               4.1     Tiling
+(SI) is computed offline using our proposed algorithm in Fig. 5.
+   However, static SI may introduce efficiency challenges. GEMM                                                Tiling is a fundamental technique for partitioning GEMM opera-
+relies on tiling (Sec. 4.1), and for a given tile, the prefix of a Tran-                                       tions into smaller tiles, optimizing execution for DNN accelerators.
+sRow in the static SI may not exist in that tile, leading to an SI Miss,                                       In Fig. 8 1 , we illustrate an example featuring an 𝑆-bit weight ma-
+similar to a cache miss. An SI miss disrupts the prefix-suffix path,                                           trix of shape (𝑁 × 𝐾), an 8-bit input matrix of shape (𝐾 × 𝑀), and a
+significantly impacting performance. We conduct experiments to                                                 32-bit partial sum output matrix of shape (𝑁 × 𝑀). Initially, tensors
+evaluate this impact in Sec. 5.8. To ensure that the Scoreboard re-                                            are stored in off-chip DRAM. For each TransArray, only a small
+mains transparent to users and minimizes SI misses, we propose an                                              tile is processed in the on-chip buffer, consisting of a weight tile
+efficient hardware-supported dynamic Scoreboard for enhanced                                                   (𝑛 × 𝑘), an input tile (𝑘 × 𝑚), and an output tile (𝑛 × 𝑚). Using the
+performance.                                                                                                   bit-slice method, the weight tensor is decomposed into a binary
+                                                                                                               weight tile of shape (𝑆 · 𝑛 × 𝑘). The pre-quantization and bit-slicing
+3.4         Dynamic Scoreboard                                                                                 processes are performed offline, while all subsequent steps execute
+                                                                                                               at runtime. During computation, the TransArray unit processes
+Fig. 6 illustrates the bit fields of a single entry in the 4-bit dynamic
+                                                                                                               a sub-tile consisting of a weight tile (𝑆 · 𝑛 × 𝑇 ) and an input tile
+Scoreboard design.
+                                                                                                               (𝑇 × 𝑚), where 𝑇 represents the TransRow width.
+    Node and Count: Each entry contains a Node identifier (e.g.,
+Node 10) and an 8-bit Count field, representing the number of
+                                                                                                               4.2     Scoreboarding
+TransRows sharing the same value as the node. The Count field
+facilitates load balancing across the trees.                                                                   In Fig. 8 1 bottom, TransArray can select only one type of Score-
+    Prefix Bitmaps (PBs): We allocate four Prefix Bitmap fields,                                               board Information (SI) between static and dynamic. The static SI
+each corresponding to prefix indices at distances of 1, 2, 3, and 4.                                           is stored in DRAM and pre-fetched by TransArray before GEMM
+    Suffix Bitmap (SB): The Suffix Bitmap records suffix nodes that                                            computation, incurring no runtime overhead. Thus, all sub-tiles
+are absent from the current set of TransRows.                                                                  in the tensor share the same static SI. In contrast, the dynamic
+    Lane ID: Each entry includes a Lane ID field that records the lane                                         SI is generated at runtime using the hardware Scoreboard when
+identifier associated with the node. This facilitates the distribution                                         the weight sub-tile (𝑆 · 𝑛 × 𝑇 ) is sent to the on-chip network. Un-
+of tasks across multiple parallel lanes.                                                                       like the static SI, each sub-tile has its own private dynamic
+    Furthermore, the Scoreboard can be extended to accommodate                                                 SI, enabling optimal prefix for each TransRow. As illustrated in In
+an 8-bit Hasse graph by maintaining the same fields but increasing                                             Fig. 7 (a), the sub-tile and the Scoreboard unit can be shared by
+the bit-width accordingly to handle the larger number of nodes.                                                multiple TransArray units.
+    Thanks to the Hasse representation, each node is shown to have
+a limited set of prefixes and suffixes. Leveraging this property, we                                           4.3     Dispatch
+propose an efficient encoding and decoding mechanism to map                                                    Next, the TransArray dispatches TransRows along with their corre-
+bitmap representations into prefix and suffix indices. As shown in                                             sponding Scoreboard Information (SI) in Fig. 7 (b) Dispatcher and
+Fig. 6-bottom, the proposed method introduces a Prefix Transla-                                                Fig. 8 2 and 3 . During this dispatch process, TranSparsity is com-
+tor and a Suffix Translator to compress and recover transitive                                                 puted using a simple XOR gate. For example, when the TransArray
+sparsity information effectively. The Prefix Translator derives node                                           receives TransRow 7 (0111), it first retrieves its Prefix 5 (0101)
+Transitive Array: An Efficient GEMM Accelerator with Result Reuse                                                                                                                    ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                                                                                                                                                                                                        Network on Chip
+      （a) TransArray Overview                                      （c) TransArray PE                                         Oﬀ-Chip DRAM                                On-Chip Buﬀer
+                                                                                                                                                                                     m                                      (NoC)
+                                                                                                                                                                          8-bit Tile                                             m
+                                                                                                                     1   GEMM                      M
+                                                                                                                                                                               k                                                  T
+                  SI     Static                                                                                                                                          Input       T
+                                                   Transtive
+                                                                   Prefix       12    ＋       12
+                                                                                                        Suffix           Tiling                                                                                 T : TransRow
+                                                 Transtive                                                                         8-bit               k                  m                                          Width
+                                                Transtive
+                                                  ArrayUnit
+                                                        Unit        Input                                                         Input K
+                                               Transtive
+                                                 Array
+                                                                                8
+                                                                                                                                                                                                                         T
+                                                Array Unit                                                                                                                                       k
+                                               Array Unit                   Prefix PE (PPE)                                                     m                     32-bit
+      DRAM
+
+
+
+
+                                                                                                     Output                                    Matrix               n Partial
+                    Buﬀer
+
+
+
+
+                                                                                                                                                                                                                PopCount Sorter
+                   Buﬀer                                                                                                      K                                        Sum
+                                                 VPU               Suffix        16
+                                                                                              24                          S-bit                                               Tile
+
+
+
+
+                                                                                                                                                                                            h = S×n
+                                                                                      ＋              Acc                 Weght                                                k                                                                 Transtive
+
+
+
+
+                                                                                                                                                                                     S×n
+                   PopCount Sorter                  Dynamic                                                                                                                                           T                                         Array Unit
+
+
+
+
+                                                                                                                                                                                                                                   h
+                                                                                     24
+                                                      SI                                                         N
+                       Scoreboard Unit                                                                                            n
+
+
+
+
+                                                                                                                                                                                                                                                               Static/Dynamic SI
+                                                                         Accumulation PE (APE)                                                                       n
+                                                                                                                          k
+                                                                                                                          Matrix               Matrix                     Tile                                                              Sub-tile
+                                                                                                                         Quantized             32-bit                     S-bit            Binary
+                 Weight
+                                                                                                                          Weight               Output                    Weght             Weght                                  Scoreboard Unit
+              (TransRow)                      Input FIFO       Distributed
+                  FIFO
+                                                               Prefix Buﬀer                           …                                                                             Static SI                                                 Dynamic SI
+             TransRows                                                                                                             Static Public
+                             TranSparsity
+
+
+
+
+                                                                                                   … APE                                                                      All tiles share the                                          Each sub-tile has
+                                                                                                                                Scoreboard Info (SI)
+                                                                                          T                                                                                    same public SI.                                               its private SI.
+                       XOR                                     Compute Prefix                         …
+              Prefixes                                               …                        Accumulation
+             SI                                                     PPE                                                                                                                                                           Multiplication-Free
+                                                                             T
+
+
+
+
+                                              Benes Net              …                        Output Buﬀer           TransRow             7                              0 1 1 1
+                                                                    m                                                                                                      4 OPs
+                                                                                                                                                           Prefix                                         XOR
+                          Dispatcher                                        Processor                                                                                                                                Prefix
+                                                                                                                                                                                                                                               -1      Add-Acc
+                                                                                                                  SI            Lane 1                       5           0 1 0 1                                     Buﬀer                               Unit
+                                            （b) TransArray Unit                                                                    TR         Prefix
+                                                                                                                                      1       None                                                                                     PPE
+Figure 7: (a) Overview of Transitive Array architecture. (b)
+                                                                                                                                                                         TranSparsity                                                         ＋        -3
+                                                                                                                                                                                                                                  6
+One Transitive Array unit. (c) Prefix PE (PPE) and Accumula-                                                                          5        1                          0 0 1 0
+                                                                                                                                                                                                                                  -5                        ACC
+tion PE (APE) design.                                                                                                                 7        5                                              Benes Net                           -2           -2           APE
+                                                                                                                                                                          Only 1 OP
+from the SI. Then TransArray uses XOR (⊕) to prune TransRow                                                                                                              Save 3 OPs                                     4
+                                                                                                                                      15       7                                                                      Input
+into TranSparsity: 7 ⊕ 5 = 2 (0010). The TranSparsity value (0010)
+                                                                                                                     2    Prefix Indexing                    3      TranSparsity Pruning                                               4    Computation
+corresponds to the element in the input matrix, i.e., −2 in Fig. 8 4 .
+Additionally, the Prefix (0101) is sent to the Prefix Buffer, allowing                                           Figure 8: Processing flow of the Transitive Array unit. 1 :
+retrieval of the precomputed prefix result, −1 for Prefix 5 (0101).                                              GEMM tiling layout and Scoreboard Information (SI). 2 : Re-
+Thus, instead of each TransRow accumulating all 4 input elements                                                 trieving the prefix for each TransRow using SI. 3 : Pruning
+as in the original dense GEMM, it now requires only a single accu-                                               for TranSparsity. 4 : Computation.
+mulation, effectively saving 𝑇 × operations for 𝑇 -bit TranSparsity.
+    This reduction is the primary source of sparsity in our design.
+As a result, our architecture achieves up to 75% sparsity for 4-bit                                              crossbar to buffer the partial sums and arrange them appropriately.
+TranSparsity and 87.5% sparsity for 8-bit configurations. Further-                                               We implement a double buffer mechanism so that the partial sum
+more, after the first dispatch, each node in the Scoreboard replaces                                             buffer overlaps and conceals the overhead associated with buffering,
+its Prefix with its own index. Subsequent identical TransRows can                                                thereby enhancing overall system efficiency. We also put a shifter in
+reuse the result from the first computed TransRow. This signifi-                                                 place to shift their value to accommodate their bit-level according
+cantly improves efficiency.                                                                                      to their indices.
+
+4.4          Distribution Network                                                                                4.5          Processing Element
+In Fig. 7 (b) Dispatcher and Fig. 8 Step 3 , the TransArray needs to                                             In Steps 4 , we utilize adders to complete all computations for the
+fetch the input data and prefix data. We adopt the Benes network [4]                                             TransArray. For the TransArray, we design two types of Processing
+to support input data access, which is an established non-blocking                                               Elements (PEs).
+network widely adopted in studies [46, 55]. The Benes network has                                                   As shown in Fig. 7 (c), the first PE is the Prefix Processing
+only 2 log(𝑁 ) + 1 levels for an 𝑁 -input and 𝑁 -output configuration,                                           Element (PPE), which is responsible for transitively computing
+resulting in very high hardware efficiency. For the prefix buffer,                                               the prefix results. According to our analysis in Sec. 2.1, maintaining
+we employ a distributed buffer design where each prefix buffer                                                   sufficiently high precision in the adder allows us to perform lossless
+operates independently. This approach significantly reduces the                                                  computations based on integers. Therefore, we employ a 12-bit
+overhead associated with prefix buffers by eliminating the need to                                               adder to satisfy the precision requirements for PPE. The PPE design
+store all prefix nodes and avoiding complex network designs.                                                     is highly concise, featuring only one 12-bit adder that adds the
+   Additionally, we incorporate a crossbar between Step 3 and                                                    input and prefix sum, stores the result in the prefix buffer. The TPE
+Step 4 for data arrangement in the prefix buffer to avoid bank                                                   array is formed by 𝑇 lanes, each with 𝑚 = 32 adders for 𝑇 -bit width
+conflicts originating from the row index. For each cycle, only 𝑇                                                 TranSparsity.
+vectors are sent to the double buffer in 𝑇 -bit TranSparsity. If the                                                The second PE is the Accumulation Processing Element
+𝑇 vectors correspond to the same memory bank based on their                                                      (APE), depicted in Fig. 7 9 , which is responsible for accumulating
+row indices, conflicts may arise when they are stored in the same                                                the final results. The APE only comprises a 24-bit accumulator.
+buffer bank. To mitigate this, we introduce a queue within the                                                   It accesses the partial sums from the prefix buffer and efficiently
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                   Cong Guo, Chiyue Wei, Jiaming Tang, Bowen Duan, Song Han, Hai Li, and Yiran Chen
+
+
+combines them to produce the final output. The APE array has the             hardware-friendly framework for a fixed-length adaptive numer-
+same shape as the PPE, i.e., 𝑇 × 32 for 𝑇 -bit TranSparsity.                 ical data type. Olive [21] quantizes models by utilizing the space
+    As shown in Fig. 7 (a), we incorporate vector units (VPU) to             of normal values to accommodate outliers. Tender [36] decom-
+support operations beyond GEMM (e.g., de-quantization, softmax,              poses activation tensors along feature dimensions into sub-tensors,
+etc.), similar to previous studies [21, 23, 36]. According to the latest     with scale factors set to powers of two. BitVert [8] introduces bi-
+study [56], we utilize group-wise quantization to further improve            directional bit-level sparsity, ensuring at least 50% sparsity, and
+model accuracy. When the group size is 128, the vector unit applies          provides a bit-level binary pruning technique.
+an integer scale factor to re-scale the partial results for each 128/𝑇          Accelerator Implementation. We build a cycle-level simulator
+tile with 𝑇 -bit TranSparsity. Therefore, we can efficiently overlap         to analyze the performance of the Transitive Array. For other archi-
+the overhead.                                                                tectures, we use their open-sourced simulator, ANT [23], which all
+    TransArray inherently supports the mixed-precision design. First,        build on. The hardware architecture of both the Transitive Array
+for the weight tensor, the bit-slicing method decomposes arbi-               and the baselines is implemented using System Verilog. We synthe-
+trary bit-width weight tensors into binary matrices, making mixed-           size the RTL logic with Synopsys Design Compiler, utilizing ARM’s
+precision design inherently compatible with the TransArray design.           standard cell library in a commercial 28nm process to determine the
+For the activation tensor, since our processing elements (PEs) only          corresponding area and static/dynamic power consumption. We use
+use adders, it is straightforward to configure them for different            Cacti 7.0 to assess buffer area and power at 28nm. We maintained all
+bit widths. To support 8-bit activation, we employ a 12-bit Partial          baselines and the Transitive Array at the same 28nm process and a
+Product Engine (PPE) and a 24-bit Accumulation Processing Engine             frequency of 500MHz. We rewrite all baseline PE implementations
+(APE). Additionally, they can be easily split into two 6-bit PPEs and        according to their design to ensure a fair comparison. We evaluate
+two 12-bit APEs to support 4-bit activation.                                 most experiments with dynamic Scoreboard, except the Sec. 5.8, in
+                                                                             which we compare and explore the static and dynamic Scoreboard
+4.6     Scheduling                                                           using random and real data.
+                                                                                Benchmark. We run LLaMA versions 1, 2, and 3 [15, 51, 52]
+Due to the reordering of execution, we implement multiple double-            on the Wikitext dataset [43], using the perplexity (PPL) [5] of the
+buffering mechanisms to divide the computation into three stages:            generated sentences as the performance metric. Since TransArray’s
+(1) Dynamic Scoreboarding, (2) TPE array for prefix, and (3) APE             results depend on the data distribution of weights and activations,
+array for output.                                                            we extract all the model’s weights and activations and evaluate
+   First, Stages 2 and 3 utilize arrays of identical shapes to compute       them with our simulator. However, because TransArray requires
+the prefix and the final output, respectively. Specifically, TransRows       both activations and weights, resulting in an unacceptable memory
+with a prefix of distance 1 can complete the PPE and APE computa-            footprint trace, we only extract the first Transformer block with a
+tions within a single cycle. However, TransRows with distances > 1           prefill sequence length of 2048. This approach is feasible because all
+require additional cycles for the PPE to process. Consequently, the          Transformer blocks are identical and exhibit similar computational
+PPE array will consistently require more cycles than the APE. For            behavior.
+the PPE, if we have 𝑛 TransRows, the number of cycles required
+will exceed 𝑛 cycles. However, APE will have constantly 𝑛 cycles.
+   For Stage 1, due to the Hamming-weight sort, the dynamic                  5.2     Design Space Exploration
+Scoreboard can process a maximum number of nodes given by:                   The TranSparsity is a generalized design for arbitrary bit-widths.
+min(𝑛, 2𝑇 ) where 𝑛 is the number of TransRows, and 𝑇 is the bit-            Thus, we first explore the design space to determine our final hard-
+width of TranSparsity. To perform the sort, we implement a bitonic           ware implementation. We employ the tiling approach to divide the
+sorter [3] with 𝑂 (log2 𝑛) time complexity, resulting in significantly       large matrix into small tiles. Specifically, the performance of the
+fewer cycles. Futhermore, we configure an 𝑇 -way Scoreboard to               TransArray is significantly impacted by the tile size, i.e., the row
+provide parallel Scoreboarding for 𝑇 -bit TranSparsity, ensuring             number (𝑁 ) and the bit width (𝑇 ) of TransRows for a bit matrix. All
+       min(𝑛,2𝑇 )
+that:     𝑇      < 𝑇𝑛 , , which means Scoreboarding time is always           experiments on this sub-section are based on dynamic Scoreboard
+less than that of PPE and APE.                                               and random data.
+   Finally, this three-stage pipeline ensures that the critical path            Bit Width (𝑇 ). As illustrated in Fig. 9 (a), we explore the influ-
+of TransArray is still on the PPE array. Fortunately, according to           ence of tiling size on 𝑁 and 𝑇 . We find that 𝑇 determines the upper
+our analysis, only approximately 1.67% of TransRows in our design            bound and lower bound of sparsity and density for TranSparsity.
+have distances greater than 1. Thus, both the PPE and APE arrays             Even if we fully utilize the sparsity of TranSparsity, we can only
+achieve nearly full utilization.                                             achieve a lower-bound density around 𝑇1 because we must perform
+                                                                             at least one accumulation operation for every 𝑇 -bit element. For
+5 Evaluation                                                                 example, 8-bit TranSparsity requires one accumulation every 8 bits.
+                                                                             For 8-bit TranSparsity, we achieve Pareto Optimality with reason-
+5.1 Methodology                                                              able overhead. Beyond 8-bit, the density increases before reaching
+Accelerator Baselines. We compare our Transitive Array with                  a row size of 256. Notably, 10-bit TranSparsity requires 4× the hard-
+five baselines, including Bitfusion [48], ANT [23], Olive [21], Ten-         ware overhead of 8-bit TranSparsity but offers comparable sparsity
+der [36] and BitVert [8]. BitFusion [48] introduces bit-level dy-            at a tile row size of 256. Therefore, we choose 8-bit TranSparsity
+namic composability for DNN acceleration. ANT [23] proposes a                to implement in this study.
+Transitive Array: An Efficient GEMM Accelerator with Result Reuse                                                                                                                                                                                    ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                   40                                                                      60                                                                             25                                                                        1.E+05
+                                                                                                                  ZR Sparsity       TR Density                                 23.34             ZR Sparsity       TR Density
+                   35                           2-bit        4-bit                                                                                                                                                                                  1.E+05   Dis-1        Dis-2
+                                                                                           50                                                                                          19.10     FR Density        PR Density
+
+
+
+
+                                                                                                                                                                                                                                 Total Row Number
+                                                                      Overall Percentage
+                                                                                                                                                                          20
+
+
+
+
+                                                                                                                                                    Overall Percentatge
+                                                6-bit        8-bit                                                FR Density        PR Density                                                                                                               Dis-3        Dis-4
+                                                10-bit       12-bit
+ Overall Density
+
+
+
+
+                   30                                                                                37.49        Total Density                                                                  Total Density           12.45                      1.E+05   Dis-5
+                                                16-bit                                     40
+                                                                                                                                                                          15                   15.65    13.43  12.57 12.45
+                   25                                                                                                Total = TR+FR+PR                                                                                                               8.E+04
+                                                                                           30                23.43
+                   20                                                                                                                       22.48                                                                                                   6.E+04
+                                                                                                                     16.44
+                                                                                                                                                                          10                                                                                                      Dis4 Dis3
+                                                                                           20                                             15.15
+                   15                                                                                                        12.5712.36                                                                                                             4.E+04                        =0 =0
+                   10          Better                                                      10
+                                                                                                                                                                          5
+                                                                                                                                                                                                                                                    2.E+04
+                                        12.57
+                   5                                                                       0                                                                              0                                                                         0.E+00
+                          16    32    64 128 256         512 1024                                1   2       4       6    8     10 12         16                                 16     32       64 128 256        512 1024                                  16      32     64 128 256 512 1024
+                                     Tiling Row Size                                                             TranSparsity Bit-width                                                          Tiling Row Size                                                           Tiling Row Size
+                                                                                                (b) Percentage of Node Type with                                                 (c) Percentage of Node Type                                         (d) Distance Number with Row Sizes
+                         (a) Sparsities with Tiling Sizes                                                                                                                              8-bit TranSparsity
+                                                                                                      Tiling Row Size = 256                                                                                                                                    8-bit TranSparsity
+
+Figure 9: Design space exploration among various bit-width and tiling row sizes: (a) and (b), and 8-bit TranSparsity with tiling
+row sizes: (c) and (d) on a 1024 × 1024 random 0-1 matrix.
+
+   As mentioned earlier, not all TransRows will utilize both PPE                                                                                                               increasing the row number beyond 256 does not yield additional
+and APE. The utilization of PPE and APE significantly impacts the                                                                                                              sparsity benefits. Even if all nodes can reuse results, every 8 bits still
+overall design efficiency. We summarize the features of TransRows                                                                                                              requires one addition operation. Therefore, we set the maximum
+based on the utilization of PPE and APE for partial sums (PSum)                                                                                                                row number to 256 for 8-bit TranSparsity. With this configuration,
+and final sums (FSum). This classification helps us understand the                                                                                                             each TransArray unit can support 32 × 8 tile for 8-bit weights and
+efficiency of TranSparsity in depth. We identify four computation                                                                                                              64 × 8 tile for 4-bit weights.
+patterns based on the combination of PSum and FSum. Zero Row                                                                                                                      Additionally, we provide detailed statistics on the distances of
+(ZR): Represents a node with no partial or final sums, allowing                                                                                                                the nodes. As depicted in Fig. 9 (c), when the row number is 128,
+us to skip computations entirely. Transitive Reuse (TR): Repre-                                                                                                                there are no nodes with a Distance of 4, and similarly, for a row
+sents a node responsible for transitioning partial results to its suffix                                                                                                       number of 256, there are no nodes with a Distance of 3. In practice,
+node, utilizing only the PPE without APE. Full Result Reuse (FR):                                                                                                              this means we only need to provide three prefix bitmap fields for
+Represents nodes that have been computed previously, allowing                                                                                                                  nodes with a Distance of 3. TransRows with a Distance ≥ 4 are
+subsequent TransRows to reuse the results without requiring prefix                                                                                                             treated as outliers and dispatched at the end of other operations.
+computations or PPE. Prefix Result Reuse (PR): Represents nodes
+that require both PPE and APE to add the prefix result and perform                                                                                                             5.3       Area Comparison
+accumulation.                                                                                                                                                              Table 1 and Table 2 present the design configurations and area
+   As illustrated in Fig. 9 (b) with a tiling row size of 256, before                                                                                                      analysis of our TransArray architecture compared to the baseline
+8-bit TranSparsity, the FR (Full Result Reuse) constitutes the ma-                                                                                                         designs. We implement six TransArray units in the final GEMM
+jority of TransRows, leading to underutilization of the TransArray                                                                                                         accelerator design. TransArray yields a lower computational core
+and higher density. After 8-bit, higher bit widths such as 10, 12,                                                                                                         area overhead compared to all five baselines. This low area over-
+and 16 introduce more TR (Transitive) nodes. This results in an                                                                                                            head mainly comes from our simplified PPE and APE design, which
+extremely sparse Hasse graph consisting of only 256 rows. The                                                                                                              only requires accumulation operations, while other baselines em-
+8-bit TranSparsity strikes a balanced trade-off between sparsity and                                                                                                       ploy multi-bit multiplication units, incurring quadratic hardware
+hardware overhead.                                                                                                                                                         complexity. Therefore, we are able to place a NoC within our array
+   Row Number (𝑁 ). As shown in Fig. 9 (c), we conducted exper-                                                                                                            to flexibly support buffer access while maintaining a lower area
+iments varying the number of rows from 16 to 1024 using 8-bit                                                                                                              overhead. Note that we also consider the Scoreboard to ensure a
+TranSparsity. We observed that when the number of rows exceeds                                                                                                             dynamic Scoreboard. To ensure a fair comparison, we configure
+256, the density of 8-bit TranSparsity stabilizes. This stability oc-                                                                                                      a smaller buffer size (480KB) for our design compared to other
+curs because most TransRows are captured by the Hasse graph,                                                                                                               baselines (512 KB and 608 KB).
+resulting in only a few Transitive Result (TR) nodes. Consequently,
+                                                                                                                                                                           Table 2: The area of core components and buffers for TransAr-
+                                                                                                                                                                           ray and other baseline models using a 28nm process.
+                          Table 1: Specifications of One TransArray Unit.
+                        Bit-width                 𝑇 = 8-bit TranSpasrity.                                                                                                                                                  Computation Core
+                                                                                                                                                                                   Arch.                                                                                                      Buffer
+                        TransRow Number            Max 256 1-bit TransRow.                                                                                                                            Component                      Array                                    Area (𝑚𝑚 2 )
+
+                        Weight Tiling              𝑁 = 32 for 8-bit Wgt; 𝑁 = 64 for 4-bit Wgt.                                                                                                        PPE (50.3𝜇𝑚 2 )                                  6 × (8 × 32)
+                                                                                                                                                                                TransArray            APE (101.7𝜇𝑚 2 )                                 6 × (8 × 32)
+                        Input Tiling               𝑀 = 32 for 8-bit Input.                                                                                                                                                                                                         0.443      480KB
+                                                                                                                                                                                 (6 Units)            NoC (19520𝜇𝑚 2 )                                   6 × (1)
+                        PPE Array                  8 × 32 12-bit Adder.
+                                                                                                                                                                                                      Socreboard (92507𝜇𝑚 2 )                               1
+                        APE Array                  8 × 32 24-bit Adder.                                                                                                          BitFusion            8-bit PE (548𝜇𝑚 2 )                                28 × 32                   0.491
+                        NoC                        An 8-way Benes net and X bar.                                                                                                   ANT                4-bit PE (210𝜇𝑚 2 )                                36 × 64                   0.484
+                                                                                                                                                                                                                                                                                              512KB
+                        Scoreboard                 Tow 8-way 256-entry tables; A sorter.                                                                                           Olive              4-bit PE (319𝜇𝑚 2 )                                32 × 48                   0.489
+                                                   8KB Weight; 8KB Input; 22KB Output;                                                                                            BitVert             8-bit PE (985𝜇𝑚 2 )                                16 × 30                   0.473
+                        Buffer Size: 80KB                                                                                                                                         Tender              4-bit PE (329𝜇𝑚 2 )                                30 × 48                   0.474      608KB
+                                                   18KB Prefix; 24KB Double Buffer.
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                 Cong Guo, Chiyue Wei, Jiaming Tang, Bowen Duan, Song Han, Hai Li, and Yiran Chen
+
+
+                                                                                     4.4 E+09
+                3E+09                                                                                                                                                                               9
+
+
+
+
+                                                                                                                                                                                                           Norm. Speed up
+                                                                                                                                                                                         7.5
+  Cycles
+
+
+
+
+                2E+09                                                                                                                                                                               6
+                                                                                                                                                                                3.7 3.7
+                1E+09                                                                                                                                           2.3                                 3
+                                                                                                                                                                  1.5             1.9
+                                                                                                                                                                            1
+                0E+00                                                                                                                                                                               0
+                                7B                 13B                   30B                  65B                   7B                  13B           8B                GeoMean
+                                                            LLaMA-1                                                         LLaMA-2                 LLaMA-3                Speed up
+                                                           BitFusion*      ANT      Olive           Tender*       BitVert     TA-8bit     TA-4bit
+                6E+09                                                                    6.8 E+09                                                                                                   3
+                                                                                                                                                                                2.7
+
+
+
+
+                                                                                                                                                                                                        Norm. Energy efficiency
+                                                                                                       6.4 E+09
+  Energy (nJ)
+
+
+
+
+                                                                                                                                                                                              2.3
+                4E+09                                                                                                                                          1.7                                  2
+                                                                                                                                                                     1.4          1.4
+                                                                                                                                                                           1            1.2
+                2E+09                                                                                                                                                                               1
+
+                0E+00                                                                                                                                                                               0
+                            BF*
+
+
+
+
+                            BF*
+                        Tender*
+
+                         TA-8bit
+                         TA-4bit
+                            BF*
+
+
+
+
+                         TA-8bit
+                         TA-4bit
+                            BF*
+                         BitVert
+
+
+
+
+                        Tender*
+                         BitVert
+
+
+
+
+                        Tender*
+
+                         TA-8bit
+                         TA-4bit
+                         BitVert
+
+
+
+
+                        Tender*
+
+                         TA-8bit
+                         TA-4bit
+                            BF*
+
+
+
+
+                         TA-8bit
+                         TA-4bit
+                            BF*
+
+
+
+
+                         TA-4bit
+                            BF*
+                         BitVert
+
+
+
+
+                        Tender*
+
+                         TA-8bit
+                         TA-4bit
+                            BF*
+                         BitVert
+
+
+
+
+                        Tender*
+                         BitVert
+
+
+
+
+                        Tender*
+
+                         TA-8bit
+                         BitVert
+
+
+
+
+                        Tender*
+
+                         TA-8bit
+                         TA-4bit
+                         BitVert
+                           ANT
+                          Olive
+
+
+
+
+                           ANT
+                          Olive
+
+
+
+
+                           ANT
+                          Olive
+
+
+
+
+                           ANT
+                          Olive
+
+
+
+
+                           ANT
+                          Olive
+
+
+
+
+                           ANT
+                          Olive
+
+
+
+
+                           ANT
+                          Olive
+
+
+
+
+                           ANT
+                          Olive
+                                7B                13B                    30B                  65B                   7B                  13B           8B                   GeoMean
+                            LLaMA-1              LLaMA-1              LLaMA-1               LLaMA-1               LLaMA-2             LLaMA-2       LLaMA-3          Energy efficiency
+                                                                      DRAM Static          DRAM Dynamic              Buffer     Core
+
+
+Figure 10: Runtime and energy consumption on FC layers of LLaMA models. *BitFusion (8-bit) and Tender (4-bit) exhibit
+unacceptable perplexity (PPL) scores. ANT, Olive, BitVert, and TransArray (4-bit) achieve similar PPL levels on LLaMA.
+
+Table 3: The Perplexity on Wikitext data with Tender (TD),                                                    quantization framework from prior work. In contrast, other frame-
+BitFusion (BF), Olive (OL), BitVer (BV), ANT with group quan-                                                 works present a high barrier to algorithmic optimization due to
+tization, and TransArray (TA) with group quantization.                                                        their specialized designs for specific data types. For instance, SOTA
+   Arch                 TD-4         BF   OL     TD-8      BV     ANT      TA     TA        FP16              quantization methods, such as SmoothQuant [61], suppress out-
+                                                                                                              liers in weight tensors for integer optimization. This contrasts with
+   FC Act.               4bit     8bit    8bit   8bit      8bit   8bit     Int8   Int8      FP16
+   FC Wgt.               4bit     8bit    8bit   8bit      8bit   8bit     Int4   Int8      FP16
+                                                                                                              Olive, which benefits from large outliers.
+   L-1 7B               23.85     9.50    5.86   5.87       —     5.82     5.82   5.75      5.68                 Our proposed TA architecture consistently achieves competitive
+   L-1 13B              13.68     8.46    5.28   5.28       —     5.20     5.20   5.14      5.09              PPL scores across all model sizes, utilizing Int4 weights and Int8
+   L-1 30B              12.07     6.70    4.37   4.27       —     4.32     4.24   4.17      4.10              inputs, and without Attention quantization for a fair comparison.
+   L-1 65B               8.85     5.34    3.80   3.74       —     3.76     3.66   3.57      3.53
+                                                                                                              These significant improvements stem from the generalized integer-
+   L-2 7B               36.47    10.68    5.73   5.77       —     5.58     5.62   5.56      5.47
+   L-2 13B              55.08    16.11    5.06   5.09       —     5.20     5.01   4.95      4.88              based design without special requirements.
+   L-3 8B               28.60    22.56    6.70   7.17      6.24   6.27     6.59   6.39      6.14
+
+                                                                                                              5.5     Performance and Energy on FC Layers
+                                                                                                              Settings. Fig. 10 shows the overall performance and energy con-
+5.4               Model Accuracy                                                                              sumption across various accelerators on only FC layers of the
+We benchmarked several post-training quantization (PTQ) methods                                               LLaMA models. The results for BitFusion with 8-bit PE and Tender
+on the Wikitext dataset using LLaMa models, as shown in Tbl. 3.                                               with 4-bit PE are provided only for reference due to their large PPL
+Perplexity (PPL) served as the performance metric—lower values in-                                            loss. The remaining accelerators maintain similar accuracy levels
+dicate better performance. We reproduced their results using open-                                            for LLaMA. ANT and Olive utilize mixed-precision designs with
+sourced code, except for BitVert [9], for which we reported only the                                          8-bit evaluations. BitVert employs bit-slice techniques with 50%
+available results from its paper. Due to the lack of optimization for                                         sparsity. We provide two types of precision for TransArray: 4-bit
+quantization, BitFusion exhibits a larger gap compared to the FP16                                            weights and 8-bit weights on real data.
+results. Other accelerators achieve near-lossless performance at the                                             Iso-Precision Comparison. We first compare TransArray with
+8-bit level due to their quantization-aware optimized architecture                                            8-bit weights against other baselines. Due to the greater difficulties
+designs. We modified ANT to support group-wise quantization for                                               in quantizing LLM, the mixed-precision advantages of ANT and
+a fair comparison. Please note that Tender [36] only supports 4-bit                                           Olive disappear. They are even slower than BitFusion because of
+PEs without mixed precision. However, its 4-bit PPL is unacceptable.                                          the larger overhead from their complex PEs, which support outliers
+Therefore, in the following evaluation, only the results of BitFusion                                         and adaptive data types. Although BitVert has a more complicated
+and Tender are provided for reference. Additionally, please note                                              PE design, it utilizes bit sparsity with a fixed 50% sparsity based
+that these accelerators (except BitFusion) cannot support the At-                                             on bit-slice techniques and achieves a 1.9× speedup over Olive on
+tention layer due to their complicated weight pre-processing. We                                              LLMs, consistent with the results reported in its paper. Despite
+maintain the Attention layer with FP16 precision.                                                             TransArray needing to slice 8-bit into 8 accumulation operations, it
+   Due to the generalized design of TA, it can broadly support                                                can fully exploit 87.5% sparsity with TranSparsity. This translates to
+state-of-the-art (SOTA) quantization frameworks without specific                                              8× and 4× speedups over dense GEMM and bit sparsity-based archi-
+requirements. We implement TransArray in Qserve [39], the SOTA                                                tectures, respectively. Additionally, with an extremely streamlined
+Transitive Array: An Efficient GEMM Accelerator with Result Reuse                                                        ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                                                                  6                                                             55
+                                                                                         BitFusion-16bit
+                                                                                                                                                                      Bit Sparsity
+        DRAM-D       DRAM-S       12.7%                5.1%                              ANT/BitFusion-8Bit                                     45
+
+
+
+
+                                                                                                                          Overall Density (%)
+                                                                                                                  3.97                                                Real-Dynamic
+        Dynamic      Static                                                       4      TransArray-8Bit
+
+
+
+
+                                                                        Speedup
+                                                       5.1%                                                                                     35                    Real-Static
+        Core         Weight      9.9%                                                                         2.58                                                    Rand-Dynamic
+                                                                29.0%                                                                           25                    Rand-Static
+                                           Buffer 56.4%                           2
+                                                                                                              1
+        Input        Prefix       21.1%
+                                                                                                                                                15
+
+                                                                17.2%             0                                                             5
+                                                                                                                                                     64   128     256    512   1024
+        Output                                                                        LLaMA 1 LLaMA 2 LLaMA 3 Geomean
+                                                                                                                                                           Tiling Row Size
+
+
+Figure 11: TransArray energy breakdown on LLaMA-1-7B.                   Figure 12: Speedups on Atten- Figure 13: Static and dynamic
+                                                                        tion layers of LLaMA models Scoreboard comparison on
+PE design, TransArray with 8-bit weights achieves 2.47×, 3.75×, and     over BitFusion.               real and random (Rand) data.
+1.99× speedups over ANT, Olive, and BitVert, respectively, while
+maintaining similar energy consumption.                                 quantization methods, making them incompatible with dynamic
+   Iso-Accuracy Comparison. Due to the generality of TransAr-           Attention processing. For instance, BitVert depends on complex
+ray, it can employ state-of-the-art (SOTA) algorithms to further en-    bit-level binary pruning and channel reordering techniques, which
+hance its performance. For 4-bit quantization, TransArray can theo-     do not support online processing. In contrast, TransArray with the
+retically provide 16× and 8× improvements over 8-bit quantization-      dynamic Scoreboard is a general method that can be applied to
+based and bit-sparsity-based architectures, respectively. TransArray    various integer quantization techniques. With the help of the Score-
+with 4-bit weights achieves 4.91×, 7.46×, and 3.97× speedups and        board unit, TransArray seamlessly processes all GEMM operations
+1.65×, 2.31×, and 1.65× energy efficiency improvements over ANT,        in DNNs while remaining transparent to users.
+Olive, and BitVert, respectively. These significant improvements
+are also attributed to the generalized design of TransArray. Other      5.8             Static and Dynamic Scoreboard Comparison
+architectures find it difficult to benefit from algorithmic advance-    In this subsection, we compare the static and dynamic Scoreboards
+ments.                                                                  on the first FC layer of LLaMA-1-7B model using 8-bit TranSparsity,
+                                                                        as illustrated in Fig. 13. Clearly, the dynamic Scoreboard achieves
+5.6     Energy Breakdown Analysis                                       significantly lower density (higher speedup) than the static Score-
+Fig. 11 presents the energy breakdown of TransArray for the first       board for smaller tiling row sizes (< 512), while achieving compa-
+fully connected (FC) layer of the LLaMA-1-7B model. We observe          rable results for larger sizes (> 512).
+that buffer operations consume the majority of the energy, primar-          A static Scoreboard Information (SI) is shared across an entire
+ily due to frequent accesses to the prefix buffer, which is essential   tensor. When the tile row size is small (e.g., 64), the Hasse graph
+for enabling efficient TranSparsity. Although our design incurs         becomes significantly sparse under 8-bit TranSparsity, containing
+significant on-chip buffer access overhead, the high efficiency of      256 nodes, of which fewer than 25% are present. This means that
+TranSparsity significantly reduces overall execution time. As a         different tiles are likely to contain distinct nodes, generating entirely
+result, TransArray achieves lower DRAM static energy consump-           different forests (multiple trees) for SI. As a result, static SI leads to
+tion compared to other baselines. Consequently, despite increased       frequent SI Misses, causing substantial performance degradation.
+buffer access, TransArray maintains high energy efficiency relative     Despite this limitation, the static Scoreboard remains significantly
+to these baselines.                                                     more efficient than bit sparsity. However, as the row size increases
+   Essentially, the TransArray design enhances computational ef-        beyond 256, the static Scoreboard achieves comparable performance
+ficiency at the expense of increased buffer energy consumption.         to the dynamic Scoreboard, reaching equivalent performance at
+Furthermore, TransArray resembles SIMD [16] or in-memory pro-           a row size of 1024. Additionally, since the static Scoreboard does
+cessing [11, 28, 31] architectures. We may implement TransArray         not require a dedicated hardware Scoreboard unit, it reduces area
+using GPU tensor cores [44] to explore broader scenarios and lever-     overhead by approximately 25%, leading to potentially better overall
+age advanced technologies for more energy-efficient solutions.          performance than the dynamic Scoreboard in some cases.
+                                                                            In contrast, the dynamic Scoreboard generates SI for each sub-
+5.7     Performance on Attention Layers                                 tile, allowing it to achieve near-optimal sparsity and demonstrating
+Fig. 12 presents the performance results of the Attention layers in     strong applicability. More importantly, the dynamic Scoreboard is
+LLaMA-1-7B, LLaMA-2-2B, and LLaMA-3-8B. All data are collected          transparent and seamlessly compatible with existing frameworks.
+from real model inference with a sequence length of 2048. For
+Attention layers, we treat the K and V cache as weight tensors.         5.9             Random and Real Data Comparison
+Since Attention is challenging to quantize, we adopt 8-bit group-       Fig. 13 also compares the impact of data distribution on performance.
+wise quantization for both ANT and TransArray, while using 16-bit       We collect real data from the LLaMA-1-7B model and generate 0-1
+quantization for BitFusion. TransArray achieves a 1.54× speedup         uniform random data for both static and dynamic Scoreboards. In-
+over ANT under the same quantization settings and a 3.97× speedup       terestingly, TransArray achieves slightly better performance on real
+over BitFusion.                                                         data compared to random data. After a thorough examination and
+   Furthermore, prior designs [8, 21, 36]—such as Olive, Tender, and    detailed analysis, we identify two key reasons for this performance
+BitVert—do not support Attention layers but only focus on fully         improvement: (1) Although most original tensors of real data follow
+connected (FC) layers. These approaches rely on specific offline        a Gaussian distribution, the binary 0-1 distribution after bit-slicing
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                            Cong Guo, Chiyue Wei, Jiaming Tang, Bowen Duan, Song Han, Hai Li, and Yiran Chen
+
+
+           8
+                                       BitFusion          ANT                TransArray
+                                                                                                                      outlier-victim pair quantization technique that efficiently handles
+           6
+                                                                                                           4.26
+                                                                                                                      outliers with minimal hardware overhead, achieving negligible ac-
+ Speedup
+
+
+
+
+           4
+                                                                                                                      curacy loss with 4-bit quantization. However, this datatype-based
+                                                                                                           1.93
+                                                                                                                      quantization accelerator struggles with LLM models, highlighting
+           2                                                                                                   1      the need for improved quantization approaches.
+           0
+               1
+                   2
+                       3
+                           4
+                               5
+                                   6
+                                        7
+                                            8
+                                                9
+                                                    10
+                                                         11
+                                                              12
+                                                                   13
+                                                                        14
+                                                                             15
+                                                                                  16
+                                                                                       17
+                                                                                            18
+                                                                                                 19
+                                                                                                      20
+                                                                                                             21
+
+                                                                                                                l
+                                                                                                              ta
+                                                    ResNet-18 Layers
+
+
+
+
+                                                                                                           To
+                                                                                                                      6.2     Bit-slicing and Sparsity
+           Figure 14: Speedup comparison on ResNet18 models.                                                          Therefore, recent techniques [1, 42, 49] have focused on exploit-
+resembles a uniform distribution. (2) Certain patterns may exist in                                                   ing bit-level sparsity to enhance quantization efficiency. Bit-slice
+the weight tensor of DNN models. For uniform random data, the                                                         accelerators specifically optimize computations in sparse-bit scenar-
+occurrence of repeated values follows the classical problem of dis-                                                   ios by skipping ineffectual zero bits, thus significantly improving
+crete uniform distributions. The expected number of unique values                                                     efficiency. Pragmatic [1] pioneered this approach by selectively
+in 256 random 8-bit TransRows is approximately 162. However, in                                                       processing non-zero bits using variable shifters to align bit signifi-
+real data, this number is slightly lower than 162, suggesting the                                                     cances, simplifying computations but introducing higher hardware
+presence of structural patterns in DNN weight tensors.                                                                overhead. However, such methods are inherently limited to ex-
+                                                                                                                      ploiting intrinsic sparsity, typically constrained to approximately
+5.10               TransArray in DNN Models                                                                           50–60% due to inherent data characteristics [9].
+                                                                                                                         Consequently, many accelerators have turned their attention
+We evaluate TransArray on the ResNet-18 [27] model using the                                                          to sparsity-aware processing [19, 22, 24, 25, 58–60, 64–66], though
+ImageNet dataset [13]. Both BitFusion and ANT are optimized for                                                       often encountering significant irregularities in memory access pat-
+CNN models with mixed precision. For TransArray, we adopt 4-bit                                                       terns. To address these irregularities, substantial efforts have been
+quantization using MQBench [37]. TransArray supports mixed-                                                           made to regularize sparsity patterns into hardware-friendly for-
+precision computation for 4-bit and 8-bit activations, as discussed                                                   mats, such as sparse tensor cores [66], thereby achieving greater
+in Sec. 4.5. We configure the first convolution layer and the final                                                   speedups on sparse DNN models. BitVert [9], a recent bit-slice and
+fully connected (FC) layer with 8-bit quantization. Following prior                                                   sparsity co-design accelerator, dynamically balances workload dis-
+work [23], we also employ im2col [10] to transform convolution                                                        tribution by selectively skipping zero bits in sparse bit-columns,
+layers into GEMM operations. Fig. 14 presents the speedup results of                                                  at the cost of more intricate PE architectures. Prosperity [59] can
+all ResNet-18 layers for BitFusion, ANT, and TransArray. TransAr-                                                     directly support the bit-level sparsity on spiking neural networks.
+ray demonstrates superior performance, achieving a 4.26× speedup                                                      In our study, we leverage insights from structured sparsity process-
+over BitFusion and a 2.21× speedup over ANT.                                                                          ing to regularize transitive sparsity, resulting in higher hardware
+                                                                                                                      utilization and efficiency gains in our proposed design.
+6 Related Works
+6.1 DNNs and Quantization                                                                                             7     Conclusion
+Deep Neural Networks (DNNs) and Large Language Models (LLMs)                                                          In this study, we introduced a novel sparsity paradigm, Transitive
+have achieved state-of-the-art performance across various domains.                                                    Sparsity, which leverages the reuse of previously computed results
+However, their high computational and memory demands pose                                                             to significantly reduce GEMM computations, thereby decreasing
+challenges in resource-constrained environments. Quantization                                                         operational overhead. To effectively exploit this sparsity, we de-
+techniques [2, 18, 20, 38, 39, 41, 47, 61, 62] mitigate these issues                                                  signed the Transitive Array, a multiplication-free accelerator that
+by reducing the precision of weights and activations, enhancing                                                       addresses challenges related to execution order and parallelism
+computational and memory efficiency with minimal performance                                                          while also supporting on-the-fly quantization of Attention lay-
+loss. Notable methods include SmoothQuant [61], which introduces                                                      ers. Comprehensive evaluations demonstrated that the Transitive
+per-channel scaling; AWQ [38], which refines this with activation-                                                    Array achieves significant speedup compared to state-of-the-art
+aware scaling. These techniques collectively address key quantiza-                                                    accelerators, maintaining comparable model accuracy on LLaMA
+tion challenges in LLMs.                                                                                              models. These improvements are attributed to the generalized de-
+   Quantization-based accelerators [21, 23, 29, 40, 48, 63] leverage                                                  sign of TransArray, which allows broad support for state-of-the-art
+reduced bit-width data representations to minimize memory band-                                                       quantization frameworks without specialized requirements, and
+width and enhance computational efficiency, making them suitable                                                      its streamlined PE design that eliminates traditional multiplica-
+for resource-constrained environments. BitFusion [48] introduces                                                      tion operations. Our work provides a novel perspective on sparsity
+a flexible PE array that supports various bit-widths dynamically.                                                     optimization in GEMM computation.
+OLAccel [45] employs a heterogeneous quantization strategy with
+16-bit MAC units for the first layer and 4-bit MAC units for sub-
+sequent layers, optimizing energy efficiency without significant                                                      Acknowledgements
+accuracy loss. GOBO [63] focuses on outlier-aware quantization                                                        This work was supported in part by NSF-2112562 and ARO W911NF-
+by quantizing outlier weights with higher precision. ANT [23]                                                         23-2-0224. The authors sincerely thank the anonymous reviewers
+proposes a fixed-length adaptive quantization framework but over-                                                     for their constructive feedback and valuable suggestions that greatly
+looks outliers, limiting its effectiveness. OliVe [21] introduces an                                                  improved the quality of this work.
+Transitive Array: An Efficient GEMM Accelerator with Result Reuse                                                                         ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+References                                                                                         Romain Sauvestre, Ronnie Polidoro, Roshan Sumbaly, Ross Taylor, Ruan Silva,
+ [1] Jorge Albericio, Alberto Delmas, Patrick Judd, Sayeh Sharify, Gerard O’Leary,                 Rui Hou, Rui Wang, Saghar Hosseini, Sahana Chennabasappa, Sanjay Singh, Sean
+     Roman Genov, and Andreas Moshovos. 2017. Bit-Pragmatic Deep Neural Network                    Bell, Seohyun Sonia Kim, Sergey Edunov, Shaoliang Nie, Sharan Narang, Sharath
+     Computing. 50th Annual IEEE/ACM International Symposium on Microarchitecture                  Raparthy, Sheng Shen, Shengye Wan, Shruti Bhosale, Shun Zhang, Simon Van-
+     (MICRO) (2017).                                                                               denhende, Soumya Batra, Spencer Whitman, Sten Sootla, Stephane Collot, Suchin
+ [2] Saleh Ashkboos, Amirkeivan Mohtashami, Maximilian L. Croci, Bo Li, Pashmina                   Gururangan, Sydney Borodinsky, Tamar Herman, Tara Fowler, Tarek Sheasha,
+     Cameron, Martin Jaggi, Dan Alistarh, Torsten Hoefler, and James Hensman. 2024.                Thomas Georgiou, Thomas Scialom, Tobias Speckbacher, Todor Mihaylov, Tong
+     QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs. arXiv:2404.00456 [cs.LG]                Xiao, Ujjwal Karn, Vedanuj Goswami, Vibhor Gupta, Vignesh Ramanathan, Vik-
+     https://arxiv.org/abs/2404.00456                                                              tor Kerkez, Vincent Gonguet, Virginie Do, Vish Vogeti, Vladan Petrovic, Weiwei
+ [3] Kenneth E Batcher. 1968. Sorting Networks and Their Applications. Proceedings                 Chu, Wenhan Xiong, Wenyin Fu, Whitney Meers, Xavier Martinet, Xiaodong
+     of the April 30–May 2, 1968, Spring Joint Computer Conference (1968), 307–314.                Wang, Xiaoqing Ellen Tan, Xinfeng Xie, Xuchao Jia, Xuewei Wang, Yaelle Gold-
+ [4] Vaclav E. Benes. 1964. Mathematical Theory of Connecting Networks and Tele-                   schlag, Yashesh Gaur, Yasmine Babaei, Yi Wen, Yiwen Song, Yuchen Zhang, Yue
+     phone Traffic. Mathematics in Science and Engineering 17 (1964).                              Li, Yuning Mao, Zacharie Delpierre Coudert, Zheng Yan, Zhengxing Chen, Zoe
+ [5] Peter F Brown, Stephen A Della Pietra, Vincent J Della Pietra, Jennifer C Lai, and            Papakipos, Aaditya Singh, Aaron Grattafiori, Abha Jain, Adam Kelsey, Adam
+     Robert L Mercer. 1992. An estimate of an upper bound for the entropy of English.              Shajnfeld, Adithya Gangidi, Adolfo Victoria, Ahuva Goldstand, Ajay Menon,
+     Computational Linguistics 18, 1 (1992), 31–40.                                                Ajay Sharma, Alex Boesenberg, Alex Vaughan, Alexei Baevski, Allie Feinstein,
+ [6] Tom B Brown. 2020. Language models are few-shot learners. arXiv preprint                      Amanda Kallet, Amit Sangani, Anam Yunus, Andrei Lupu, Andres Alvarado,
+     arXiv:2005.14165 (2020).                                                                      Andrew Caples, Andrew Gu, Andrew Ho, Andrew Poulton, Andrew Ryan, Ankit
+ [7] Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan,                       Ramchandani, Annie Franco, Aparajita Saraf, Arkabandhu Chowdhury, Ashley
+     Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda                    Gabriel, Ashwin Bharambe, Assaf Eisenman, Azadeh Yazdan, Beau James, Ben
+     Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan,                 Maurer, Benjamin Leonhardi, Bernie Huang, Beth Loyd, Beto De Paola, Bhargavi
+     Rewon Child, Aditya Ramesh, Daniel M. Ziegler, Jeffrey Wu, Clemens Winter,                    Paranjape, Bing Liu, Bo Wu, Boyu Ni, Braden Hancock, Bram Wasti, Brandon
+     Christopher Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin               Spence, Brani Stojkovic, Brian Gamido, Britt Montalvo, Carl Parker, Carly Bur-
+     Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya                     ton, Catalina Mejia, Changhan Wang, Changkyu Kim, Chao Zhou, Chester Hu,
+     Sutskever, and Dario Amodei. 2020. Language Models are Few-Shot Learners.                     Ching-Hsiang Chu, Chris Cai, Chris Tindal, Christoph Feichtenhofer, Damon
+     arXiv:2005.14165 [cs.CL] https://arxiv.org/abs/2005.14165                                     Civin, Dana Beaty, Daniel Kreymer, Daniel Li, Danny Wyatt, David Adkins, David
+ [8] Yuzong Chen, Jian Meng, Jae-sun Seo, and Mohamed S Abdelfattah. 2024. BBS:                    Xu, Davide Testuggine, Delia David, Devi Parikh, Diana Liskovich, Didem Foss,
+     Bi-directional Bit-level Sparsity for Deep Learning Acceleration. arXiv preprint              Dingkang Wang, Duc Le, Dustin Holland, Edward Dowling, Eissa Jamil, Elaine
+     arXiv:2409.05227 (2024).                                                                      Montgomery, Eleonora Presani, Emily Hahn, Emily Wood, Erik Brinkman, Es-
+ [9] Yuzong Chen, Jian Meng, Jae sun Seo, and Mohamed S. Abdelfattah.                              teban Arcaute, Evan Dunbar, Evan Smothers, Fei Sun, Felix Kreuk, Feng Tian,
+     2024. BBS: Bi-directional Bit-level Sparsity for Deep Learning Acceleration.                  Firat Ozgenel, Francesco Caggioni, Francisco Guzmán, Frank Kanayet, Frank
+     arXiv:2409.05227 [cs.LG] https://arxiv.org/abs/2409.05227                                     Seide, Gabriela Medina Florez, Gabriella Schwarz, Gada Badeer, Georgia Swee,
+[10] Sharan Chetlur, Cliff Woolley, Philippe Vandermersch, Jonathan Cohen, John                    Gil Halpern, Govind Thattai, Grant Herman, Grigory Sizov, Guangyi, Zhang,
+     Tran, Bryan Catanzaro, and Evan Shelhamer. 2014. cuDNN: Efficient Primitives                  Guna Lakshminarayanan, Hamid Shojanazeri, Han Zou, Hannah Wang, Hanwen
+     for Deep Learning. arXiv:1410.0759 [cs.NE] https://arxiv.org/abs/1410.0759                    Zha, Haroun Habeeb, Harrison Rudolph, Helen Suk, Henry Aspegren, Hunter
+[11] Ping Chi, Shuangchen Li, Cong Xu, Tao Zhang, Jishen Zhao, Yongpan Liu, Yu                     Goldman, Ibrahim Damlaj, Igor Molybog, Igor Tufanov, Irina-Elena Veliche, Itai
+     Wang, and Yuan Xie. 2016. Prime: A novel processing-in-memory architecture                    Gat, Jake Weissman, James Geboski, James Kohli, Japhet Asher, Jean-Baptiste
+     for neural network computation in reram-based main memory. ACM SIGARCH                        Gaya, Jeff Marcus, Jeff Tang, Jennifer Chan, Jenny Zhen, Jeremy Reizenstein,
+     Computer Architecture News 44, 3 (2016), 27–39.                                               Jeremy Teboul, Jessica Zhong, Jian Jin, Jingyi Yang, Joe Cummings, Jon Carvill,
+[12] Wikipedia contributors. [n. d.]. Hasse diagram — Wikipedia, The Free Encyclo-                 Jon Shepard, Jonathan McPhie, Jonathan Torres, Josh Ginsburg, Junjie Wang, Kai
+     pedia. https://en.wikipedia.org/wiki/Hasse_diagram                                            Wu, Kam Hou U, Karan Saxena, Karthik Prasad, Kartikay Khandelwal, Katayoun
+[13] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li, and Li Fei-Fei. 2009. Imagenet:        Zand, Kathy Matosich, Kaushik Veeraraghavan, Kelly Michelena, Keqian Li, Kun
+     A large-scale hierarchical image database. In 2009 IEEE conference on computer                Huang, Kunal Chawla, Kushal Lakhotia, Kyle Huang, Lailin Chen, Lakshya Garg,
+     vision and pattern recognition. Ieee, 248–255.                                                Lavender A, Leandro Silva, Lee Bell, Lei Zhang, Liangpeng Guo, Licheng Yu,
+[14] Jacob Devlin. 2018. Bert: Pre-training of deep bidirectional transformers for                 Liron Moshkovich, Luca Wehrstedt, Madian Khabsa, Manav Avalani, Manish
+     language understanding. arXiv preprint arXiv:1810.04805 (2018).                               Bhatt, Maria Tsimpoukelli, Martynas Mankus, Matan Hasson, Matthew Lennie,
+[15] Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ah-                         Matthias Reso, Maxim Groshev, Maxim Naumov, Maya Lathi, Meghan Keneally,
+     mad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela                    Michael L. Seltzer, Michal Valko, Michelle Restrepo, Mihir Patel, Mik Vyatskov,
+     Fan, Anirudh Goyal, Anthony Hartshorn, Aobo Yang, Archi Mitra, Archie Sra-                    Mikayel Samvelyan, Mike Clark, Mike Macey, Mike Wang, Miquel Jubert Her-
+     vankumar, Artem Korenev, Arthur Hinsvark, Arun Rao, Aston Zhang, Aurelien                     moso, Mo Metanat, Mohammad Rastegari, Munish Bansal, Nandhini Santhanam,
+     Rodriguez, Austen Gregerson, Ava Spataru, Baptiste Roziere, Bethany Biron, Binh               Natascha Parks, Natasha White, Navyata Bawa, Nayan Singhal, Nick Egebo,
+     Tang, Bobbie Chern, Charlotte Caucheteux, Chaya Nayak, Chloe Bi, Chris Marra,                 Nicolas Usunier, Nikolay Pavlovich Laptev, Ning Dong, Ning Zhang, Norman
+     Chris McConnell, Christian Keller, Christophe Touret, Chunyang Wu, Corinne                    Cheng, Oleg Chernoguz, Olivia Hart, Omkar Salpekar, Ozlem Kalinli, Parkin Kent,
+     Wong, Cristian Canton Ferrer, Cyrus Nikolaidis, Damien Allonsius, Daniel Song,                Parth Parekh, Paul Saab, Pavan Balaji, Pedro Rittner, Philip Bontrager, Pierre
+     Danielle Pintz, Danny Livshits, David Esiobu, Dhruv Choudhary, Dhruv Mahajan,                 Roux, Piotr Dollar, Polina Zvyagina, Prashant Ratanchandani, Pritish Yuvraj, Qian
+     Diego Garcia-Olano, Diego Perino, Dieuwke Hupkes, Egor Lakomkin, Ehab Al-                     Liang, Rachad Alao, Rachel Rodriguez, Rafi Ayub, Raghotham Murthy, Raghu
+     Badawy, Elina Lobanova, Emily Dinan, Eric Michael Smith, Filip Radenovic, Frank               Nayani, Rahul Mitra, Raymond Li, Rebekkah Hogan, Robin Battey, Rocky Wang,
+     Zhang, Gabriel Synnaeve, Gabrielle Lee, Georgia Lewis Anderson, Graeme Nail,                  Rohan Maheswari, Russ Howes, Ruty Rinott, Sai Jayesh Bondu, Samyak Datta,
+     Gregoire Mialon, Guan Pang, Guillem Cucurell, Hailey Nguyen, Hannah Kore-                     Sara Chugh, Sara Hunt, Sargun Dhillon, Sasha Sidorov, Satadru Pan, Saurabh
+     vaar, Hu Xu, Hugo Touvron, Iliyan Zarov, Imanol Arrieta Ibarra, Isabel Kloumann,              Verma, Seiji Yamamoto, Sharadh Ramaswamy, Shaun Lindsay, Shaun Lindsay,
+     Ishan Misra, Ivan Evtimov, Jade Copet, Jaewon Lee, Jan Geffert, Jana Vranes,                  Sheng Feng, Shenghao Lin, Shengxin Cindy Zha, Shiva Shankar, Shuqiang Zhang,
+     Jason Park, Jay Mahadeokar, Jeet Shah, Jelmer van der Linde, Jennifer Billock,                Shuqiang Zhang, Sinong Wang, Sneha Agarwal, Soji Sajuyigbe, Soumith Chin-
+     Jenny Hong, Jenya Lee, Jeremy Fu, Jianfeng Chi, Jianyu Huang, Jiawen Liu, Jie                 tala, Stephanie Max, Stephen Chen, Steve Kehoe, Steve Satterfield, Sudarshan
+     Wang, Jiecao Yu, Joanna Bitton, Joe Spisak, Jongsoo Park, Joseph Rocca, Joshua                Govindaprasad, Sumit Gupta, Sungmin Cho, Sunny Virk, Suraj Subramanian,
+     Johnstun, Joshua Saxe, Junteng Jia, Kalyan Vasuden Alwala, Kartikeya Upasani,                 Sy Choudhury, Sydney Goldman, Tal Remez, Tamar Glaser, Tamara Best, Thilo
+     Kate Plawiak, Ke Li, Kenneth Heafield, Kevin Stone, Khalid El-Arini, Krithika                 Kohler, Thomas Robinson, Tianhe Li, Tianjun Zhang, Tim Matthews, Timothy
+     Iyer, Kshitiz Malik, Kuenley Chiu, Kunal Bhalla, Lauren Rantala-Yeary, Laurens                Chou, Tzook Shaked, Varun Vontimitta, Victoria Ajayi, Victoria Montanez, Vijai
+     van der Maaten, Lawrence Chen, Liang Tan, Liz Jenkins, Louis Martin, Lovish                   Mohan, Vinay Satish Kumar, Vishal Mangla, Vítor Albiero, Vlad Ionescu, Vlad
+     Madaan, Lubo Malo, Lukas Blecher, Lukas Landzaat, Luke de Oliveira, Made-                     Poenaru, Vlad Tiberiu Mihailescu, Vladimir Ivanov, Wei Li, Wenchen Wang,
+     line Muzzi, Mahesh Pasupuleti, Mannat Singh, Manohar Paluri, Marcin Kardas,                   Wenwen Jiang, Wes Bouaziz, Will Constable, Xiaocheng Tang, Xiaofang Wang,
+     Mathew Oldham, Mathieu Rita, Maya Pavlova, Melanie Kambadur, Mike Lewis,                      Xiaojian Wu, Xiaolan Wang, Xide Xia, Xilun Wu, Xinbo Gao, Yanjun Chen, Ye
+     Min Si, Mitesh Kumar Singh, Mona Hassan, Naman Goyal, Narjes Torabi, Nikolay                  Hu, Ye Jia, Ye Qi, Yenda Li, Yilin Zhang, Ying Zhang, Yossi Adi, Youngjin Nam,
+     Bashlykov, Nikolay Bogoychev, Niladri Chatterji, Olivier Duchenne, Onur Çelebi,               Yu, Wang, Yuchen Hao, Yundi Qian, Yuzi He, Zach Rait, Zachary DeVito, Zef
+     Patrick Alrassy, Pengchuan Zhang, Pengwei Li, Petar Vasic, Peter Weng, Prajjwal               Rosnbrick, Zhaoduo Wen, Zhenyu Yang, and Zhiwei Zhao. 2024. The Llama 3
+     Bhargava, Pratik Dubal, Praveen Krishnan, Punit Singh Koura, Puxin Xu, Qing                   Herd of Models. arXiv:2407.21783 [cs.AI] https://arxiv.org/abs/2407.21783
+     He, Qingxiao Dong, Ragavan Srinivasan, Raj Ganapathy, Ramon Calderer, Ri-                [16] Michael J. Flynn. 1972. Some Computer Organizations and Their Effectiveness.
+     cardo Silveira Cabral, Robert Stojnic, Roberta Raileanu, Rohit Girdhar, Rohit Patel,          IEEE Trans. Comput. C-21 (1972), 948–960. https://api.semanticscholar.org/
+                                                                                                   CorpusID:18573685
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                 Cong Guo, Chiyue Wei, Jiaming Tang, Bowen Duan, Song Han, Hai Li, and Yiran Chen
+
+
+[17] Ian Goodfellow. 2016. Deep learning.                                                  [35] Yann LeCun, Yoshua Bengio, and Geoffrey Hinton. 2015. Deep learning. nature
+[18] Cong Guo, Feng Cheng, Zhixu Du, James Kiessling, Jonathan Ku, Shiyu Li, Ziru               521, 7553 (2015), 436–444.
+     Li, Mingyuan Ma, Tergel Molom-Ochir, Benjamin Morris, et al. 2025. A Survey:          [36] Jungi Lee, Wonbeom Lee, and Jaewoong Sim. 2024. Tender: Accelerating Large
+     Collaborative Hardware and Software Design in the Era of Large Language                    Language Models via Tensor Decomposition and Runtime Requantization. arXiv
+     Models. IEEE Circuits and Systems Magazine 25, 1 (2025), 35–57.                            preprint arXiv:2406.12930 (2024).
+[19] Cong Guo, Bo Yang Hsueh, Jingwen Leng, Yuxian Qiu, Yue Guan, Zehuan Wang,             [37] Yuhang Li, Mingzhu Shen, Jian Ma, Yan Ren, Mingxin Zhao, Qi Zhang, Rui-
+     Xiaoying Jia, Xipeng Li, Minyi Guo, and Yuhao Zhu. 2020. Accelerating sparse dnn           hao Gong, Fengwei Yu, and Junjie Yan. 2021. Mqbench: Towards reproducible
+     models without hardware-support via tile-wise sparsity. In SC20: International             and deployable model quantization benchmark. arXiv preprint arXiv:2111.03759
+     Conference for High Performance Computing, Networking, Storage and Analysis.               (2021).
+     IEEE, 1–15.                                                                           [38] Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen
+[20] Cong Guo, Yuxian Qiu, Jingwen Leng, Xiaotian Gao, Chen Zhang, Yunxin Liu,                  Wang, Guangxuan Xiao, Xingyu Dang, Chuang Gan, and Song Han. 2024. AWQ:
+     Fan Yang, Yuhao Zhu, and Minyi Guo. 2022. SQuant: On-the-Fly Data-Free                     Activation-aware Weight Quantization for LLM Compression and Acceleration.
+     Quantization via Diagonal Hessian Approximation. In International Conference               arXiv:2306.00978 [cs.CL] https://arxiv.org/abs/2306.00978
+     on Learning Representations. https://openreview.net/forum?id=JXhROKNZzOc              [39] Yujun Lin, Haotian Tang, Shang Yang, Zhekai Zhang, Guangxuan Xiao, Chuang
+[21] Cong Guo, Jiaming Tang, Weiming Hu, Jingwen Leng, Chen Zhang, Fan Yang,                    Gan, and Song Han. 2024. QServe: W4A8KV4 Quantization and System Co-design
+     Yunxin Liu, Minyi Guo, and Yuhao Zhu. 2023. Olive: Accelerating large language             for Efficient LLM Serving. arXiv:2405.04532 [cs.CL] https://arxiv.org/abs/2405.
+     models via hardware-friendly outlier-victim pair quantization. In Proceedings of           04532
+     the 50th Annual International Symposium on Computer Architecture. 1–15.               [40] Zihan Liu, Xinhao Luo, Junxian Guo, Wentao Ni, Yangjie Zhou, Yue Guan, Cong
+[22] Cong Guo, Fengchen Xue, Jingwen Leng, Yuxian Qiu, Yue Guan, Weihao Cui,                    Guo, Weihao Cui, Yu Feng, Minyi Guo, et al. 2025. VQ-LLM: High-performance
+     Quan Chen, and Minyi Guo. 2024. Accelerating sparse dnns based on tiled gemm.              Code Generation for Vector Quantization Augmented LLM Inference. In 2025
+     IEEE Trans. Comput. (2024).                                                                IEEE International Symposium on High Performance Computer Architecture (HPCA).
+[23] Cong Guo, Chen Zhang, Jingwen Leng, Zihan Liu, Fan Yang, Yunxin Liu, Minyi                 IEEE, 1496–1509.
+     Guo, and Yuhao Zhu. 2022. Ant: Exploiting adaptive numerical data type for            [41] Zechun Liu, Changsheng Zhao, Igor Fedorov, Bilge Soran, Dhruv Choud-
+     low-bit deep neural network quantization. In 2022 55th IEEE/ACM International              hary, Raghuraman Krishnamoorthi, Vikas Chandra, Yuandong Tian, and Tij-
+     Symposium on Microarchitecture (MICRO). IEEE, 1414–1433.                                   men Blankevoort. 2024. SpinQuant: LLM quantization with learned rotations.
+[24] Song Han, Xingyu Liu, Huizi Mao, Jing Pu, Ardavan Pedram, Mark A Horowitz,                 arXiv:2405.16406 [cs.LG] https://arxiv.org/abs/2405.16406
+     and William J Dally. 2016. EIE: Efficient inference engine on compressed deep         [42] Hang Lu, Liang Chang, Chenglong Li, Zixuan Zhu, Shengjian Lu, Yanhuan Liu,
+     neural network. ACM SIGARCH Computer Architecture News 44, 3 (2016), 243–                  and Mingzhe Zhang. 2021. Distilling Bit-level Sparsity Parallelism for Gen-
+     254.                                                                                       eral Purpose Deep Learning Acceleration. 54th Annual IEEE/ACM International
+[25] Song Han, Huizi Mao, and William J Dally. 2015. Deep compression: Compressing              Symposium on Microarchitecture (MICRO) (2021).
+     deep neural networks with pruning, trained quantization and huffman coding.           [43] Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. 2016.
+     arXiv preprint arXiv:1510.00149 (2015).                                                    Pointer sentinel mixture models. arXiv preprint arXiv:1609.07843 (2016).
+[26] Helmut Hasse. 1967. Grundlagen der Mathematik in historischer Entwicklung.            [44] NVIDIA Corporation. 2020. NVIDIA A100 Tensor Core GPU Architecture. Tech-
+     Mathematisch-Naturwissenschaftliche Bibliothek 31 (1967).                                  nical Report. NVIDIA Corporation. https://images.nvidia.com/aem-dam/en-
+[27] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. 2016. Deep residual                 zz/Solutions/data-center/nvidia-ampere-architecture-whitepaper.pdf Accessed:
+     learning for image recognition. In Proceedings of the IEEE conference on computer          2024-11-23.
+     vision and pattern recognition. 770–778.                                              [45] Eunhyeok Park, Dongyoung Kim, and Sungjoo Yoo. 2018. Energy-efficient neural
+[28] Kevin Hsieh, Eiman Ebrahimi, Gwangsun Kim, Niladrish Chatterjee, Mike                      network ‘accel’erator based on outlier-aware low-precision computation. In 2018
+     O’Connor, Nandita Vijaykumar, Onur Mutlu, and Stephen W Keckler. 2016.                     ACM/IEEE 45th Annual International Symposium on Computer Architecture (ISCA).
+     Transparent offloading and mapping (TOM) enabling programmer-transparent                   IEEE, 688–698.
+     near-data processing in GPU systems. ACM SIGARCH Computer Architecture                [46] Eric Qin, Ananda Samajdar, Hyoukjun Kwon, Vineet Nadella, Sudarshan Srini-
+     News 44, 3 (2016), 204–216.                                                                vasan, Dipankar Das, Bharat Kaul, and Tushar Krishna. 2020. Sigma: A sparse
+[29] Weiming Hu, Haoyan Zhang, Cong Guo, Yu Feng, Renyang Guan, Zhendong Hua,                   and irregular gemm accelerator with flexible interconnects for dnn training. In
+     Zihan Liu, Yue Guan, Minyi Guo, and Jingwen Leng. 2025. M-ANT: Efficient Low-              2020 IEEE International Symposium on High Performance Computer Architecture
+     bit Group Quantization for LLMs via Mathematically Adaptive Numerical Type.                (HPCA). IEEE, 58–70.
+     In 2025 IEEE International Symposium on High Performance Computer Architecture        [47] Wenqi Shao, Mengzhao Chen, Zhaoyang Zhang, Peng Xu, Lirui Zhao, Zhiqian
+     (HPCA). IEEE, 1112–1126.                                                                   Li, Kaipeng Zhang, Peng Gao, Yu Qiao, and Ping Luo. 2024.                Omni-
+[30] Benoit Jacob, Skirmantas Kligys, Bo Chen, Menglong Zhu, Matthew Tang, Andrew               Quant: Omnidirectionally Calibrated Quantization for Large Language Models.
+     Howard, Hartwig Adam, and Dmitry Kalenichenko. 2017. Quantization and                      arXiv:2308.13137 [cs.LG] https://arxiv.org/abs/2308.13137
+     Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference.          [48] Hardik Sharma, Jongse Park, Naveen Suda, Liangzhen Lai, Benson Chau,
+     arXiv:1712.05877 [cs.LG] https://arxiv.org/abs/1712.05877                                  Joon Kyung Kim, Vikas Chandra, and Hadi Esmaeilzadeh. 2018. Bit fusion: Bit-
+[31] Dong-Ik Jeon, Kyeong-Bin Park, and Ki-Seok Chung. 2017. HMC-MAC:                           level dynamically composable architecture for accelerating deep neural network.
+     Processing-in memory architecture for multiply-accumulate operations with                  In 2018 ACM/IEEE 45th Annual International Symposium on Computer Architecture
+     hybrid memory cube. IEEE Computer Architecture Letters 17, 1 (2017), 5–8.                  (ISCA). IEEE, 764–775.
+[32] Norman P. Jouppi, Cliff Young, Nishant Patil, David Patterson, Gaurav Agrawal,        [49] Man Shi, Vikram Jain, Antony Joseph, Maurice Meijer, and Marian Verhelst.
+     Raminder Bajwa, Sarah Bates, Suresh Bhatia, Nan Boden, Al Borchers, Rick Boyle,            2024. BitWave: Exploiting Column-Based Bit-Level Sparsity for Deep Learning
+     Pierre luc Cantin, Clifford Chao, Chris Clark, Jeremy Coriell, Mike Daley, Matt            Acceleration. Proceedings of the 30th IEEE International Symposium on High-
+     Dau, Jeffrey Dean, Ben Gelb, Tara Vazir Ghaemmaghami, Rajendra Gottipati,                  Performance Computer Architecture (HPCA) (2024).
+     William Gulland, Robert Hagmann, C. Richard Ho, Doug Hogberg, John Hu,                [50] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper,
+     Robert Hundt, Dan Hurt, Julian Ibarz, Aaron Jaffey, Alek Jaworski, Alexander               and Bryan Catanzaro. 2020. Megatron-LM: Training Multi-Billion Parameter
+     Kaplan, Harshit Khaitan, Andy Koch, Naveen Kumar, Steve Lacy, James Laudon,                Language Models Using Model Parallelism. arXiv:1909.08053 [cs.CL] https:
+     James Law, Diemthu Le, Chris Leary, Zhuyuan Liu, Kyle Lucke, Alan Lundin,                  //arxiv.org/abs/1909.08053
+     Gordon MacKean, Adriana Maggiore, Maire Mahony, Kieran Miller, Rahul Nagara-          [51] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne
+     jan, Ravi Narayanaswami, Ray Ni, Kathy Nix, Thomas Norrie, Mark Omernick,                  Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal
+     Narayana Penukonda, Andy Phelps, Jonathan Ross, Matt Ross, Amir Salek, Emad                Azhar, et al. 2023. Llama: Open and efficient foundation language models. arXiv
+     Samadiani, Chris Severn, Gregory Sizikov, Matthew Snelham, Jed Souter, Dan                 preprint arXiv:2302.13971 (2023).
+     Steinberg, Andy Swing, Mercedes Tan, Gregory Thorson, Bo Tian, Horia Toma,            [52] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yas-
+     Erick Tuttle, Vijay Vasudevan, Richard Walter, Walter Wang, Eric Wilcox, and               mine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhos-
+     Doe Hyun Yoon. 2017. In-Datacenter Performance Analysis of a Tensor Process-               ale, et al. 2023. Llama 2: Open foundation and fine-tuned chat models. arXiv
+     ing Unit. arXiv:1704.04760 [cs.AR] https://arxiv.org/abs/1704.04760                        preprint arXiv:2307.09288 (2023).
+[33] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B. Brown, Benjamin Chess,             [53] A Vaswani. 2017. Attention is all you need. Advances in Neural Information
+     Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. 2020.                 Processing Systems (2017).
+     Scaling Laws for Neural Language Models. arXiv:2001.08361 [cs.LG] https:              [54] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+     //arxiv.org/abs/2001.08361                                                                 Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. 2023. Attention Is All
+[34] Donald E. Knuth. 2009. The Art of Computer Programming, Volume 4A: Combi-                  You Need. arXiv:1706.03762 [cs.CL] https://arxiv.org/abs/1706.03762
+     natorial Algorithms, Part 1. In The Art of Computer Programming. Addison-Wesley       [55] Abraham Waksman. 1968. A permutation network. In 8th Annual Symposium on
+     Professional.                                                                              Switching and Automata Theory. IEEE, 111–117.
+Transitive Array: An Efficient GEMM Accelerator with Result Reuse                                                                ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+[56] Zhongwei Wan, Xin Wang, Che Liu, Samiul Alam, Yu Zheng, Jiachen Liu, Zhong-           Post-Training Quantization for Large-Scale Transformers. In Advances in
+     nan Qu, Shen Yan, Yi Zhu, Quanlu Zhang, Mosharaf Chowdhury, and Mi Zhang.             Neural Information Processing Systems, S. Koyejo, S. Mohamed, A. Agar-
+     2024. Efficient Large Language Models: A Survey. arXiv:2312.03863 [cs.CL]             wal, D. Belgrave, K. Cho, and A. Oh (Eds.), Vol. 35. Curran Associates,
+     https://arxiv.org/abs/2312.03863                                                      Inc., 27168–27183. https://proceedings.neurips.cc/paper_files/paper/2022/file/
+[57] Hongyu Wang, Shuming Ma, Li Dong, Shaohan Huang, Huaijie Wang, Lingxiao               adf7fa39d65e2983d724ff7da57f00ac-Paper-Conference.pdf
+     Ma, Fan Yang, Ruiping Wang, Yi Wu, and Furu Wei. 2023. BitNet: Scaling 1-        [63] Ali Hadi Zadeh, Isak Edo, Omar Mohamed Awad, and Andreas Moshovos. 2020.
+     bit Transformers for Large Language Models. arXiv:2310.11453 [cs.CL] https:           Gobo: Quantizing attention-based nlp models for low latency and energy ef-
+     //arxiv.org/abs/2310.11453                                                            ficient inference. In 2020 53rd Annual IEEE/ACM International Symposium on
+[58] Yang Wang, Chen Zhang, Zhiqiang Xie, Cong Guo, Yunxin Liu, and Jingwen Leng.          Microarchitecture (MICRO). IEEE, 811–824.
+     2021. Dual-side sparse tensor core. In 2021 ACM/IEEE 48th Annual International   [64] Chen Zhang, Yang Wang, Zhiqiang Xie, Cong Guo, Yunxin Liu, Jingwen Leng,
+     Symposium on Computer Architecture (ISCA). IEEE, 1083–1095.                           Guangyu Sun, Zhigang Ji, Runsheng Wang, Yuan Xie, et al. 2024. DSTC: Dual-
+[59] Chiyue Wei, Cong Guo, Feng Cheng, Shiyu Li, Hao Frank Yang, Hai Helen Li, and         Side Sparsity Tensor Core for DNNs Acceleration on Modern GPU Architectures.
+     Yiran Chen. 2025. Prosperity: Accelerating Spiking Neural Networks via Product        IEEE Trans. Comput. (2024).
+     Sparsity. In 2025 IEEE International Symposium on High Performance Computer      [65] Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi
+     Architecture (HPCA). IEEE, 806–820.                                                   Cai, Zhao Song, Yuandong Tian, Christopher Ré, Clark Barrett, Zhangyang Wang,
+[60] Wei Wen, Chunpeng Wu, Yandan Wang, Yiran Chen, and Hai Li. 2016. Learning             and Beidi Chen. [n. d.]. H$_2$O: Heavy-Hitter Oracle for Efficient Generative
+     structured sparsity in deep neural networks. Advances in neural information           Inference of Large Language Models. arXiv:2306.14048 [cs] http://arxiv.org/abs/
+     processing systems 29 (2016).                                                         2306.14048
+[61] Guangxuan Xiao, Ji Lin, Mickael Seznec, Hao Wu, Julien Demouth, and Song Han.    [66] Maohua Zhu, Tao Zhang, Zhenyu Gu, and Yuan Xie. 2019. Sparse tensor core:
+     2024. SmoothQuant: Accurate and Efficient Post-Training Quantization for Large        Algorithm and hardware co-design for vector-wise sparse neural networks on
+     Language Models. arXiv:2211.10438 [cs.CL] https://arxiv.org/abs/2211.10438            modern gpus. In Proceedings of the 52nd Annual IEEE/ACM International Sympo-
+[62] Zhewei Yao, Reza Yazdani Aminabadi, Minjia Zhang, Xiaoxia Wu, Con-                    sium on Microarchitecture. 359–371.
+     glong Li, and Yuxiong He. 2022.          ZeroQuant: Efficient and Affordable
+

@@ -1,0 +1,73 @@
+           DHTDEC                               HISTORY-FIFO                       We designed a parallel speculative Huffman decoder
+                      table
+                                                                                (Fig.10) to overcome the bottleneck. Compressed source data
+                              HUFFMAN
+  32b
+        SPECULATIVE
+                    32b         FULL  LZ x8       x4   LZ77       64b           enters 32-bit/cycle from the left and uncompressed raw data
+          FIRST-BIT                         QUEUE
+         DECODER
+                              DECODER                DECODER                    exits 64-bit/cycle from the right. At one extreme, the 32-bit
+                                 x8                                             input word may contain 32 codes 1-bit each. At the other
+                                                                                extreme, it may contain 2 codes 15-bits each and some fraction
+Fig. 10. The NXU decoder architecture consist of a parallel speculative
+Huffman decoder followed by an LZ77 decoder.                                    of a third code extending into the next cycle.
+                                                                                   The speculative decoder, without knowing the code lengths,
+discarded but the LZ counts are kept for processing in DHT-                     assumes that 32 different codes of any length start at every bit
+GEN. In the second pass, the DHT is used to ﬁnally produce                      offset of the 32-bit input word. It decodes them in parallel, 32
+the actual Huffman encoded compressed output (recall that the                   codes per cycle. Wrongly speculated codes are invalidated later
+DHT maps the LZ symbol alphabet to 1 to 15-bit codes.)                          in the decoder pipeline since their assumed ﬁrst-bit positions
+   To avoid two passes, we hypothesized that sampling the                       are wrong.
+source data might be sufﬁcient to obtain representative LZ                         The design was inspired by an FPGA based decoder de-
+symbol frequencies. Most data streams have ”locality” in a                      scribed in [28]. We reduced the SRAM and area consumption
+small window of few hundred KB: literals, length and distance                   of that design which made the on-chip integration possible.
+symbols are similarly distributed throughout a data stream. For                 Our main insight was that 32 full-decoders were not necessary.
+example, if English text is used at the beginning the same is                   Each full-decoder requires a large SRAM mapping 1 to 15-
+likely for the rest. Therefore, the z15 implementation makes                    bit codes to 286 length and literal symbols and 30 distance
+the ﬁrst pass only on the ﬁrst 32KB of input data (sample                       symbols. We instead implemented a speculative ”First-Bit
+size is conﬁgurable.) Resulting DHT is used in the second                       Decoder” (FB) which only identiﬁes the starting bit positions
+compression pass for up to 256KB of source data. We refer                       of codes in the 32-bit input. The FB decoder does not store
+to this as the 1.1-pass method; it increases throughput from                    any LZ symbols and therefore it is smaller than a full-decoder.
+50% to ideally 256/(256+32) = 89% of the hardware peak.                         The FB decoder identiﬁes the ﬁrst bit position of the ﬁrst
+We experimentally determined that sampling ﬁrst 32KB is                         Huffman code in the input word and hands it off to one of
+satisfactory in most cases. Although, as a future optimization                  eight full-decoders shown in Fig.10. The 8 full-decoders work
+different regions of sampling and sample sizes may be consid-                   independently and in parallel starting at their respective ﬁrst-
+ered. Compression ratio impact of the 1.1-pass over the 2-pass                  bit positions and they produce LZ77 references which are then
+method is presented in Section VIII-B.                                          queued at the LZ77 decoder’s input. Finally, the LZ77 decoder
+                                                                                (Fig.10) processes up to 4 LZ references per cycle.
+D. Discussion on Design Trade-offs
+                                                                                   VII. I NTEGRATION OF THE ACCELERATOR INTO THE
+   Many hardware designs implement a static table with an
+                                                                                                   S YSTEM S TACK
+assumed LZ symbol distribution which typically degrades
+compression ratio [2]–[4], [14]. For example, Fig.5 shows                       A. User Interface
+the compression ratio difference between static and dynamic                        Traditionally, hardware devices are managed by kernel-
+tables. IBM z13 adapter uses a ”pseudo-dynamic” approach                        mode drivers performing tasks such as memory protection,
+where one of 15 different static Huffman tables yielding the                    address translation, page pinning, and coordinating shared
+smallest output is selected at run time [2]. We implemented in                  access. User/kernel mode task switching penalizes throughput
+contrast, a true ”Dynamic Huffman” mode for both POWER9                         for short running device tasks. POWER9 and z15 both have
+and z15 to achieve highest possible compression ratio.                          user-mode accelerator interfaces to reduce software overheads
+   On POWER9, software must generate a DHT [40] which                           which we describe in this section. A novel user-mode page
+often takes long time to compared to the actual compression                     fault handler is also used in POWER9. Main goal of the user-
+time. As a result, recently used DHTs are stored in a software                  mode page fault handler is to have low latency access to the
+cache which amortizes the software overhead over multiple                       accelerator by eliminating system calls, privileged instructions,
+jobs [40]. Based on the POWER9 lessons learned, the z15                         and pinned pages. Retry capability of the accelerator helped
+system added a DHTGEN hardware unit that eliminated the                         accomplish that goal on POWER9. Performance of the user-
+software overheads. The DHTGEN hardware unconditionally                         mode interfaces are detailed in Section VIII-D.
+produces a new DHT for each job.                                                   The z15 architecture includes the ”Deﬂate Conversion Call”
+                                                                                (DFLTCC) unprivileged instruction [38]. DFLTCC enables
+                        VI. D ECOMPRESSOR                                       user-mode access to NXU with no operating system or de-
+   Deﬂate’s 1 to 15-bit variable length codes are concatenated                  vice driver support. DFLTCC was implemented in low level
+with no delimiters in-between. In principle, codes must be                      ﬁrmware called millicode running on the CISC type processor
+decoded serially one at a time, since the next code’s starting bit              cores [41]. Millicode interacts with the NXU on the same
+position cannot be known before the current code’s length is                    chip and performs essential functions such as checking access
+determined. However, our design requires decoding up to 4 LZ                    rights, virtual to absolute address translation, and exception
+references per cycle (4 length/distance pairs = 8 codes/cycle.)                 handling.
+
+
+
+
+                                                                            7
+
+        Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:40 UTC from IEEE Xplore. Restrictions apply.
+

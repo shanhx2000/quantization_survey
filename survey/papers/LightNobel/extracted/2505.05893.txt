@@ -1,0 +1,1478 @@
+                                         LightNobel: Improving Sequence Length Limitation in Protein
+                                        Structure Prediction Model via Adaptive Activation Quantization
+                                                          Seunghee Han∗                                             Soongyu Choi∗                                  Joo-Young Kim
+                                                       shhan1755@kaist.ac.kr                                  soongyu1291@kaist.ac.kr                         jooyoung1203@kaist.ac.kr
+                                                              KAIST                                                   KAIST                                           KAIST
+                                                        Daejeon, South Korea                                    Daejeon, South Korea                            Daejeon, South Korea
+                                        Abstract
+                                        Recent advances in Protein Structure Prediction Models (PPMs),
+                                        such as AlphaFold2 and ESMFold, have revolutionized computa-
+arXiv:2505.05893v1 [cs.AR] 9 May 2025
+
+
+
+
+                                        tional biology by achieving unprecedented accuracy in predicting
+                                        three-dimensional protein folding structures. However, these mod-
+                                        els face significant scalability challenges, particularly when process-                           (a)                      (b)                     (c)
+                                        ing proteins with long amino acid sequences (e.g., sequence length
+                                        > 1,000). The primary bottleneck that arises from the exponential                       Figure 1: Visualization of Protein Structure Prediction Model
+                                        growth in activation sizes is driven by the unique data structure                       (PPM) results. (a) Result of the conventional PPM. (b) Result
+                                        in PPM, which introduces an additional dimension that leads to                          of LightNobel. (c) Comparison between the two results.
+                                        substantial memory and computational demands. These limitations
+                                        have hindered the effective scaling of PPM for real-world applica-
+                                        tions, such as analyzing large proteins or complex multimers with                       ACM Reference Format:
+                                                                                                                                Seunghee Han, Soongyu Choi, and Joo-Young Kim. 2025. LightNobel: Im-
+                                        critical biological and pharmaceutical relevance.
+                                                                                                                                proving Sequence Length Limitation in Protein Structure Prediction Model
+                                           In this paper, we present LightNobel, the first hardware-software                    via Adaptive Activation Quantization. In Proceedings of the 52nd Annual
+                                        co-designed accelerator developed to overcome scalability limita-                       International Symposium on Computer Architecture (ISCA ’25), June 21–25,
+                                        tions on the sequence length in PPM. At the software level, we pro-                     2025, Tokyo, Japan. ACM, New York, NY, USA, 16 pages. https://doi.org/10.
+                                        pose Token-wise Adaptive Activation Quantization (AAQ), which                           1145/3695053.3731006
+                                        leverages unique token-wise characteristics, such as distogram
+                                        patterns in PPM activations, to enable fine-grained quantization                        1    Introduction
+                                        techniques without compromising accuracy. At the hardware level,
+                                                                                                                                Proteins, the fundamental building blocks of life, are at the center of
+                                        LightNobel integrates the multi-precision reconfigurable matrix
+                                                                                                                                nearly all biological processes. These essential biomolecules, com-
+                                        processing unit (RMPU) and versatile vector processing unit (VVPU)
+                                                                                                                                posed of amino acid sequences, fold into intricate three-dimensional
+                                        to enable the efficient execution of AAQ. Through these innova-
+                                                                                                                                structures that dictate their functions [50]. An accurate understand-
+                                        tions, LightNobel achieves up to 8.44×, 8.41× speedup and 37.29×,
+                                                                                                                                ing of protein folding structures is critical for deciphering their
+                                        43.35× higher power efficiency over the latest NVIDIA A100 and
+                                                                                                                                roles in protein binding, interactions, and other functions essential
+                                        H100 GPUs, respectively, while maintaining negligible accuracy
+                                                                                                                                to biotechnological and pharmaceutical applications.
+                                        loss. It also reduces the peak memory requirement up to 120.05× in
+                                                                                                                                   However, accurately determining protein folding structures re-
+                                        PPM, enabling scalable processing for proteins with long sequences.
+                                                                                                                                mains a formidable challenge. Experimental methods [19, 23] have
+                                                                                                                                historically been used to explore these structures. While effective,
+                                        CCS Concepts
+                                                                                                                                these approaches are costly and time-consuming. Over the past
+                                        • Hardware → Hardware accelerators; Application specific in-                            60 years, only 170,000 protein structures have been identified, but
+                                        tegrated circuits; • Computer systems organization → Neural                             the total number of proteins across all known living organisms is
+                                        networks; • Applied computing → Computational biology.                                  estimated to exceed 200 million [54]. This disparity underscores
+                                                                                                                                the urgent need for more efficient and scalable approaches.
+                                        Keywords                                                                                   The advent of computational models marked a turning point
+                                        Protein Structure Prediction Model (PPM), AlphaFold2, ESMFold,                          in the Protein Structure Prediction Model (PPM). However, they
+                                        Attention-based Model, Quantization, Hardware Accelerator,                              struggled to achieve the accuracy required to replace experimental
+                                        Hardware-Software Co-design                                                             methods at the beginning. At this juncture, the application of deep
+                                                                                                                                learning to protein folding prediction has dramatically transformed
+                                        ∗ Both authors contributed equally to this research.
+                                                                                                                                this field. Early models [53, 65] leveraged Convolutional Neural
+                                                                                                                                Networks (CNNs) [49], delivering substantial improvements over
+                                                                                                                                conventional approaches. The introduction of attention-based mod-
+                                        This work is licensed under a Creative Commons Attribution 4.0 International License.   els [59] further advanced the field by considering interactions across
+                                        ISCA ’25, Tokyo, Japan                                                                  all positions in the input sequence. AlphaFold2 [33] integrated a
+                                        © 2025 Copyright held by the owner/author(s).
+                                        ACM ISBN 979-8-4007-1261-6/2025/06                                                      large-scale database with an attention-based model, achieving un-
+                                        https://doi.org/10.1145/3695053.3731006                                                 precedented accuracy in CASP14 [11], the premier competition in
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                              Seunghee Han, Soongyu Choi, and Joo-Young Kim
+
+
+protein structure prediction. ESMFold [39] enhanced prediction                    outlier configuration among quantized activations, and con-
+speed by leveraging ESM-2, a type of protein language model, in-                  figures a dataflow that can maximize hardware utilization
+stead of relying on extensive databases. These advances culminated                for different types of activations.
+in the awarding of the 2024 Nobel Prize in Chemistry [8].                       • Our experiments show LightNobel achieves up to 8.44×,
+   Despite their impressive performance, PPM faces significant scal-              8.41× speedup and 37.29×, 43.35× higher power efficiency
+ability challenges. The Pair Representation in the attention-based                over the latest NVIDIA A100 and H100 GPUs while main-
+PPM introduces an additional dimension, which significantly in-                   taining negligible accuracy loss and reducing peak memory
+flates memory requirements as sequence length increases. This                     requirements by 120.05× for proteins with long sequences.
+special data structure not only limits scalability to long protein
+sequences but also results in high latency. However, the need to
+analyze long-sequence proteins is becoming increasingly urgent.
+                                                                          2 Background
+For example, long proteins such as titin [36], which play diverse and     2.1 Attention-based Model
+vital roles, consist of tens of thousands of amino acids. Addition-       Attention-based models are models with attention layers, widely
+ally, proteins frequently form complexes, or multimers, inherently        used for various applications [18, 42]. The attention layer oper-
+increasing sequence length to perform biological functions. This          ates in the following steps. First, Query (Q), Key (K), and Value
+demand is evident in CASP competition [10], where targeting se-           (V) are computed from the input. Next, attention scores are calcu-
+quence lengths have grown from 770 in CASP10 to 6,879 in CASP16,          lated through dot product operations between Q and K, followed by
+emphasizing the need for scalable solutions. Some systems, such           scaling. After applying a softmax function, the resulting attention
+as OpenFold [3], address this demand through techniques such              weights reflect the importance of each element. This step captures
+as chunking and Low-Memory Attention (LMA) [52], extending                the underlying relationships in the data. Finally, the output is ob-
+support to sequences of up to 4,600 amino acids. Nonetheless, these       tained by multiplying these weights with V, typically followed by
+methods remain insufficient for handling the rapidly increasing           linear layers. In the case of Multi-head Attention (MHA), QKV
+sequence lengths of protein structure demands.                            generation and attention score calculation can be divided into mul-
+   To address these challenges, we focus on quantization. While           tiple groups called heads. Attention-based models have achieved
+quantization is widely applied in attention-based models such as          remarkable success across various fields, owing to their applica-
+LLMs [42] or ViTs [18], they mainly focus on weights as the size of       bility and scalability to numerous tasks. Their ability to consider
+weights represents a major bottleneck in such models [28, 37, 66, 68].    interactions across all positions in a sequence has recently extended
+Some studies deal with simultaneous quantization of both weights          their application to the Protein Structure Prediction Model (PPM).
+and activations, but they are applied in a limited manner and show
+accuracy loss due to the limitations of quantization [17, 38, 40, 64,
+67]. However, in PPM, maintaining prediction accuracy is critical,        2.2     Model Quantization
+as precise folding results are essential for practical application.       Model Quantization is a technique that represents high-precision
+   Through detailed analysis, we discover that each activation in         values (e.g., FP32) as discrete lower-precision values (e.g., INT4,
+PPM exhibits unique characteristics. This insight enables us to           INT8). With the increasing scale and complexity of modern deep
+design a new approach that dynamically adjusts precision and              learning models, especially attention-based models, quantization
+outlier handling based on the characteristics of different activations.   has gained significant attention for its ability to reduce computa-
+Additionally, the hardware-unfriendly multi-precision and dynamic         tional costs and memory requirements [44].
+dataflow is solved through our special hardware design. Figure 1             Scaling Factor. Since the representation range of lower preci-
+demonstrates that our system achieves nearly identical results to         sion values is narrower compared to higher precision, scaling is
+the conventional system in protein folding prediction.                    required to represent higher precision values. The multiplier used
+   In this paper, we propose LightNobel, a hardware-software co-          in this scaling is called the scaling factor. Scaling factors are prede-
+designed solution that overcomes the scalability limitations on the       termined using calibration or are dynamically adjusted at runtime
+sequence length due to the activation size through a novel quanti-        for quantization and further utilized for dequantization.
+zation approach combined with meticulously designed dedicated                Quantitation Granularity. If every value shares the same scal-
+hardware. The main contributions of our work are as follows.              ing factor, quantization accuracy significantly decreases due to poor
+                                                                          representation of values. To address this, values can be divided into
+     • We identify the severe limitations of the Protein Structure        groups with small variances and share the same scaling factor,
+       Prediction Model (PPM) in handling long sequences, primar-         called quantization granularity, which defines the level of grouping.
+       ily due to rapidly increasing activation size, which leads to      Quantization applied to the tensor is called tensor-wise quantiza-
+       high peak memory requirements and latency.                         tion, the channel-level group is called channel-wise quantization,
+     • We develop a Token-wise Adaptive Activation Quantization           and the token-level group is called token-wise quantization.
+       (AAQ) scheme that analyzes the token-wise characteristics             Outlier Handling. One critical challenge in the quantization
+       of activations in the PPM and applies precision and outlier        process is outlier handling. Outliers are values significantly larger
+       handling differently, suggesting a new approach to solve the       or smaller than the mean within a quantization granularity group,
+       activation size problem without accuracy degradation.              disrupt the small variance among values, and affect quantization
+     • Based on AAQ, we propose LightNobel, a hardware accel-             accuracy. To address this, distinguishing outliers and handling them
+       erator that flexibly supports multi-precision and dynamic          separately is necessary.
+LightNobel: Improving Sequence Length Limitation in Protein Structure Prediction Model via Adaptive Activation Quantization                        ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+            MELVRLMGFL ...
+                                                                                                                   Triangular                   Triangular
+             Input Embedding                                                                           +          Multiplication
+                                                                                                                                     +          Attention
+                                                                                                                                                                   +   MLP
+
+                                         Pair                                                                  Repeated 2 times      Repeated 2 times                     Pair
+                                                           LayerNorm    Linear
+            Protein Folding Block   Representation                                 Bias Calculation         (incoming, outcoming) (incoming, outcoming)              Representation
+Recycling
+
+
+
+
+                 (48 Blocks)          (NS, NS, Hz)                                                                                       Pair Representation dataflow (NS, NS, Hz)
+                                                                                            Outer Product Mean
+             Structure Module
+                                                                          Self
+                                                        LayerNorm
+                                                                       Attention
+                                                                                      +    MLP
+                                      Sequence                                                                                                                                  Sequence
+                                    Representation                                                                                                                            Representation
+                                       (NS, Hm)                        Sequence Representation dataflow                                                                          (NS, Hm)
+
+                 (a)                                                                                        (b)
+
+
+                   Figure 2: Overview of PPM. (a) Block diagram of the PPM. (b) Dataflow of Protein Folding Block (1 Block).
+
+
+                                                                                                                               Protein Folding Block (83.8%)
+2.3          Protein Structure Prediction Model (PPM)
+                                                                                            (a)                         Input Embedding (2.8%)        Structure Module (13.4%)
+Protein Structure Prediction Model (PPM) aims to predict the three-                                   14.4%        4.3%               36.1%                                29.0%
+dimensional folding structure of a protein from its amino acid
+sequence. Recent state-of-the-art PPMs [3, 5, 33, 39] demonstrate                                                                  Protein Folding Block (94.5%)
+                                                                                           (b)        2.6% 1.5%          Input Embedding (0.1%)        Structure Module (5.4%)
+exceptional performance through the use of attention mechanisms.                                           14.5%                                          75.9%
+    Figure 2(a) shows the overall process of PPM, including Input
+Embedding, Protein Folding Block, and the Structure Module. In                                    Sequence Representation Dataflow                     Pair Representation Dataflow
+the Input Embedding stage, the amino acid sequence of a protein is                                         Bias Calculation & MLP         Triangular Muliplication     Triangular Attention
+
+taken as input and converted into two types of biological informa-
+tion. Pair Representation contains information about interactions                          Figure 3: Latency Breakdown of PPM with (a) protein R0271
+between pairs of amino acids in the protein sequence. It undergoes                         (77 amino acids) and (b) protein T1269 (1,410 amino acids).
+iterative updates to capture the protein’s distogram patterns, reflect-
+ing positional relationships. Pair Representation has a dimension of
+(Ns, Ns, Hz), where Ns is the length of the protein sequence and Hz                        predict the actual three-dimensional structure of the protein. To
+is the hidden dimension of Pair Representation, typically set to 128,                      improve prediction accuracy, a recycling process is employed to
+which is a significantly smaller value compared to other attention-                        iteratively refine the predicted results.
+based models [58]. Here, a token in PPM means a vector in the
+Hz direction with a dimension of (1, 1, Hz), similar to attention-                         2.4        TM-Score
+based models [64]. Sequence Representation contains information                            TM-Score is a metric widely used in structural biology and compu-
+derived from other organisms similar to the input protein. It has                          tational biology to evaluate the similarity between predicted and
+a dimension of (Ns, Hm), where Hm is the hidden dimension of                               actual three-dimensional protein structures. TM-Score measures
+Sequence Representation, typically set to 1024. Some models, such                          the global similarity between two structures, providing a stable eval-
+as AlphaFold2 [33], use Multiple Sequence Alignment (MSA) as the                           uation criterion even when comparing proteins of different sizes.
+Sequence Representation, combining information from multiple                               TM-Score plays a critical role in assessing the quality of predicted
+organisms.                                                                                 protein models and comparing the performance of structure pre-
+    In the Protein Folding Block stage, the core attention mechanism                       diction algorithms. The TM-Score ranges from 0 to 1, with values
+is applied. At this stage, both Pair and Sequence Representations                          closer to 1 indicating higher similarity between the two structures.
+are used together to capture relationships between all sequence                            Generally, a TM-Score of 0.5 or higher is considered indicative of
+positions in the amino acid sequence, forming the information                              strong structural similarity [69]. TM-Score has become a standard
+required for protein structure prediction. The Evoformer in Al-                            metric in the field of protein prediction and is widely used as a
+phaFold2 [33] and the Folding trunk in ESMFold [39] are examples                           reliable indicator for evaluating the accuracy of PPM.
+of this block. Figure 2(b) shows the dataflow of a Protein Folding
+Block, especially a Folding trunk in ESMFold. A key part of this                           3 Motivation
+stage is the Pair Representation dataflow, which effectively captures
+the interactions between amino acid positions. In the Triangular                           3.1 PPM Latency Analysis
+Multiplication block, interaction patterns between amino acids are                         To identify the bottleneck impacting the performance of PPM, we
+refined, enabling more precise learning of protein structure predic-                       conduct an end-to-end latency breakdown of the entire execution
+tion. In the Triangular Attention block, attention mechanisms are                          time. Figure 3 shows the latency breakdown when running the PPM.
+applied to fine-tune the relationships between amino acid positions                        In this experiment, we use ESMFold [39], which significantly im-
+while updating the Pair Representation. Details of these dataflows                         proves execution speed compared to AlphaFold2 [33] by leveraging
+are provided in Figure 6(a) and (b). In the Structure Module stage,                        an additional language model for Input Embedding. All experiments
+the Pair Representation generated in the previous stage is used to                         are conducted on an NVIDIA H100 GPU [46] using the vanilla model
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                               Seunghee Han, Soongyu Choi, and Joo-Young Kim
+
+            1e6                                                      1e3                                             Token A Token B         Token C
+                                                           2607.16                                                                                                                    Token A (12, 75)
+                                                                                                                               Channel 15                              25
+
+
+
+
+                                                                           Activation Weight Ratio
+            1e5                                                                                                                                                                        3σ             3σ
+                                                                     1e3                                                                                                             -33.24         29.41
+            1e4
+                                                  331.39                                             Activation                                                        20
+Size (GB)
+
+
+
+
+                                         43.45                                                       Weight
+            1e3                                                      1e2
+                                                                                                                                                                       15
+
+
+
+
+                                                                                                                                                               Count
+                                3.93                                                                 Activation
+            1e2          1.41                                                                        Weight Ratio
+                  1.00                                               1e1                                                                                               10
+            1e1
+                                                                                                                                                                       5
+                                                                                                                                                                                  Min                  Max
+                  100    500     1000     2500     5000    10000                                                                                                                 -38.53                17.45
+                                Sequence Length                                                                                                                         -150   -100     -50      0     50      100    150
+                                                                                                                                       ...                                                     Value
+                                                                                                                                                                                    Token B (35, 75)
+                                                                                                                               Channel 56                              25         3σ                  3σ
+Figure 4: Analysis of total weight size and peak activation                                                                                                                     -56.94               62.55
+size in PPM across various sequence lengths.                                                                                                                           20
+
+                                                                                                                                                                       15
+
+
+
+
+                                                                                                                                                               Count
+                                                                                                                                                                       10
+without the chunk option. For the dataset, we select proteins from
+                                                                                                                                                                       5
+the latest CASP16 [13] dataset. Specifically, we select R0271 (77                                                                                                            Min                                 Max
+                                                                                                                                                                            -93.67                              101.16
+amino acids) as the shortest protein and T1269 (1,410 amino acids)                                                                                                      -150   -100     -50      0     50      100    150
+as the longest protein that can be processed within a single GPU.                                                                      ...                                                     Value
+                                                                                                                                                                                   Token C (75, 75)
+   As shown in Figure 3, the Protein Folding Block in the PPM con-                                                             Channel 122                             25        3σ                            3σ
+                                                                                                                                                                               -243.97                       254.83
+stitutes a significant portion of the total execution time, accounting                                                                                                 20
+for 83.8% and 94.5%, respectively. The Pair Representation dataflow
+                                                                                                                                                                       15
+
+
+
+
+                                                                                                                                                               Count
+accounts for 69.4% of the total execution time for R0271 as shown in
+Figure 3 (a), but the proportion increases dramatically to 91.9% for                                                                                                   10
+
+T1269 as shown in Figure 3 (b), indicating that it becomes a major                                                                                                     5      Min                             Max
+                                                                                                                                                                            -561.26
+bottleneck. This sharp increase is primarily due to the execution                                                                                                                                            247.60
+time spent on the Triangular Attention operation, which surges                                                                                                          -600   -200     -100     0     100     200    300
+                                                                                                                                                                                               Value
+from 29.0% to 75.9%. As mentioned in Section 2.3, the size of the                                                                      (a)                                                     (b)
+Pair Representation grows quadratically with the sequence length,
+unlike other data structures. Consequently, as the sequence length                                                  Figure 5: Analysis of activation value distribution in PPM.
+increases, the proportion of Pair Representation dataflow within                                                    Visualization of (a) three representative channels and (b)
+the overall PPM execution grows significantly. For extremely large                                                  three representative tokens.
+proteins such as PKZILLA-1 (45,212 amino acids) [21], Pair Repre-
+sentation dataflow is expected to account for more than 99% of the
+total PPM runtime.                                                                                                  raises peak memory requirements. While data chunking can reduce
+                                                                                                                    peak memory requirements by splitting computations, it is not a
+3.2               Activation Size Explosion                                                                         fundamental solution since it substantially increases the memory
+Typical attention-based models involve major activations such as                                                    footprint, causing significant performance degradation.
+input, Q, K, and V, which have dimensions of (Ns, H), while the                                                        We propose applying quantization to address the above challenge.
+attention score matrix for each head has dimensions of (Ns, Ns),                                                    Quantization can serve as a fundamental solution, as it reduces the
+where Ns is sequence length and H is the hidden dimension. In                                                       original data size, thereby reducing both the memory footprint
+contrast, as mentioned in Section 2.2, the main bottleneck of the                                                   and compute workload. We further propose leaving the weights
+PPM, Pair Representation dataflow, involves major activations with                                                  unquantized to preserve their information density, focusing instead
+dimensions of (Ns, Ns, Hz), and its attention score matrix for each                                                 on activation quantization, since the size of the weights is signifi-
+head has dimensions of (Ns, Ns, Ns). As a result, the memory foot-                                                  cantly smaller than that of the activations. This approach aims to
+print and computation cost scale cubically with sequence length in                                                  maximize the quantization efficiency while minimizing accuracy
+score matrix operations and quadratically for others. Although the                                                  degradation. Thus, we introduce an activation-only quantization
+hidden dimension is relatively small compared to typical models,                                                    scheme tailored for PPM.
+this difference does not alleviate the bottleneck.
+   Figure 4 shows the analysis of weight and peak activation size in                                                3.3    Token-Wise Distogram Pattern in Activation
+the PPM across varying sequence lengths. As shown in the figure,                                                    One of the most important considerations in quantization is main-
+the activation size increases significantly with sequence length and                                                taining model accuracy. Designing a suitable quantization scheme
+is very large compared to the weight size. At a sequence length of                                                  tailored to the characteristics of the data significantly impacts the
+2034, the activation size is already 24.15× larger than the weight                                                  model’s accuracy. Therefore, we analyze the distribution of activa-
+size, requiring 144 GB of memory, which exceeds the capacity of a                                                   tion values to identify the best quantization scheme for PPM.
+single state-of-the-art GPU [47]. This exponential growth in acti-                                                     It is widely recognized that general attention-based models ex-
+vation size not only increases memory footprint and computation                                                     hibit a large variance between channels, which leads to channel-
+demands but also decelerates model inference and significantly                                                      wise quantization [64]. However, activations in PPM show a rel-
+LightNobel: Improving Sequence Length Limitation in Protein Structure Prediction Model via Adaptive Activation Quantization   ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+atively small variance between channels and a large variance be-                        4.1      Baseline Token-wise Quantization
+tween tokens. Figure 5(a) shows the distribution of absolute values                     AAQ specifically targets activations in Pair Representation dataflow,
+for three random channels, and Figure 5(b) shows the value dis-                         the main bottleneck of PPM as mentioned in Section 3.1. To maxi-
+tribution of the random tokens from the same PPM activation. As                         mize model accuracy, we use a 16-bit fixed-point format for weights
+shown in Figure 5(a), the variance between channels is small, as                        without quantization. For activations, quantized inlier values are
+it shows a similar pattern. However, as shown in Figure 5(b), the                       represented using INT4 or INT8 formats, and outliers are repre-
+variance between tokens is large, as they show significantly dif-                       sented in an INT16 format to minimize information loss.
+ferent value ranges and distributions depending on their position.                         Token-wise Quantization. In an attention-based model, in-
+All channels have similar minimum and maximum values at the                             cluding PPM, most computations, including linear layers or layer
+same position, and outliers identified by the 3𝜎-rule [25, 62] are                      normalization, are performed token-wise. Therefore, supporting
+concentrated only at tokens in certain positions. This behavior                         dynamic token-level parallelism is critical for efficient processing
+arises because the Pair Representation in PPM shares distogram                          in attention-based models [61]. However, conventional attention-
+patterns specific to the input protein, which is a pairwise distance                    based models employing quantization often use channel-wise quan-
+representation that captures spatial relationships specific to pro-                     tization for accuracy. This approach necessitates the dequantization
+tein structures [24]. Therefore, we chose a token-wise quantization                     of individual values within a token before every operation to enable
+scheme that aligns with the characteristics of tokens to minimize                       token-wise parallel computations, making the process highly inef-
+accuracy degradation.                                                                   ficient [35, 64]. In contrast, PPM also exhibits a pattern in which
+                                                                                        large values are concentrated in specific tokens. To exploit this
+                                                                                        property, we adopt a token-wise quantization. By applying token-
+3.4     Characteristic Difference Across Activations
+                                                                                        wise quantization and setting the scaling factor dynamically at
+To efficiently perform token-wise quantization in PPM, we analyze                       runtime, where each token is adjusted with a unique scaling factor,
+the characteristics of every activation value across all iterations.                    we achieve superior quantization accuracy.
+Precise understanding of these activation patterns is essential for                        Dynamic Outlier Handling. Although activations in PPM can
+designing effective quantization schemes, particularly in setting                       be quantized token-wise, handling outliers remains another chal-
+appropriate scaling factors and handling outliers. If the scaling                       lenge. In typical attention-based models, channel-wise quantiza-
+factor is too large, quantization errors increase as the gap between                    tion allows predetermination of quantization parameters based on
+original and quantized values widens. Conversely, if the scaling                        dataset analysis. However, since the number of tokens varies sig-
+factor is too small, large values may get clipped or distorted due                      nificantly depending on input, predefining thresholds for outlier
+to the limited range of representation. While handling outliers can                     classification is not feasible in a token-wise manner. Additionally,
+mitigate these issues, it increases data size and complicates dataflow,                 in PPM, unpredictable outliers arise due to biasing and merging
+reducing overall efficiency. Therefore, a balanced design between                       with Sequence Representation, depending on the input protein type,
+scaling and outlier handling is important.                                              making it more difficult. To resolve this, we propose a dynamic
+   Prior quantizations for attention-based models have predomi-                         outlier handling. During each quantization process, we utilize a
+nantly employed conservative activation quantization strategies to                      top-k algorithm to identify the dynamic number of outliers. The
+preserve model accuracy [25, 64]. For instance, quantization for ac-                    number of outliers, k, can be set adaptively based on the activation
+tivations such as pre-LayerNorm or Score Matrix is rarely explored.                     characteristics. The computational complexity of the top-k selection
+However, to minimize activation overhead, we aim to quantize                            is 𝑂 (𝑛𝑙𝑜𝑔𝑛), making it impractical for large-scale attention-based
+most of the activations in Pair Representation dataflow, includ-                        models. However, in PPM, the hidden dimension is just 128, which
+ing these underexplored regions. At the same time, it is essential                      is very small compared to the general attention-based model [58],
+to maintain accuracy comparable to the baseline in the PPM. Our                         and the cost is manageable. We further design hardware support
+analysis reveals that activations within a single PPM layer exhibit di-                 for efficient top-k algorithms, enabling this approach.
+verse characteristics depending on their position, posing challenges                       Uniform and Symmetric Quantization. After outlier han-
+to optimizing all activations using a single quantization scheme.                       dling, the distribution of inliers is uniform. Hence, we employ uni-
+Consequently, we propose an adaptive quantization approach that                         form symmetric quantization for each token. Equation 1 presents
+applies different quantization schemes based on the characteristics                     the formulation of uniform symmetric quantization. Here, Min and
+of each activation, thereby maximizing model performance.                               Max denote the minimum and maximum values within the target
+                                                                                        quantization group, 𝜎 represents the scaling factor, and m is the
+                                                                                        bit-width used for quantization.
+4     Token-wise Adaptive Activation Quantization
+As mentioned in Section 3.1, the significantly large activation size                                                  𝑀                     𝑥 
+in the Protein Structure Prediction Model (PPM) presents a ma-                            𝑀 = max(|Min|, |Max|), 𝜎 = 𝑚−1    , 𝑄 (𝑥) = round      (1)
+                                                                                                                    2    −1                  𝜎
+jor limitation. To address this, we propose Token-wise Adaptive
+Activation Quantization (AAQ), which optimally quantizes Pair                              If the absolute difference between the scale range within a quan-
+Representation activations by fully leveraging their characteristics.                   tization group is significant, asymmetric quantization can use ad-
+By integrating dynamically adjusted precision and adaptive outlier                      ditional bias to focus on a narrower range. However, according to
+handling into token-wise quantization, AAQ effectively mitigates                        our experimental results, symmetric quantization without outlier
+activation size issues in PPM while ensuring accurate inference.                        handling leads to a 27.35% increase in RMSE. In contrast, when
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                      Seunghee Han, Soongyu Choi, and Joo-Young Kim
+
+
+                                                                                                                                   Group A                                     Group B                                     Group C
+        Triangular                                                                                                  25           3σ      3σ                  25         3σ                   3σ            25              3σ        3σ
+                         Linear a_g     Sigmoid
+        Multiplication                               ElemMul                                                                   -142.05 144.75                          -2.29                2.31                          -3.24     3.36
+                         Linear a_p                                                                                 20                                       20                                            20
+                                                                   MatMul     LayerNorm
+ (a)                     Linear b_g     Sigmoid
+                                                                                                                    15                                       15                                            15
+                                                     ElemMul
+
+
+
+
+                                                                                                            Count
+
+
+
+
+                                                                                                                                                     Count
+
+
+
+
+                                                                                                                                                                                                   Count
+                                                                                   Linear o
+                         Linear b_p
+                                                                                                                    10                                       10                                            10
+           LayerNorm      Linear g      Sigmoid                                    ElemMul    +
+                                                                                                                    5                                        5                                             5
+                                                                                                      (c)
+        Triangular                                                                            Group                      -200 -100     0   100    200             -6   -4      -2     0 2     4    6            -6   -4    -2     0 2      4   6
+                         Linear bias                                                            A                                    Value                                          Value                                       Value
+        Attention
+                          Linear Q                                                            Group                                         Activation Value Size (Average of Absolute Values)
+                                         MatMul                                                 B
+                                                     +    SoftMax       Linear o                                              Large (82.14)                   Small (4.05)                     Small (3.85)
+ (b)                      Linear K     (Attention)
+                                                                                              Group                        (Higher Precision)              (Lower Precision)               (Lower Precision)
+                                                                                                C
+                          Linear V                        MatMul                                                                              Outlier Existence (Average Number of Outliers)
+                                                                       ElemMul
+           LayerNorm      Linear g      Sigmoid                                           +                                    Exist (2.31)                   Exist (1.69)                   Not Exist (0.64)
+                                                                                                                          (Handling Required)            (Handling Required)            (Handling not Required)
+
+
+Figure 6: Dataflow of (a) Triangular Multiplication Block and (b) Triangular Attention Block. Red, blue, and green lines
+correspond to activations belonging to each group. Black lines correspond to activations in which quantization does not occur
+in our dataflow. (c) Characteristic analysis of activations belonging to each group.
+
+
+outlier handling was applied, the RMSE increase is limited to only                                                       Token 1                 Inlier Quantized Values              Outlier Values       Scaling Factor Outlier Indices
+
+9.76%, corresponding to a negligible real-value difference of 0.0004.                                                      Token 2               1 Channel                            Quantized Token
+This slight difference demonstrates that symmetric quantization                                                               Token 3                                                                           Memory          Quantization
+                                                                                                                            ...                                    Entire Block                                 Address         Information
+becomes effective when combined with outlier handling. Therefore,                                                        Token N                                   Read at Once
+we adopt uniform symmetric quantization with dynamic outlier                                          Memory Channel Width                                             Memory
+handling.
+                                                                                                                     Figure 7: Memory layout of the quantized tokens.
+
+4.2     Activation Adaptive Quantization
+As mentioned in Section 3.4, the activations of PPM exhibit distinct                                  precision can be assigned to inliers without compromising quan-
+characteristics, necessitating quantization schemes tailored to them.                                 tization accuracy. Finally, Group C consists of activations that do
+Therefore, we adaptively optimize various quantization schemes                                        not belong to the previous two groups. These activations undergo
+that refine the baseline quantization scheme to suit each activation’s                                multiplication with relatively small weights, resulting in an average
+characteristic, thereby enhancing the accuracy of quantization.                                       value of 3.85, comparable to Group B. Their distribution has very
+   To classify activations, we focus on two key features essential                                    few outliers, having an average of 0.64 outliers, which is less than
+for quantization: the value range and the existence of outliers. We                                   1. Thus, satisfactory accuracy can be achieved without handling
+sample proteins from the CAMEO [9], CASP14 [11], CASP15 [12],                                         outliers during quantization.
+and CASP16 [13] datasets and analyze every token from activations.                                        The proposed AAQ method dynamically adjusts quantization
+For each token, we compute the average of absolute values and the                                     schemes based on activation characteristics to optimize both ac-
+number of outliers per token. We use the 3𝜎-rule [25, 62] to identify                                 curacy and efficiency. As detailed in Section 7.1, we determine
+outliers [25]. Based on these features, we categorize the activations                                 the most efficient quantization schemes for each group through
+in the PPM block into three groups. Figure 6(a) and (b) show which                                    design space exploration. Based on this result, AAQ dynamically
+group each activation is included in the Triangular Multiplication                                    determines which values should be handled as outliers in each
+Block dataflow and Triangular Attention Block dataflow, which                                         token at runtime, depending on the type of activation. From the
+are the core of the PPM block. Also, Figure 6(c) shows the charac-                                    perspective of outlier handling, AAQ dynamically handles a vari-
+teristics and experiment results of activations within each group.                                    able number of outliers. From the perspective of inlier handling,
+First, activations in Group A are located before the LayerNorm                                        it adopts a multi-precision approach, thereby aligning the quanti-
+layer and are directly connected to residual connections. These                                       zation scheme with the unique characteristics of each activation.
+activations propagate data with large values and outliers through                                     Our adaptive approach strategically aligns with activation char-
+residual connections. The values vary significantly, with an average                                  acteristics, achieving optimal accuracy while significantly reduc-
+of 82.14, while having 2.31 outliers on average. Therefore, during                                    ing memory consumption and computational overhead. From a
+quantization, it is essential to allocate relatively high precision to                                hardware-software co-design perspective, we achieve this by imple-
+inliers to secure a sufficient representation range and implement                                     menting multi-precision dataflow for handling token-wise dynamic
+outlier handling. Activations in Group B have passed through the                                      quantization schemes and supporting top-k functionality for dy-
+LayerNorm layer but have not yet undergone linear layers. Due to                                      namic outlier handling in our hardware.
+the normalization effect of the LayerNorm, the values are reduced
+compared to Group A, resulting in an average value of 4.05. How-                                      4.3                Memory Layout for Quantization
+ever, outliers still exist in the distribution, averaging 1.69 outliers.                              To accommodate diverse quantization schemes, we implement a
+Thus, while outlier handling remains necessary, relatively lower                                      scalable and flexible memory mapping. Figure 7 shows the layout
+LightNobel: Improving Sequence Length Limitation in Protein Structure Prediction Model via Adaptive Activation Quantization             ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                            External Memory & Memory Interface                                      in a pipelined manner, where the RMPU passes intermediate results
+                                                                                 LightNobel
+                                                                                                    to the VVPU, improving overall throughput.
+     Token Aligner          Token Scratchpads      Weight Scratchpad
+                                                                                 Controller            PPM has a small hidden dimension (e.g., 128) compared to typi-
+                                                                                                    cal attention-based models (e.g., 4,096 in LLaMA 7B [58]), leading
+          Reconfigurable Matrix Processing Unit (RMPU)                       RMPU                   to small token sizes. However, the number of tokens is extremely
+      RMPU Data Aligner (RDA) 1      ...   RMPU Data Aligner (RDA) N     RDA 1... RDA N
+                                                                                                    large, easily reaching multi-millions, since it increases quadrati-
+                              RMPU Engine                                 RMPU Engine         ...   cally with respect to the protein sequence length. This results in
+                           RMPU Output FIFO                                RMPU FIFO
+                                                                                                    a significant volume of vector operations in the later processing
+                                                                                                    pipelines. To efficiently manage these workloads, the RMPU is de-
+                                                                                              ...
+                                                                                                    signed for high-throughput token-level operations, while the VVPU
+                     Global Crossbar Network (GCN)                               GCN
+                                                                                                    specializes in iterative vector computations. LightNobel ensures a
+     Versatile Vector Processing Unit (VVPU)                    VVPU     VVPU                       balanced execution by pairing each RMPU with a fixed number of
+              Local Crossbar Network (LCN)                      LCN       LCN
+                                                                                                    VVPUs. A Global Crossbar Network (GCN) interconnects all mod-
+            SIMD Lane
+                               ...    SIMD Lane
+                                                       ...      SIMD     SIMD
+                                                                                        ...   ...   ules and scratchpads, enabling dynamic scheduling between the
+         SIMD Scratchpad                 Pad                       ...
+                                                                 Pad      Pad ...
+                                                                                                    RMPU and the allocated VVPUs. For large-scale vector operations
+                Scalar Support Unit (SSU)                       SSU       SSU                       such as Softmax or Sequence Representation dataflow, multiple
+                                                                                                    VVPUs can work together as a single large processing unit via the
+                                            Output Scratchpad                                       GCN, enhancing their computational capacity. Finally, computa-
+                                                                                                    tion results are written back to the external main memory via the
+Figure 8: Overall block diagram of LightNobel architecture.                                         Output Scratchpad.
+
+                                                                                                    5.1    Token Aligner
+of quantized tokens in the memory. Inliers are stored sequentially,
+followed by outliers, scaling factors, and outlier indices. To opti-                                As explained in Section 4.3, multiple tokens are grouped to enhance
+mize memory utilization, data from multiple tokens is grouped into                                  memory bandwidth utilization. To allow the RMPU and VVPU to
+blocks, with the block size determined based on the bandwidth of                                    access these blocks efficiently from the scratchpad, the token blocks
+the memory channel.                                                                                 must be reorganized. This reorganization ensures that each line in
+   Despite token-wise quantization sharing the scaling factor on                                    the token scratchpad corresponds to the data of a single token, fa-
+a token level, inliers require a dequantization process in the last                                 cilitating more efficient token-level processing. To achieve this, the
+step of computation, while outliers do not. Therefore, inlier-outlier                               Token Aligner decodes and realigns the token blocks into a token-
+adjacency minimizes scaling factor computations, enhancing hard-                                    wise format before writing them to the scratchpad. This alignment
+ware utilization. This out-of-order value mapping is feasible due to                                process ensures seamless execution of subsequent computations by
+our hardware support for matrix multiplication without dequanti-                                    maintaining compatibility with the processing units, maximizing
+zation during runtime, particularly through the crossbar network,                                   the efficiency of token-wise operations.
+which handles any necessary ordering process. More details about
+hardware support are explained in Section 5.                                                        5.2    Reconfigurable Matrix Processing Unit
+                                                                                                    The Reconfigurable Matrix Processing Unit (RMPU) is designed to
+5    LightNobel Architecture                                                                        efficiently support matrix operations while maximizing computa-
+We propose LightNobel, a hardware accelerator designed to effi-                                     tional resource utilization and parallelism. A key feature of RMPU is
+ciently accelerate PPM using the proposed Adaptive Activation                                       that it can process various data precisions with minimal dequantiza-
+Quantization (AAQ). Figure 8 shows the overall architecture of                                      tion. Instead of performing dequantization on every piece of data, it
+LightNobel. LightNobel is designed to maximize token-level par-                                     minimizes redundant dequantization by prioritizing the execution
+allelism by leveraging the benefits of token-wise quantization. To                                  of operations that can be processed in advance. However, support-
+achieve this, it includes a Token Aligner, Reconfigurable Matrix Pro-                               ing multi-precision operations introduces another challenge, as
+cessing Units (RMPUs), Versatile Vector Processing Units (VVPUs),                                   the requirement for diverse computational units often leads to se-
+crossbar data networks, scratchpads, and a controller. A swizzle                                    vere underutilization. To address this, RMPU employs a bit-level
+switch [55] is employed as a crossbar network to enhance area and                                   reconfiguration strategy, where data is divided into minimum-unit
+power efficiency.                                                                                   bit chunks, and computational units are structured to execute nu-
+   At the beginning of execution, the Token Aligner reads and                                       merous small-scale operations. By dynamically allocating computa-
+stores the token block to the Token Scratchpad, which operates in a                                 tional elements and shifters based on data precision, RMPU ensures
+double-buffering manner to hide memory latency. Simultaneously,                                     efficient hardware utilization [57].
+weights are preloaded into the Weight Scratchpad for the weight-                                       Despite these advancements, achieving high utilization across
+stationary dataflow that maximizes reuse. The RMPU or VVPU                                          multiple data precisions within a single workload still remains a
+then fetches tokens and weights from these scratchpads. The RMPU                                    challenge. Without adjusting computational resources at runtime
+dynamically processes a configurable number of tokens in parallel,                                  based on operation requirements, underutilization is inevitable. In
+adapting to the quantization scheme, while the VVPU executes                                        AAQ, the number of computational units required varies accord-
+iterative computations such as LayerNorm. These two units operate                                   ing to the ratio of outliers and the precision level of inliers, even
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                     Seunghee Han, Soongyu Choi, and Joo-Young Kim
+
+
+                                                                            PE Lane                                   8 PEs                                                                                                   RDA
+      PE Cluster            20 PE Lanes
+                                                                               PE           PE      PE           PE            PE           PE            PE              PE                                                  RDA
+                PE Lane PE Lane                     PE Lane                                                                                                                                                                             ...
+                  4       4                 ...       4                             Adder                Adder                      Adder                      Adder
+                                    Arbiter                                                                                                                                                          PE                16 Multipliers
+(c)                                                                   (b)                                                                                                                            5bit 5bit 5bit 5bit             Sign bit 5bit   5bit
+        bias                                                                                                                                                                                                                        Extended
+       Scale       Dynamic Accumulation Logic (DAL)                                                                                                                                                                                  in RDA
+                                                                                                                  4-to-1 Adder Tree                                                                       Mul          Mul                      Mul
+      Factor                                                                                                                                                                                   (a)                                      ...
+                                      ...
+                                                                            bias    +            bias    +                          +     bias                 +     bias                                Shifter      Shifter                  Shifter
+                            80                     5(4)
+                      80x(2 PEs)     5x(4 PE Lanes)                                                          4                                                                                                       16-to-1 Adder Tree
+                                     4x(5 PE Lanes)
+                                                                                                    4x(2 PEs)                     1x(8 PEs / 1 PE Lane)                                 1x(1 PE)
+      RMPU Engine                       4 PE Clusters
+                                                                                                                        4x(1 PE Lane) 4x(1 PE Lane) 4x(1 PE Lane) 4x(1 PE Lane) 4x(1 PE Lane)
+        PE Cluster     PE Cluster     PE Cluster     PE Cluster                                                  DAL
+                                                                                                                               4-to-1               4-to-1                  4-to-1               4-to-1
+         80        5(4) 80        5(4) 80        5(4) 80        5(4)                                                         Adder Tree           Adder Tree              Adder Tree           Adder Tree
+                                                                                                                   Scale                   Scale                Scale                   Scale                                4-to-1
+                                                                                                                  Factor                  Factor               Factor                  Factor                              Adder Tree
+                                     (10x) 2-to-1 Adder
+(d)                                                                                                      (e)
+                                                  (5x) 2-to-1 Adder                                                                  +                    +                        +                     +
+                                                                                                                                                                                                                    Scale
+                                                  5-to-1 Adder Tree           320x(2 PEs)                                                                                                                          Factor
+                                                                              20x(4 PE Lanes)
+                                                                              16x(5 PE Lanes                          bias       +         bias       +            bias        +        bias         +              bias       +
+          320    20(16)      10         5                                     10x(8 PE Lanes)
+                                                                              5x(16 PE Lanes)                           1x(4 PE Lane) 1x(4 PE Lane) 1x(4 PE Lane) 1x(4 PE Lane)
+                                   Mux & ReLU                                 1x(80 PE Lanes)                                                                                                                         1x(4 PE Lane)
+                                                                                                                        1x(5 PE Lane) 1x(5 PE Lane) 1x(5 PE Lane) 1x(5 PE Lane)
+
+
+Figure 9: Microarchitecture of (a) Processing Element (PE), (b) PE Lane, (c) PE Cluster, (d) RMPU Engine, and (e) Dynamic
+Accumulation Logic (DAL). For each module, the context provided in parentheses indicates either the source of input or the
+interpretation of the accumulated output. In the dataflow representation, thin lines denote a single value while thick lines
+represent multiple values.
+
+
+among tokens with the same shape. To address this issue, RMPU                                                            RMPU Engine. The RMPU Engine is the core computational
+introduces a dynamically reconfigurable computation module and                                                        unit of RMPU, designed with a dynamic adder tree architecture
+a data aligner that optimizes resource allocation based on workload                                                   that allows hierarchical reconfiguration. Each computational stage
+characteristics.                                                                                                      produces intermediate results that carry distinct semantic meanings
+   RMPU Architecture. RMPU consists of Reconfigurable Data                                                            within the processing pipeline. These results are dynamically used
+Aligners (RDAs), RMPU Engine, and RMPU Output FIFOs. The RDA                                                          across multiple operations, enabling efficient resource allocation
+prepares and supplies data according to bit-width requirements,                                                       and maximizing the utilization of computational units.
+while the RMPU Engine performs computations using a dynami-                                                              At the lowest level, the Processing Engine (PE) serves as the
+cally reconfigurable adder tree structure. The RMPU Output FIFOs                                                      fundamental computation module. As shown in Figure 9(a), one
+efficiently queue and transfer computation results to the GCN. This                                                   PE consists of 16 minimal computation units and is capable of per-
+architecture enables the dynamic allocation of computational re-                                                      forming multiplication between two 16-bit input values. A PE Lane
+sources, maximizing hardware utilization while maintaining high                                                       integrates 8 PEs, as shown in Figure 9(b), enabling more complex
+levels of parallelism. Additionally, RMPU leverages token-wise                                                        operations such as the inner product. From this stage, the mod-
+quantization, which eliminates redundant dequantization steps,                                                        ule adopts multiple dataflows to support various operations. Each
+further improving efficiency.                                                                                         operation follows a specific dataflow determined by its computa-
+   Reconfigurable Data Aligner (RDA). To ensure efficient com-                                                        tional characteristics. The PE Lane supports two dataflows. The first
+putation across varying data precisions, the RMPU Data Aligner                                                        dataflow accumulates the results from two PEs along with a bias,
+(RDA) partitions each token’s data into 4-bit chunks. Here, the 4-bit                                                 producing 4 output values. It is utilized in the computation process
+precision is chosen as it is the lowest that AAQ can optimize in our                                                  of MHA with a head dimension of 32. The second dataflow employs
+system, as detailed in Section 4.2 and Section 7.1. The RDA first                                                     an adder tree to accumulate the results from all PE modules.
+splits all input values into 4-bit segments while extracting scaling                                                     At the next level, the PE Cluster serves as a key computational
+factors and outlier index information. Subsequently, it sends these                                                   unit component. As shown in Figure 9(c), each PE Cluster contains
+segments to the controller for control signal generation. To main-                                                    20 PE Lanes and Dynamic Accumulation Logic (DAL). A matrix
+tain consistency with the original data, each chunk undergoes sign                                                    multiplication operation consists of a dot product between two
+extension. Specifically, the chunk containing the most significant                                                    vectors having the same inner dimension. The required number of
+bit (MSB) is extended using its MSB value as the sign bit, while all                                                  computational units varies depending on the quantization scheme.
+other chunks are extended by appending zeros. This alignment can                                                      For instance, in a dot product between two 128-dimensional vector
+fully utilize the RMPU Engine’s computational resources. Although                                                     tokens, if one token is quantized with 124 inliers at 4-bit precision
+the position of outliers varies across quantized tokens, maintaining                                                  and four outliers at 16-bit precision while every value in other
+a uniform number of 4-bit chunks within tokens that share the same                                                    token is 16-bit precision, the required computational resources are
+quantization scheme significantly reduces alignment overhead.                                                         calculated as follows: 4 × 124 (inliers) + 16 × 4 (outliers) = 560 (4-bit
+LightNobel: Improving Sequence Length Limitation in Protein Structure Prediction Model via Adaptive Activation Quantization             ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                                                                                                        Global Crossbar Network (GCN)
+computation units). Similarly, in PPM operations, most iterations
+require 4 or 5 PE Lanes for computation. Therefore, the number of                           16bit           16bit                             ...
+PEs is determined to be 20, which is their least common multiple.                                                     VVPU                                               VVPU
+   However, this introduces two key challenges. First, scaling fac-                                                                  Local Crossbar Network (LCN)
+
+tors must be considered before accumulation, as inlier multipli-
+                                                                                                     Exp LUT
+cation results require scaling before being combined with outlier
+                                                                                                                        SIMD                            SIMD
+multiplication results. Second, 4-to-1 and 5-to-1 adder trees are                                                       Core                            Core
+incompatible, necessitating a dynamic approach to accumulation.                                                                               ...                          ...
+To address these challenges, DAL dynamically manages varying
+                                                                                                    ALU
+numbers of PE Lane outputs while ensuring correct scaling factor                                                                         SIMD Lane
+application. Figure 9(e) shows the architecture of DAL. Specifically,                            Scratchpad                       Scalar Support Unit (SSU)
+for computations requiring 4 PE Lanes, scale factors are applied                         16bit      16bit     16bit                    128 SIMD Lanes
+after accumulation. In contrast, for computations requiring 5 PE
+Lanes, inlier values are first accumulated and scaled before being                                          Figure 10: Microarchitecture of VVPU.
+combined with the outlier results. To achieve this, one adder tree in
+DAL is disabled, and the outputs of the remaining four adder trees
+are accumulated with the result of the fifth PE Lane. The Arbiter is                    parallelism on bitonic top-k sorting [56]. During the sorting process,
+employed at the front of DAL to rearrange PE Lane outputs before                        the indices of the values are continuously tracked, enabling the
+entering DAL, ensuring efficient computation.                                           controller to identify the locations of the top-k values in the final
+   At the highest level, as shown in Figure 9(d), the RMPU Engine                       stage. This approach eliminates the need for additional sorting
+comprises four PE Clusters. To accommodate various workloads,                           modules, making the VVPU highly efficient for top-k operations
+the RMPU Engine produces multiple types of output results. The                          required in quantization. Moreover, when configured with k=1, the
+sum of the 2 PE results corresponds to the output required for MHA                      VVPU can search the maximum in operations such as Softmax.
+with a head dimension of 32, as described earlier. The sums of 4                           Runtime Quantization. One of the key functionalities of the
+and 5 PE Lane results serve as computational outputs for quantized                      VVPU is the runtime quantization. Unlike weight, activations are
+tokens processed within the DAL, and the sums of 8 or 16 PE Lane                        dynamically generated during runtime. Therefore, runtime quanti-
+results serve as computational outputs for non-quantized tokens.                        zation is critical for reducing memory footprint and computational
+Additionally, the engine generates the sum of 80 PE results, enabling                   requirements while enabling the continuation of operations. The
+scalability for larger computations that require multiple RMPUs. As                     quantization process begins with the top-k operation, where the
+the last layer, it also performs ReLU operations. Ultimately, a single                  VVPU identifies outliers and scaling factors using SIMD lanes. Each
+RMPU Engine supports up to 20 tokens simultaneously, achieving                          value is then scaled by the identified scaling factor. Then, LCN
+a high level of token parallelism.                                                      reorders the quantized values according to the memory layout
+                                                                                        for quantized data. Finally, the SSU aligns the necessary values to
+                                                                                        conform to the memory layout.
+5.3     Versatile Vector Processing Unit
+The Versatile Vector Processing Unit (VVPU) is designed to sup-                         5.4         Token-wise Multi-head Attention
+port all vector operations required for PPM, including LayerNorm,                       LightNobel is designed to maximize the efficiency of PPM by lever-
+Softmax, residual connections, and the new operations required for                      aging token-wise dataflow. To align with this design principle, the
+AAQ. By having a unified structure, the VVPU eliminates the need                        MHA mechanism is also implemented using token-wise dataflow.
+for separate dedicated components for each operation, achieving                         During the MHA computation, LightNobel eliminates the need for
+both high resource utilization and operational flexibility.                             writeback and read of intermediate activations, such as the atten-
+   Figure 10 shows the microarchitecture of VVPU. The VVPU                              tion score matrix. This approach is similar to FlashAttention [16]
+comprises multiple SIMD Lanes, a Scalar Support Unit (SSU), and a                       but with optimizations tailored for token-wise operation.
+Local Crossbar Network (LCN). Each SIMD Lane includes a SIMD                               The RMPU first performs a multiplication operation between Q
+Core with an ALU that can process operations between two 16-bit                         and K in parallel for each head, while the VVPU handles dequan-
+operands for weights, scratchpad memory, and a two-level expo-                          tization and accumulation of intermediate results simultaneously.
+nent lookup table [26]. These SIMD Lanes are interconnected via                         This computation is repeated iteratively, and the VVPU applies the
+the LCN, which allows it to handle data alignment problems dy-                          softmax operation to the outputs, pipelined with the Q and K multi-
+namically during runtime. SSU enhances the overall efficiency of                        plication steps, minimizing latency in finding the maximum value.
+the VVPU by handling scalar operations such as averaging and data                       Finally, the V tokens are loaded, multiplied by the softmax results,
+formatting for quantization tokens. This offloading mechanism en-                       and written to memory, completing the MHA computation. This
+sures that the SIMD Lanes remain dedicated to higher-complexity                         process significantly alleviates the high peak memory requirement
+computations, optimizing the utilization of hardware resources.                         that arises when storing the entire score matrix.
+   Dynamic Top-k Selection. To determine varying numbers of                                In conventional attention-based models, token-wise approaches
+outliers in the quantization scheme, identifying the top-k values at                    are challenging due to the limited opportunities for memory reuse
+runtime, the k largest elements among all token values, is essential.                   due to large hidden dimensions. However, our system benefits
+The VVPU addresses this requirement by leveraging hardware                              from PPM having a very small hidden dimension. Since PPM has
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                                                        Seunghee Han, Soongyu Choi, and Joo-Young Kim
+
+
+              0.1   Group A                    Best       0.6                           0.18   Group B                    Best                    0.6                                   0.18   Group C                                     Best                                  0.6
+             0.09                                                                       0.16                                                                                            0.16
+             0.08                                         0.5                                                                                     0.5                                                                                                                            0.5
+                                                                                        0.14                                                                                            0.14                                                                                                            8bit Efficiency
+             0.07                                         0.4                           0.12                                                      0.4                                   0.12                                                                                     0.4
+
+
+
+
+                                                                                                                                                                           Efficiency
+Efficiency
+
+
+
+
+                                                                           Efficiency
+                                                                TM-Score
+
+
+
+
+                                                                                                                                                            TM-Score
+
+
+
+
+                                                                                                                                                                                                                                                                                       TM-Score
+             0.06                                                                        0.1                                                                                             0.1                                                                                                            4bit Efficiency
+             0.05                                         0.3                                                                                     0.3                                                                                                                            0.3
+             0.04                                                                       0.08                                                                                            0.08
+             0.03                                         0.2                           0.06                                                      0.2                                   0.06                                                                                     0.2                    8bit TM-Score
+             0.02                                                                       0.04                                                                                            0.04
+                                                          0.1                                                                                     0.1                                                                                                                            0.1
+             0.01                                                                       0.02                                                                                            0.02                                                                                                            4bit TM-Score
+                    128   64   32    16    8    4     0                                        128   64   32    16    8    4     0                                                             128   64   32    16    8                    4                              0
+                                Outlier Num                                                                Outlier Num                                                                                     Outlier Num
+                                   (a)                                                                        (b)                                                                                               (c)
+
+                          Figure 11: Design space exploration on quantization scheme for (a) Group A, (b) Group B, and (c) Group C.
+
+                                                                                                                                                          120                                                     5                                                  30
+
+
+
+
+                                                                                                                                                                                                                                           Average Latency (K sec)
+a significantly large total score matrix size due to the activation                                                                                                                                  1 RMPU                                                                                             4 VVPUs / RMPU
+
+
+
+
+                                                                                                                                                                                                                      Average Latency at
+                                                                                                                                     Average Latency at
+                                                                                                                                                          100                                                                                                        25
+
+
+
+
+                                                                                                                                                                                                                       32 RMPUs (K sec)
+                                                                                                                                                                                                                  4
+
+
+
+
+                                                                                                                                      1 RMPU (K sec)
+                                                                                                                                                                                                     32 RMPUs
+dimension, not offloading intermediate values achieves considerable                                                                                       80                                                                                                         20
+                                                                                                                                                                                                                  3
+gains not only in memory space requirements but also in terms of                                                                                          60                                     Saturated                                                           15
+                                                                                                                                                                                                                  2
+                                                                                                                                                          40                                                                                                         10
+memory footprint.                                                                                                                                                                                                 1
+                                                                                                                                                          20                                                                                                         5                                  Saturated
+                                                                                                                                                                       1    2 3 4 5 6 7 8                                                                                     0 1 2 3 4 5 6 7 8 9 10 11 12
+                                                                                                                                                                           Number of VVPUs per RMPU                                                                              Number of RMPUs (Log Scale)
+6               Methodology                                                                                                                                                                    (a)                                                                                                (b)
+System Evaluation Method. To measure the performance of
+the designed system, we implement a cycle-accurate simulator                                                                         Figure 12: Design space exploration on hardware configura-
+in Python [22]. Also, we implement all the logic modules of the sys-                                                                 tion with respect to (a) the number of VVPUs per RMPU and
+tem in RTL using SystemVerilog [1] and synthesize using Synopsys                                                                     (b) the total number of RMPUs.
+Design Compiler [31] 2019.3 at 28nm technology. The synthesis
+is performed targeting a 1 GHz operating frequency. For on-chip                                                                      evaluation is conducted on datasets excluding CASP16, while other
+scratchpads, we estimate power and area using a 28nm memory                                                                          performance metrics are evaluated across all datasets.
+compiler and Cacti 7.0 [6]. Since Cacti 7.0 only supports up to 32nm                                                                    Baseline Comparison Method. As the baseline PPM for eval-
+technology, we carefully downscale it to 28nm technology using                                                                       uation, we use ESMFold (Commit 2b36991) [20]. Although Al-
+scaling factors as done in existing papers [7, 27, 29, 60].                                                                          phaFold2 [33] and ESMFold [39] differ slightly in Sequence Repre-
+   The overall latency of LightNobel is determined by the summa-                                                                     sentation dataflow, they entirely share the same Pair Representa-
+tion of the longest delay of each pipelining stage. LightNobel’s key                                                                 tion dataflow, which is the main focus of our paper. Thus, we select
+stages include RMPU operations (e.g., Linear), VVPU operations                                                                       ESMFold as the baseline PPM due to its faster speed and simpler
+(e.g., quantization), and memory operations (e.g., data read/write).                                                                 structure. As an Input Embedding model, we use ESM-2 model with
+For cycle-accurate simulation, we first ensure that the latency of                                                                   3 billion parameters (esm2_t36_3B_UR50D) as the protein language
+key modules is accurately modeled at every stage. Since the RMPU                                                                     model. For the chunk option, we employ the Chunk4 option, con-
+is based on a MAC tree architecture, we evaluate its throughput.                                                                     sistent with the configuration used in the AlphaFold2 [33]. Since
+Meanwhile, as the VVPU executes iterative operations, we use addi-                                                                   there is no existing hardware accelerator work targeting PPM, we
+tional C-based [63] control signal simulation to measure its latency.                                                                compare our system against the latest GPUs as a hardware baseline.
+Also, we use Ramulator [34] to accurately simulate memory op-                                                                        To evaluate PPMs, we utilize a Linux server environment with two
+erations, considering data bus width and burst length alignment.                                                                     Intel(R) Xeon(R) Platinum 8452Y CPU (36 core/72 thread) operating
+Here, we use 80 GB of 5 HBM2E memory stacks [41] for fair com-                                                                       at 2.90GHz [30], 1TB DDR5 memory, and GPUs including NVIDIA
+parisons with the baseline GPUs [45, 46]. To ensure the reliability                                                                  H100 80GB PCIe (in short, H100) [46] and NVIDIA A100 80GB PCIe
+of the Python-based simulator, we cross-validate the simulation                                                                      (in short, A100) [45]. To analyze the GPU execution, we use the
+results of modules against the RTL-based simulation results. The                                                                     NVIDIA Nsight Systems [15].
+cross-validation on CAMEO [9], CASP14 [11], CASP15 [12], and
+CASP16 [13] datasets shows the discrepancies of 4.63%, 3.62%, 3.14%,                                                                 7 Design Space Exploration
+and 1.81%, respectively, averaging 3.30%. These differences mainly
+arise from the tail latency of each stage, which decreases as the                                                                    7.1 AAQ Quantization Scheme
+sequence length increases. Consequently, the overall discrepancy                                                                     We conduct design space exploration on the efficiency and TM-
+remains within 5% for any cases, demonstrating that the Python-                                                                      Score changes across various quantization schemes to identify the
+based simulator is reliable with a permissible error rate.                                                                           optimal point in the AAQ algorithm. Figure 11 shows the efficiency
+   Datasets. For performance evaluation, we use CAMEO [9], CA-                                                                       and TM-Score variations across Groups A, B, and C, as described in
+SP14 [11], CASP15 [12], and CASP16 [13] datasets. These datasets                                                                     Section 4.2. Since accuracy evaluation requires ground truth data,
+evaluate the predicted structures of proteins against experimen-                                                                     we use CAMEO [9], CASP14 [11], and CASP15 [12] datasets for
+tally determined results provided by the PDB [48] and are widely                                                                     the experiment. Efficiency is calculated by considering the memory
+recognized as the standard benchmarks in the field of protein struc-                                                                 size of the quantized tokens and the resulting TM-Score for each
+ture prediction. For CASP16, since the competition is still ongoing,                                                                 configuration, while it decreases significantly as TM-Score drops,
+the ground truth data has not yet been released. Hence, accuracy                                                                     targeting to minimize accuracy degradation.
+LightNobel: Improving Sequence Length Limitation in Protein Structure Prediction Model via Adaptive Activation Quantization                             ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+   In Group A, Figure 11(a) shows that the quantization using 8-                                      Table 1: Description of various quantization schemes.
+bit precision for inliers with 4 outliers handling achieves the best
+efficiency. When using 4-bit precision for inliers, handling fewer                                                                 Activation                                Weight                   Total
+                                                                                              Quantization
+                                                                                                                                                                                                    Memory
+than 32 outliers reduces TM-Score, while handling more increases                                Scheme               Grouping       Precision     Footprint Grouping         Precision     Size     Footprint
+quantized token size, lowering efficiency. When using 8-bit pre-                                    BaseLine [39]     No Quant.       FP16         113.49 GB   No Quant.        FP16      7.90 GB 121.39 GB
+                                                                                         SmoothQuant [64] Token-wise                  INT8         83.80 GB Channel-wise        INT8      3.95 GB   87.75 GB
+cision for inliers, handling at least 4 outliers prevents TM-Score                             LLM.int8() [17]       Token-wise     INT8/FP16      85.83 GB Channel-wise INT8/FP16        3.99 GB   89.82 GB
+drops. In Group B, Figure 11(b) shows that the quantization using                          PTQ4Protein [51] Tensor-wise               INT8         94.60 GB    Tensor-wise      INT8      3.95 GB   98.55 GB
+4-bit precision for inliers with 4 outliers handling achieves the best                              Tender [35]     Channel-Wise      INT4         94.60 GB Channel-wise        INT4      1.98 GB   96.58 GB
+                                                                                                    MEFold [32]       No Quant.       FP16         113.49 GB Tensor-wise      INT4/FP16   3.93 GB 117.42 GB
+efficiency. With 4-bit precision for inliers, handling fewer than 4
+                                                                                           LightNobel (AAQ)          Token-wise INT4/INT8/INT16    65.60 GB    No Quant.       INT16      7.90 GB   73.50 GB
+outliers degrades the TM-Score, but handling 4 or more prevents
+TM-Score drops. With 8-bit precision for inliers, the TM-Score re-
+mains stable, but the quantized token size increases. In Group C,
+
+
+
+
+                                                                                                                0.802
+                                                                                                                0.802
+                                                                                                               0.801
+                                                                                                               0.801
+                                                                                                               0.801
+
+                                                                                                               0.792
+                                                                                                             0.727
+                                                                                                                                                                                             Baseline PPM
+Figure 11(c) shows that the quantization using 4-bit precision for                                  0.8
+                                                                                                                                                                                             SmoothQuant
+
+
+
+
+                                                                                                                                                                 0.540
+                                                                                                                                                                 0.540
+                                                                                                                                                                 0.540
+                                                                                                                                                                 0.539
+                                                                                                                                                                 0.539
+
+                                                                                                                                                                 0.539
+                                                                                                                                        0.516
+                                                                                                                                         0.517
+                                                                                                                                         0.517
+                                                                                                                                         0.517
+                                                                                                                                        0.515
+
+                                                                                                                                        0.496
+
+
+
+
+                                                                                                                                                                0.493
+inliers without outlier handling achieves the best efficiency. TM-
+
+
+
+
+                                                                                         TM-Score
+                                                                                                                                                                                             LLM.int8()
+
+
+
+
+                                                                                                                                      0.428
+                                                                                                    0.6
+Score remains stable across all configurations, regardless of inlier                                0.4
+                                                                                                                                                                                             PTQ4Protein
+
+precision or even without outlier handling. Thus, the smallest is                                                                                                                            Tender
+                                                                                                    0.2                                                                                      MeFold
+the most efficient.
+                                                                                                                                                                                             LightNobel
+                                                                                                                    CAMEO                    CASP14                  CASP15
+                                                                                                                                             Dataset
+7.2     Hardware Configuration
+We conduct design space exploration on the performance varia-                                         Figure 13: Accuracy evaluation result across datasets.
+tions on LightNobel hardware configuration to identify the optimal
+point of hardware design. Figure 12(a) shows the average latency
+                                                                                           Figure 13 shows the average TM-Scores across different datasets
+of PPM as the number of VVPUs per RMPU varies, conducted with
+                                                                                        when the quantization schemes are applied to PPM. Tender [35]
+a single RMPU and 32 RMPUs to assess the contribution of VVPUs
+                                                                                        and MeFold [32] significantly degraded the TM-Score. This drop
+to the overall performance. In both cases, the latency saturates at
+                                                                                        indicates that additional solutions are necessary to achieve quantiza-
+4 VVPUs per RMPU. This saturation is attributed to the high to-
+                                                                                        tion below INT8 precision in PPM without compromising accuracy.
+ken parallelism of RMPUs and the small hidden dimensions, which
+                                                                                        Other quantization schemes exhibited acceptable TM-Score vari-
+limit the operations executed by VVPUs to being hidden when the
+                                                                                        ations, keeping a loss below 0.002. However, due to their use of
+number of VVPUs is small. With a single RMPU, latency gradually
+                                                                                        high-precision quantization, schemes other than LightNobel in-
+decreases without saturation as the number of RMPUs increases.
+                                                                                        curred a relatively higher total memory footprint. AAQ in LightNo-
+This degradation is due to the overall latency being dominated
+                                                                                        bel achieved a negligible TM-Score change of less than 0.001 while
+by the VVPU operation time, as there are only a small number of
+                                                                                        maintaining a minimum total memory footprint. A TM-Score above
+VVPUs in the system.
+                                                                                        0.5 signifies meaningful prediction results, which confirms that our
+   Figure 12(b) shows the average latency of PPM as the number of
+                                                                                        approach achieves significant protein modeling outcomes. This ad-
+RMPUs varies when the number of VVPUs per RMPU is fixed to
+                                                                                        vantage is attributed to AAQ’s capability to adapt the quantization
+4. The result shows that the performance saturates at 32 RMPUs.
+                                                                                        scheme to the unique characteristics of each activation.
+This saturation is because having 32 RMPUs provides sufficient
+computational resources to process data fetched from memory.
+                                                                                        8.2                 Performance Evaluation
+Adding more than 32 RMPUs slightly improves performance by
+increasing the number of VVPUs. However, the performance gains                          End-to-end PPM Model Performance. We evaluate the end-to-
+are minimal compared to the increase in RMPU numbers, which                             end performance of various recent PPMs, including LightNobel. For
+would not justify the additional area and power overhead.                               our experiments, we use proteins with sequence lengths of less than
+                                                                                        1,410 that fit within an 80 GB memory constraint from the CASP16
+8 Experimental Results                                                                  dataset. All models except LightNobel are evaluated on H100 using
+                                                                                        the vanilla option. Since LightNobel accelerates the Protein Folding
+8.1 Accuracy Evaluation                                                                 Block and is assumed to operate with a CPU, we equalize its data
+For algorithmic validation, we evaluate the accuracy of AAQ with                        transfer latency with the baseline for a fair comparison.
+various recent quantization schemes. Table 1 summarizes the prop-                          Figure 14(a) shows the normalized end-to-end performance across
+erties of targeting quantization schemes, including AAQ, providing                      various PPMs. LightNobel outperforms the least-performing model,
+details on the activation memory footprint, weight memory size,                         MeFold [32], by 8.22× and even outperforms the best-performing
+and total memory footprint when they are applied to PPM with                            model, ESMFold [39], by 1.11× in Protein Folding Block perfor-
+the longest protein in CASP15 dataset which has sequence length                         mance. This result demonstrates that LightNobel effectively ad-
+(amino acids) of 3,364 (T1169). Although LightNobel further reduces                     dresses memory overhead issues with minimum computational re-
+the activation memory footprint via token-wise MHA, we exclude                          sources. For end-to-end performance, LightNobel also outperforms
+this hardware-driven advantage for a fair comparison. We also con-                      the least-performing model, AlphaFold2 [33], by 141.37× and the
+duct evaluation solely on parts that share the same dataflow among                      best-performing model, ESMFold [39], by 1.74×. AlphaFold2 [33],
+quantization schemes.                                                                   FastFold [14], ColabFold [43], and AlphaFold3 [2] suffer from long
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                                                                                                           Seunghee Han, Soongyu Choi, and Joo-Young Kim
+
+
+                      Protein Folding Block         Input Embedding             Structure Module                                    A100 (w/ Chunk)                                            H100 (w/ Chunk)                                            A100 (w/o Chunk)                                                              H100 (w/o Chunk)                     LightNobel
+                     20           141.37
+                                                                                                              12                                                                                                           10                                                                                                           3.5
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                  3.30
+                                                                                                                                                                                                                                                                                                                                                                      3.15
+                                                                                                                                                                                                                                                                                                                                        3.0
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                2.97
+                                                                                                              10
+
+
+
+
+                                                                                                                   8.44
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                    2.88
+                                                                                                                                                                                                                                                                                                                   Normalized Latency
+                                                                                                                   8.41
+
+
+
+
+                                                                                                                                                                                                      Normalized Latency
+Normalized Latency
+
+
+
+
+                                                                                         Normalized Latency
+
+
+
+
+                                                                                                                                                                                                                                                            6.73
+                     16                                                                                                                                                                                                    8
+
+
+
+
+                                                                                                                                                                                                                                                           6.49
+                                                                        72.47                                                                                                                                                                                                                                                           2.5
+
+
+
+
+                                                                                                                                                                                                                                     5.94
+                                                                                                                                                                                                                                     5.84
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                      2.34
+                                                                                                                                                                                                                                                                                  5.62
+                                                                                                               8
+
+
+
+
+                                                                                                                                                                                                                                                                                 5.32
+                                           40.71                                                                                                                                                                                                                                                                                        2.0
+                                                                                                                                                                                                                           6
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                   1.94
+                     12
+                                                                                                               6                                                                                                                                                                                                                        2.0
+
+
+
+
+                                                                                                                                                   4.34
+                                                                                                                                                  4.08
+                                                                                                                                 3.85
+                                                                                                                                 3.67
+                     8                                           7.08                                                                                                                                                      4                                                                                                            1.5
+
+
+
+
+                                                                                                                                                                                                                                                                                       2.42
+                                                                                                                                                                                                                                                                  2.33
+                                                                                                               4
+
+
+
+
+                                                                                                                                                                                                                                                                                      2.19
+                                                                                                                                                                                                                                                                 2.05
+                                                                                                                                                                                                                                                                                                                                                         1               1             1
+                                                                                                                                                                                                                                                                                                                                        1.0
+
+
+
+
+                                                                                                                                                                                                                                             1.47
+                                                                                                                                                                                                                                            1.19
+                                                   3.58
+
+
+
+
+                                                                                                                      1.22
+                     4                                                                                                                                                                                                     2
+
+
+
+
+                                                                                                                      1.01
+                                                          2.05                                                 2                                                                                                                                                                                                                        0.5
+
+
+
+
+                                                                                                                                                                                         OOM
+                                                                                                                                        OOM
+
+
+
+
+                                                                                                                                                          OOM
+                           1.74                                                    1                                         1                1                 1                              1                                                  1                    1                         1
+
+                          Baseline       FastFold   PTQ4Protein  AphaFold3                                          CAMEO        CASP14 CASP15                                     CASP16                                              CASP14                  CASP15            CASP16                                                            CASP14          CASP15      CASP16
+                                 AphaFold2     ColabFold    MEFold      LightNobel                                                   Dataset                                                                                                                   Dataset                                                                                             Dataset
+                                                   (a)                                                                                  (b)                                                                                                               (c)                                                                                                  (d)
+
+
+Figure 14: (a) End-to-end performance evaluation result across various recent PPMs, and hardware performance evaluation
+result across datasets with (b) all proteins, (c) proteins excluding those that incur OOMs, and (d) proteins that can only be
+executed with the chunk option.
+
+
+Input Embedding times due to database search, especially for long                                                                                                                              Baseline PPM (w/o Chunk)                                                           Baseline PPM (w Chunk)                                                             LightNobel
+
+sequences. While FastFold [14] and ColabFold [43] attempt to ad-                                                                                                                         4                                                                     4,957.94
+
+
+
+
+                                                                                                                                                                                                                                                      597.35
+                                                                                                                                                                                                                                                                                                                   4
+
+
+
+
+                                                                                                                                                                                                                                                                                            Peak Mem Requirement
+                                                                                                                                                                 Peak Mem Requirement
+
+
+
+
+                                                                                                                                                                                                                                   308.80
+                                                                                                                                                                                                                                                                                                                                                                             15,121GB
+
+
+
+
+                                                                                                                                                                                                                                                                        208.87
+dress this issue, it still remains a bottleneck, highlighting ESM-                                                                                                                       3                                                                                                                         3
+
+
+
+
+                                                                                                                                                                     (GB, Log Scale)
+
+
+
+
+                                                                                                                                                                                                                                                                                                (GB, Log Scale)
+                                                                                                                                                                                                                                                 54.36
+
+
+
+
+                                                                                                                                                                                                                                                                    41.29
+                                                                                                                                                                                                                              36.67
+Fold [39] as a strong baseline. Among the models that use protein
+
+
+
+
+                                                                                                                                                                                                                                              14.28
+                                                                                                                                                                                         2                                                                                                                         2              80GB
+
+
+
+
+                                                                                                                                                                                                11.52
+
+
+
+
+                                                                                                                                                                                                                            11.19
+                                                                                                                                                                                               7.79
+                                                                                                                                                                                               6.14
+language models for Input Embedding, including ESMFold [39],                                                                                                                             1                                                                                                                         1
+                                                                                                                                                                                                                                                                                                                                              1,660 3,360                      9,945
+ColabFold [43], PTQ4Protein [51], and MEFold [32], LightNobel                                                                                                                                  CAMEO                       CASP14 CASP15                         CASP16                                                                  1     2    3 4 5 6 7 8                    9 10
+                                                                                                                                                                                                                               Dataset                                                                                                             Sequence Length (K)
+archives the best performance. This result is attributed to LightNo-                                                                                                                                                            (a)                                                                                                                      (b)
+bel’s superior acceleration of the Protein Folding Block, which is a
+major bottleneck of the overall latency.                                                                                                                        Figure 15: Peak memory requirement of PPM across (a)
+   Hardware Performance. We evaluate the performance of Light-                                                                                                  datasets and (b) various sequence lengths.
+Nobel hardware and NVIDIA A100 and H100 GPUs, focusing on
+the Protein Folding Block. We use CAMEO, CASP14, CASP15, and                                                                                                                         14                                                                                                                      25
+                                                                                                                                                                Normalized Computation
+
+
+
+
+                                                                                                                                                                                                    Baseline PPM                                                   128                                                                        Baseline PPM
+CASP16 datasets for the experiment. Figure 14(b) shows the nor-                                                                                                                      12
+
+
+
+
+                                                                                                                                                                                                                                                                                         Normalized Memory
+                                                                                                                                                                                                                                                                                                             20
+                                                                                                                                                                                                                                                                                                                                                                               1,966
+
+
+
+
+                                                                                                                                                                                                                                                                                          Footprint (100K)
+                                                                                                                                                                                     10             LightNobel                                                                                                                                LightNobel
+malized latency across datasets. LightNobel achieves 3.85-8.44×,                                                                                                                                                                                                                 72                          15
+                                                                                                                                                                      Cost (10K)
+
+
+
+
+                                                                                                                                                                                      8
+                                                                                                                                                                                      6               43.48% Decreased
+3.67-8.41× lower latency with the chunk option and 1.22×, 1.01×                                                                                                                       4
+                                                                                                                                                                                                                                                                                                             10                                   74.10% Decreased                       508
+                                                                                                                                                                                                                                                                                                                   5
+lower latency without the chunk option compared to A100 and                                                                                                                           2
+
+H100. The chunk option significantly increases GPU latency due                                                                                                                                  1    2                 3 4 5 6 7 8
+                                                                                                                                                                                                                      Sequence Length (K)
+                                                                                                                                                                                                                                                                       9 10                                                             1     2     3 4 5 6 7 8
+                                                                                                                                                                                                                                                                                                                                                   Sequence Length (K)
+                                                                                                                                                                                                                                                                                                                                                                                   9       10
+
+to kernel overhead from frequent kernel calls and returns, high-                                                                                                                                                                  (a)                                                                                                                        (b)
+lighting LightNobel’s advantage in handling long sequence lengths.
+Moreover, despite H100’s 5× higher INT8 computing resources                                                                                                     Figure 16: (a) Computational cost of PPM and (b) memory
+compared to A100 (e.g., 3,026 TOPS vs. 624 TOPS), performance                                                                                                   footprint of PPM across various sequence lengths.
+gains remain minimal due to the large portion of the PPM work-
+load being memory-bounded, leading to low utilization of compute
+resources [70]. Despite LightNobel having only 537 TOPS of compu-                                                                                               compared to A100 and H100 in this experiment. For short proteins,
+tational resources, it demonstrates significantly better performance                                                                                            the kernel overhead constitutes a significant portion of the overall
+compared to A100 and H100 under the same 2TB/s bandwidth.                                                                                                       latency, leading to relatively large speedup gains. However, as the
+These results demonstrate the superior performance efficiency of                                                                                                sequence length increases, this overhead becomes less dominant.
+LightNobel and suggest that similar trends will be observed with                                                                                                Although the absolute speedup is relatively modest, LightNobel’s
+the NVIDIA H200, the state-of-the-art GPU [47].                                                                                                                 speedup becomes more stable and consistent, demonstrating a high
+   In experiments across the entire dataset, GPUs face out-of-mem-                                                                                              degree of scalability with respect to sequence length.
+ory (OOM) issues. Therefore, for a fair comparison, we exclude
+the proteins that cannot be processed on GPUs without the chunk                                                                                                 8.3                            In-Depth Analysis
+option and conduct experiments on the remaining datasets. The                                                                                                   Peak Memory Requirement. To evaluate LightNobel’s benefit on
+CAMEO dataset is excluded because it can already be fully pro-                                                                                                  peak memory requirement, we measure the peak memory require-
+cessed without the chunk option. Figure 14(c) shows LightNobel                                                                                                  ments across various datasets. Figure 15(a) shows the peak memory
+achieved 5.62-6.73×, 5.32-6.49× lower latency with the chunk op-                                                                                                requirement of baseline PPM and LightNobel. LightNobel achieves
+tion and 1.47-2.42×, 1.19-2.19× lower latency without the chunk                                                                                                 1.87-120.05× lower peak memory requirement without the chunk
+option compared to A100 and H100 in this experiment. We also                                                                                                    options and 1.26-5.05× lower requirements with the chunk op-
+conduct experiments on proteins that GPUs cannot process without                                                                                                tion compared to the baseline PPM. For more detailed analysis, we
+the chunk option to evaluate the performance of LightNobel on                                                                                                   also measure peak memory requirement across varying sequence
+proteins with long sequence lengths. Figure 14(d) shows LightNobel                                                                                              lengths. Figure 15(b) shows the peak memory requirements as the
+achieves 2.34-3.30×, 1.94-2.97× lower latency with the chunk option                                                                                             protein’s sequence length increases. Due to memory limitations,
+LightNobel: Improving Sequence Length Limitation in Protein Structure Prediction Model via Adaptive Activation Quantization                   ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+running every protein on 80 GB of GPU VRAM is infeasible. There-                                  Table 2: Area and power analysis of LightNobel.
+fore, we measure peak memory requirements through actual GPU
+executions for shorter protein sequences and estimate the require-                                                   Module                               Area (mm²)    Power (mW)
+                                                                                                                   Token Aligner                             0.005            5.959
+ments by applying equivalent computational processes for longer                             Scratchpads (Token: 128KB x 2, Weight: 64KB, Output: 128KB)      2.023            0.188
+protein sequences. Without the chunk option, GPUs inefficiently                                                              RDA                             0.005            2.844
+                                                                                                                        RMPU Engine                          1.017          473.903
+store multiple intermediate activations, such as the score matrix,                        RMPU
+                                                                                                                     RMPU Output FIFO                        0.105          112.400
+leading to high peak memory requirements. The chunk option mit-                                                         1 RMPU Total                         1.127          589.147
+                                                                                                                  32 RMPUs Total                            36.068        18,852.688
+igates this overhead by processing data in smaller chunks but still                                          Global Crossbar Network                        25.133         9,215.658
+retains redundant intermediate activations in memory, resulting in                                                 Local Crossbar Network                    0.785          287.989
+non-negligible memory overhead. LightNobel significantly reduces                          VVPU
+                                                                                                                       128 SIMD Lanes                        0.115           21.094
+                                                                                                                             SSU                             0.001            0.823
+peak memory requirements by employing quantization and Token-                                                           1 VVPU Total                         0.902          309.907
+wise Multi-Head Attention, enabling computation at the token level.                                               128 VVPUs Total                           115.433        39,668.033
+                                                                                                                Controller & Others                          0.141          147.775
+AAQ compresses activations, further minimizing memory usage.                                                  LightNobel Accelerator                        178.802    67,804.55 (67.8 W)
+Unlike chunking, which processes data channel-wise, LightNobel
+achieves higher efficiency through parallel token-level computation.
+As a result, LightNobel processes every dataset within 80 GB of                         total area and 22.36% of the total power consumption. The crossbar
+memory, supporting sequence lengths of up to 9,945, which is 1.45×                      networks play a pivotal role in the system’s dataflow management,
+longer than the longest protein in CASP16 dataset, which is 6,879.                      including pipelining and ordering for dynamic dataflow, enabling
+   Computational Benefits. To evaluate LightNobel’s benefit on                          dequantization-free computation for multi-precision values in the
+computational cost, we conduct experiments comparing the com-                           RMPU as well as top-k sorting and quantization in the VVPU. Also,
+putational costs of the baseline PPM and LightNobel. We evaluate                        the RMPU Engine serves as the core module for computational
+LightNobel’s computational benefits by comparing its computa-                           power. These results justify the observed area and power consump-
+tional cost with the baseline PPM. Figure 16(a) shows the compu-                        tion of LightNobel.
+tational cost as sequence length increases. To calculate the com-                          When compared to GPUs, LightNobel requires only 21.94% of
+putational cost, we convert every operation to equivalent INT8                          area and 19.37% of power compared to A100, and 21.63% of area and
+operations and accumulate. LightNobel reduces the average com-                          22.60% of power compared to H100. It achieves up to 37.29×, 43.35×
+putational cost by 43.38% compared to baseline PPM due to two                           higher power efficiency than A100 and H100 with the chunk option
+key factors. First, AAQ lowers the cost of single data computation,                     and up to 5.39×, 5.21× without it. These results are particularly
+particularly for multiplications, which scale quadratically with pre-                   significant, as the LightNobel accelerator is implemented in a 28nm
+cision reduction. Second, LightNobel eliminates redundant dequan-                       process, whereas A100 and H100 use more advanced 7nm and
+tization in matrix multiplications by applying the scale factor only                    4nm processes, underscoring LightNobel’s superior area and power
+once at the end rather than repeatedly for each value, optimizing                       efficiency. Moreover, since LightNobel supports significantly longer
+the most compute-intensive operation in attention-based models.                         sequence lengths compared to GPUs, it is expected to have even
+   Memory Footprint Benefits. To evaluate LightNobel’s ben-                             better efficiency for longer sequence lengths.
+efits on memory footprint, we conduct experiments comparing
+the memory footprints of the baseline PPM and LightNobel. Fig-                          9 Related Works and Discussion
+ure 16(b) shows the memory footprint as the sequence length in-
+creases. LightNobel achieves 74.10% lower memory footprint on                           9.1 Previous Works on PPM
+average. This reduction stems from AAQ, which minimizes activa-                         There have been efforts to optimize PPM, but they have failed to
+tion size via quantization during each PPM operation. Additionally,                     address critical memory-related challenges. Fastfold [14] and Scale-
+LightNobel quantizes residual connections between layers, often                         fold [70] tackle communication overhead issues between multiple
+overlooked in prior studies, further enabling a smaller memory                          GPUs during PPM training by employing scheduling and paral-
+footprint and improving scalability. Since the number of tokens                         lelism techniques. While these methods improve training scalabil-
+increases quadratically with sequence length in PPM, token-wise                         ity, the benefits are limited in the inference phase. MEFold [32] and
+quantization proportionally reduces peak memory usage, enabling                         PTQ4Protein [51] introduce quantization to PPM. MEFold applies
+efficient processing of longer sequences. This property ensures that                    weight-only quantization, leaving memory-related challenges aris-
+LightNobel can efficiently handle longer sequences.                                     ing from activation unresolved. It supports a maximum sequence
+                                                                                        length of 2,828 with a peak memory requirement of 78.7 GB in an 80
+                                                                                        GB memory environment. LightNobel achieves the same with just
+8.4     Area and Power Analysis                                                         12.1 GB of memory, improving scalability by 6.05×. PTQ4Protein
+We conduct area and power analysis of the proposed system. Table 2                      quantizes both weights and activations but conducts experiments
+shows the detailed breakdown of the area and power estimations                          only on proteins with a maximum sequence length of 700, reducing
+of the LightNobel accelerator. The total area is 178.80 mm2 , and the                   peak memory to 11.6 GB. For the same sequence length, Light-
+total power consumption is 67.80 W. The crossbar networks are the                       Nobel achieves a peak memory usage of 7.1 GB, indicating 1.63×
+most dominant component, accounting for 70.28% of the total area                        better scalability. These gaps widen with longer sequences. More-
+and 67.95% of the total power consumption. The second dominant                          over, both Mefold and PTQ4Protein suffer from significant accuracy
+component is the RMPU Engine, which accounts for 18.20% of the                          degradation as their quantization precision decreases, which can
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                 Seunghee Han, Soongyu Choi, and Joo-Young Kim
+
+
+pose critical issues in biological modeling. LightNobel mitigates        leading to substantial reductions in memory requirements and com-
+these challenges by applying AAQ.                                        putational costs. Our hardware innovations, including the Recon-
+                                                                         figurable Matrix Processing Unit (RMPU) and the Versatile Vector
+                                                                         Processing Unit (VVPU), enable efficient handling of dynamically
+9.2     Quantization for Attention-based Models                          quantized multi-precision data in token-wise dataflow, pushing the
+Prior works, such as SmoothQuant [64], Qserve [38], and AWQ [37],        boundaries of hardware utilization and computational efficiency
+suggest efficient GPU-based quantization algorithms. These meth-         for AAQ support. LightNobel achieves up to 8.44×, 8.41× speedup
+ods handle outliers by leveraging their characteristics, separating      and 37.29×, 43.35× higher power efficiency over the latest NVIDIA
+them to enable low-precision computations with minimal loss of           A100 and H100 GPUs, respectively, while maintaining negligible
+accuracy. However, they apply the same precision to all values           accuracy loss. It also reduces the peak memory requirement up
+except outliers due to limitations of conventional hardware, such        to 120.05×, enabling scalable processing for proteins with long se-
+as GPUs, which limit the quantization performance. Mokey [67],           quences. These results demonstrate that LightNobel offers a highly
+Olive [25], and Tender [35] adopt additional hardware for more           scalable and high-performance solution for PPM, laying the ground-
+aggressive quantization. They propose accelerators alongside quan-       work for next-generation protein structure prediction accelerators.
+tization schemes to achieve high accuracy. However, these methods
+are not suitable for PPM since they cannot exploit the distinct char-    Acknowledgments
+acteristics of data values, which can lead to accuracy degradation.      This work was partly supported by Institute of Information & com-
+                                                                         munications Technology Planning & Evaluation (IITP) grant funded
+                                                                         by the Korea government (MSIT) (No. 2022-0-01036, Development
+9.3     AAQ Challenges on Existing Hardware
+                                                                         of Ultra-Performance PIM Processor Soc with PFLOPS-Performance
+Challenges of AAQ on GPU. The performance of GPU kernels de-             and GByte-Memory) and (No.2022-0-01037, Development of High
+pends on how efficiently the MMA performance of Tensor cores is          Performance Processing-In-Memory Technology based on DRAM),
+used [38]. However, activation quantization is inefficient on GPUs       and Samsung Electronics Co., Ltd.
+due to their heavy reliance on CUDA Cores rather than Tensor
+Cores because activation quantization requires runtime dequan-
+                                                                         References
+tization and quantization, unlike weight quantization. Actually,         [1] 2024. IEEE Standard for SystemVerilog–Unified Hardware Design, Specification,
+W4A4 quantization (e.g., QuaRot [4]) is slower than FP16 execu-              and Verification Language. IEEE Std 1800-2023 (Revision of IEEE Std 1800-2017)
+tion in TensorRT-LLM [38]. In AAQ, dynamic precision and outlier             (2024), 1–1354.
+                                                                         [2] Josh Abramson, Jonas Adler, Jack Dunger, Richard Evans, Tim Green, Alexander
+handling further increase reliance on CUDA Cores. Additionally,              Pritzel, Olaf Ronneberger, Lindsay Willmore, Andrew J. Ballard, Joshua Bambrick,
+multi-precision execution suffers from warp divergence in SIMD               Sebastian W. Bodenstein, David A. Evans, Chia-Chun Hung, Michael O’Neill,
+and SIMT architectures, reducing utilization.                                David Reiman, Kathryn Tunyasuvunakool, Zachary Wu, Akvilė Žemgulytė, Eirini
+                                                                             Arvaniti, Charles Beattie, Ottavia Bertolli, Alex Bridgland, Alexey Cherepanov,
+   Challenges of AAQ on Existing Accelerator. Existing ac-                   Miles Congreve, Alexander I. Cowen-Rivers, Andrew Cowie, Michael Figurnov,
+celerators for attention-based models, such as Mokey [67] and                Fabian B. Fuchs, Hannah Gladman, Rishub Jain, Yousuf A. Khan, Caroline M. R.
+Olive [25], are optimized for tensor-wise quantization with efficient        Low, Kuba Perlin, Anna Potapenko, Pascal Savy, Sukhdeep Singh, Adrian Stec-
+                                                                             ula, Ashok Thillaisundaram, Catherine Tong, Sergei Yakneen, Ellen D. Zhong,
+memory layouts, while Tender [35] is designed for channel-wise               Michal Zielinski, Augustin Žídek, Victor Bapst, Pushmeet Kohli, Max Jaderberg,
+quantization, leveraging shifters for efficient dequantization and           Demis Hassabis, and John M. Jumper. 2024. Accurate structure prediction of
+                                                                             biomolecular interactions with AlphaFold 3. Nature 630, 8016 (2024), 493–500.
+runtime quantization. However, AAQ requires token-wise quantiza-         [3] Gustaf Ahdritz, Nazim Bouatta, Christina Floristean, Sachin Kadyan, Qinghui
+tion, where each token has a distinct scaling factor, and outliers are       Xia, William Gerecke, Timothy J. O’Donnell, Daniel Berenberg, Ian Fisk, Niccolò
+handled dynamically at runtime. This requirement increases mem-              Zanichelli, Bo Zhang, Arkadiusz Nowaczynski, Bei Wang, Marta M. Stepniewska-
+                                                                             Dziubinska, Shang Zhang, Adegoke Ojewole, Murat Efe Guney, Stella Biderman,
+ory overhead and leads to redundant dequantization on existing               Andrew M. Watkins, Stephen Ra, Pablo Ribalta Lorenzo, Lucas Nivon, Brian
+hardware, ultimately eliminating the advantages of memory lay-               Weitzner, Yih-En Andrew Ban, Shiyang Chen, Minjia Zhang, Conglong Li, Shuai-
+out and architecture in existing accelerators. Also, Olive [25] does         wen Leon Song, Yuxiong He, Peter K. Sorger, Emad Mostaque, Zhao Zhang,
+                                                                             Richard Bonneau, and Mohammed AlQuraishi. 2024. OpenFold: Retraining Al-
+not have a hardware encoder for runtime quantization. Moreover,              phaFold2 yields new insights into its learning mechanisms and capacity for
+existing accelerators do not support multi-precision operations or           generalization. Nature Methods 21 (2024), 1–11.
+                                                                         [4] Saleh Ashkboos, Amirkeivan Mohtashami, Maximilian L. Croci, Bo Li, Pash-
+dynamic dataflows, making it challenging to maintain high uti-               mina Cameron, Martin Jaggi, Dan Alistarh, Torsten Hoefler, and James
+lization. Additionally, top-k operations required by AAQ are not             Hensman. 2024. QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs.
+natively supported. Consequently, dedicated hardware is necessary            https://openreview.net/forum?id=dfqsW38v1X. In The Thirty-eighth Annual Con-
+                                                                             ference on Neural Information Processing Systems.
+for the efficient execution of AAQ.                                      [5] Minkyung Baek, Frank DiMaio, Ivan Anishchenko, Justas Dauparas, Sergey
+                                                                             Ovchinnikov, Gyu Rie Lee, Jue Wang, Qian Cong, Lisa N. Kinch, R. Dustin
+                                                                             Schaeffer, Claudia Millán, Hahnbeom Park, Carson Adams, Caleb R. Glassman,
+10     Conclusion                                                            Andy DeGiovanni, Jose H. Pereira, Andria V. Rodrigues, Alberdina A. van Dijk,
+                                                                             Ana C. Ebrecht, Diederik J. Opperman, Theo Sagmeister, Christoph Buhlheller,
+This paper presents LightNobel, a hardware-software co-designed              Tea Pavkov-Keller, Manoj K. Rathinaswamy, Udit Dalwadi, Calvin K. Yip, John E.
+                                                                             Burke, K. Christopher Garcia, Nick V. Grishin, Paul D. Adams, Randy J. Read, and
+solution that addresses the scalability limitations in sequence length       David Baker. 2021. Accurate prediction of protein structures and interactions
+for the Protein Structure Prediction Model (PPM) caused by exces-            using a three-track neural network. Science 373, 6557 (2021), 871–876.
+sive activation size. We propose Token-wise Adaptive Activation          [6] Rajeev Balasubramonian, Andrew B Kahng, Naveen Muralimanohar, Ali Shafiee,
+                                                                             and Vaishnav Srinivas. 2017. CACTI 7: New tools for interconnect exploration
+Quantization (AAQ), a quantization method that significantly re-             in innovative off-chip memories. ACM Transactions on Architecture and Code
+duces activation size without compromising prediction accuracy,              Optimization (TACO) 14, 2 (2017), 1–25.
+LightNobel: Improving Sequence Length Limitation in Protein Structure Prediction Model via Adaptive Activation Quantization              ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+ [7] Mark Bohr. 2012. Silicon technology leadership for the mobility era. In Intel           [33] John Jumper, Richard Evans, Alexander Pritzel, Tim Green, Michael Figurnov,
+     developer forum, Vol. 2012. Intel Senior Fellow.                                             Olaf Ronneberger, Kathryn Tunyasuvunakool, Russ Bates, Augustin Žídek, Anna
+ [8] Ewen Callaway. 2024. Chemistry Nobel goes to developers of AlphaFold AI that                 Potapenko, Alex Bridgland, Clemens Meyer, Simon A. A. Kohl, Andrew J. Ballard,
+     predicts protein structures. https://www.nature.com/articles/d41586-024-03214-               Andrew Cowie, Bernardino Romera-Paredes, Stanislav Nikolov, Rishub Jain,
+     7.                                                                                           Jonas Adler, Trevor Back, Stig Petersen, David Reiman, Ellen Clancy, Michal
+ [9] CAMEO. 2024. CAMEO: Continuous Automated Model EvaluatiOn. https://www.                      Zielinski, Martin Steinegger, Michalina Pacholska, Tamas Berghammer, Sebastian
+     cameo3d.org/.                                                                                Bodenstein, David Silver, Oriol Vinyals, Andrew W. Senior, Koray Kavukcuoglu,
+[10] Protein Structure Prediction Center. 2007. CASP. https://predictioncenter.org/.              Pushmeet Kohli, and Demis Hassabis. 2021. Highly accurate protein structure
+[11] Protein Structure Prediction Center. 2020. CASP14. https://predictioncenter.org/             prediction with AlphaFold. nature 596, 7873 (2021), 583–589.
+     casp14/.                                                                                [34] Yoongu Kim, Weikun Yang, and Onur Mutlu. 2015. Ramulator: A fast and exten-
+[12] Protein Structure Prediction Center. 2022. CASP15. https://predictioncenter.org/             sible DRAM simulator. IEEE Computer architecture letters 15, 1 (2015), 45–49.
+     casp15/.                                                                                [35] Jungi Lee, Wonbeom Lee, and Jaewoong Sim. 2024. Tender: Accelerating Large
+[13] Protein Structure Prediction Center. 2024. CASP16. https://predictioncenter.org/             Language Models via Tensor Decomposition and Runtime Requantization. arXiv
+     casp16/.                                                                                     preprint arXiv:2406.12930 (2024), 1048–1062.
+[14] Shenggan Cheng, Xuanlei Zhao, Guangyang Lu, Jiarui Fang, Tian Zheng, Ruidong            [36] Hongbin Li, Wolfgang A Linke, Andres F Oberhauser, Mariano Carrion-Vazquez,
+     Wu, Xiwen Zhang, Jian Peng, and Yang You. 2024. FastFold: Optimizing AlphaFold               Jason G Kerkvliet, Hui Lu, Piotr E Marszalek, and Julio M Fernandez. 2002. Reverse
+     Training and Inference on GPU Clusters. https://doi.org/10.1145/3627535.3638465.             engineering of the giant muscle protein titin. Nature 418, 6901 (2002), 998–1002.
+     In Proceedings of the 29th ACM SIGPLAN Annual Symposium on Principles and               [37] Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen
+     Practice of Parallel Programming (Edinburgh, United Kingdom) (PPoPP ’24). Asso-              Wang, Guangxuan Xiao, Xingyu Dang, Chuang Gan, and Song Han. 2024. AWQ:
+     ciation for Computing Machinery, New York, NY, USA, 417–430.                                 Activation-aware Weight Quantization for On-Device LLM Compression and
+[15] NVIDIA Corporation. 2007. NVIDIA Nsight Systems. https://developer.nvidia.                   Acceleration. Proceedings of Machine Learning and Systems 6 (2024), 87–100.
+     com/nsight-systems.                                                                     [38] Yujun Lin, Haotian Tang, Shang Yang, Zhekai Zhang, Guangxuan Xiao, Chuang
+[16] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. Flashat-               Gan, and Song Han. 2024. Qserve: W4a8kv4 quantization and system co-design
+     tention: Fast and memory-efficient exact attention with io-awareness. Advances               for efficient llm serving. arXiv preprint arXiv:2405.04532 (2024).
+     in Neural Information Processing Systems 35 (2022), 16344–16359.                        [39] Zeming Lin, Halil Akin, Roshan Rao, Brian Hie, Zhongkai Zhu, Wenting Lu, Nikita
+[17] Tim Dettmers, Mike Lewis, Younes Belkada, and Luke Zettlemoyer.                              Smetanin, Robert Verkuil, Ori Kabeli, Yaniv Shmueli, Allan dos Santos Costa,
+     2022. LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale.                     Maryam Fazel-Zarandi, Tom Sercu, Salvatore Candido, and Alexander Rives. 2023.
+     https://arxiv.org/abs/2208.07339.                                                            Evolutionary-scale prediction of atomic-level protein structure with a language
+[18] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn,                     model. Science 379, 6637 (2023), 1123–1130.
+     Xiaohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer,                  [40] Yuexiao Ma, Huixia Li, Xiawu Zheng, Feng Ling, Xuefeng Xiao, Rui Wang, Shilei
+     Georg Heigold, Sylvain Gelly, Jakob Uszkoreit, and Neil Houlsby. 2021. An                    Wen, Fei Chao, and Rongrong Ji. 2024. Affinequant: Affine transformation quan-
+     Image is Worth 16x16 Words: Transformers for Image Recognition at Scale.                     tization for large language models. arXiv preprint arXiv:2403.12544 (2024).
+     https://arxiv.org/abs/2010.11929.                                                       [41] Micron. 2007. HBM2E memory. https://www.micron.com/products/memory/
+[19] Jacques Dubochet, Marc Adrian, Jiin-Ju Chang, Jean-Claude Homo, Jean Lepault,                hbm/hbm2e.
+     Alasdair W McDowall, and Patrick Schultz. 1988. Cryo-electron microscopy of             [42] Shervin Minaee, Tomas Mikolov, Narjes Nikzad, Meysam Chenaghlu, Richard
+     vitrified specimens. Quarterly reviews of biophysics 21, 2 (1988), 129–228.                  Socher, Xavier Amatriain, and Jianfeng Gao. 2024. Large language models: A
+[20] facebookresearch. 2007. esm. https://github.com/facebookresearch/esm.                        survey. arXiv preprint arXiv:2402.06196 (2024).
+[21] Timothy R. Fallon, Vikram V. Shende, Igor H. Wierzbicki, Amanda L. Pendlet              [43] Milot Mirdita, Konstantin Schutze, Yoshitaka Moriwaki, Lim Heo, Sergey Ovchin-
+     on, Nathan F. Watervoort, Robert P. Auber, David J. Gonzalez, Jenni                          nikov, and Martin Steinegger. 2022. Easy and accurate protein structure prediction
+     fer H. Wisecaver, and Bradley S. Moore. 2024.              Giant polyketide syn-             using ColabFold. Nature Methods 19 (2022), 679–682.
+     thase enzymes in the biosynthesis of giant marine polyether toxins.                     [44] Markus Nagel, Marios Fournarakis, Rana Ali Amjad, Yelysei Bondarenko, Mart
+     https://www.science.org/doi/abs/10.1126/science.ado3290. Science 385, 6709                   Van Baalen, and Tijmen Blankevoort. 2021. A white paper on neural network
+     (2024), 671–678.                                                                             quantization. arXiv preprint arXiv:2106.08295 (2021).
+[22] Python Software Foundation. 2007. python. https://www.python.org/.                      [45] NVIDIA. 2024. NVIDIA A100 Tensor Core GPU. https://www.nvidia.com/content
+[23] Walter Friedrich, Paul Knipping, and Max Laue. 1913. Interferenzerscheinungen                /dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-nvidia-us-
+     bei roentgenstrahlen. Annalen der Physik 346, 10 (1913), 971–988.                            2188504-web.pdf.
+[24] Mu Gao and Jeffrey Skolnick. 2021. A general framework to learn tertiary                [46] NVIDIA. 2024. NVIDIA H100 Tensor Core GPU. https://resources.nvidia.com/en-
+     structure for protein sequence characterization. Frontiers in bioinformatics 1               us-tensor-core/nvidia-tensor-core-gpu-datasheet.
+     (2021), 689960.                                                                         [47] NVIDIA. 2024. NVIDIA H200 Tensor Core GPU. https://resources.nvidia.com/en-
+[25] Cong Guo, Jiaming Tang, Weiming Hu, Jingwen Leng, Chen Zhang, Fan Yang,                      us-data-center-overview-mc/en-us-data-center-overview/hpc-datasheet-sc23-
+     Yunxin Liu, Minyi Guo, and Yuhao Zhu. 2023. Olive: Accelerating large language               h200.
+     models via hardware-friendly outlier-victim pair quantization. In Proceedings of        [48] RCSB PDB Core Operations. 2007. RCSB PDB. https://www.rcsb.org/.
+     the 50th Annual International Symposium on Computer Architecture. Association           [49] Keiron O’Shea and Ryan Nash. 2015. An Introduction to Convolutional Neural
+     for Computing Machinery, New York, NY, USA, 1–15.                                            Networks. https://arxiv.org/abs/1511.08458.
+[26] Tae Jun Ham, Sung Jun Jung, Seonghak Kim, Young H. Oh, Yeonhong Park,                   [50] Linus Pauling, Robert B. Corey, and H. R. Branson. 1951. The structure of
+     Yoonho Song, Jung-Hun Park, Sanghee Lee, Kyoung Park, Jae W. Lee, and Deog-                  proteins: Two hydrogen-bonded helical configurations of the polypeptide chain.
+     Kyoon Jeong. 2020. Aˆ 3: Accelerating attention mechanisms in neural networks                https://www.pnas.org/doi/abs/10.1073/pnas.37.4.205. Proceedings of the National
+     with approximation. In 2020 IEEE International Symposium on High Performance                 Academy of Sciences 37, 4 (1951), 205–211.
+     Computer Architecture (HPCA). IEEE, IEEE, Piscataway, NJ, USA, 328–341.                 [51] Shuang Peng, Fei Yang, Ning Sun, Sheng Chen, Yanfeng Jiang, and Aimin
+[27] Seunghee Han, Seungjae Moon, Teokkyu Suh, JaeHoon Heo, and Joo-Young Kim.                    Pan. 2023. Exploring Post-Training Quantization of Protein Language Models.
+     2024. BLESS: Bandwidth and Locality Enhanced SMEM Seeding Acceleration                       https://arxiv.org/abs/2310.19624.
+     for DNA Sequencing. In 2024 ACM/IEEE 51st Annual International Symposium on             [52] Markus N Rabe and Charles Staats. 2021. Self-attention does not need 𝑂 (𝑛 2 )
+     Computer Architecture (ISCA). IEEE, 582–596.                                                 memory. arXiv preprint arXiv:2112.05682 (2021).
+[28] Wei Huang, Yangdong Liu, Haotong Qin, Ying Li, Shiming Zhang, Xianglong Liu,            [53] Andrew W. Senior, Richard Evans, John Jumper, James Kirkpatrick, Laurent
+     Michele Magno, and Xiaojuan Qi. 2024. Billm: Pushing the limit of post-training              Sifre, Tim Green, Chongli Qin, Augustin Žídek, Alexander W. R. Nelson, Alex
+     quantization for llms. arXiv preprint arXiv:2402.04291 (2024).                               Bridgland, Hugo Penedones, Stig Petersen, Karen Simonyan, Steve Crossan,
+[29] Wei Huang, Karthick Rajamani, Mircea R Stan, and Kevin Skadron. 2011. Scaling                Pushmeet Kohli, David T. Jones, David Silver, Koray Kavukcuoglu, and Demis
+     with design constraints: Predicting the future of big chips. IEEE Micro 31, 4 (2011),        Hassabis. 2020. Improved protein structure prediction using potentials from deep
+     16–29.                                                                                       learning. Nature 577, 7792 (2020), 706–710.
+[30] Intel INC. 2007. Intel Xeon Platinum 8452Y Processor. https://www.intel.com             [54] Robert F. Service. 2020. The game has changed. AI triumphs at solving pro-
+     /content/www/us/en/products/sku/231761/intel-xeon-platinum-8452y-                            tein structures. https://www.science.org/content/article/game-has-changed-ai-
+     processor-67-5m-cache-2-00-ghz/specifications.html.                                          triumphs-solving-protein-structures.
+[31] Synopsys Inc. 2007. Design Compiler. https://www.synopsys.com/implemet                  [55] Korey Sewell, Ronald G. Dreslinski, Thomas Manville, Sudhir Satpathy, Nathaniel
+     ation-and-signoff/rtl-synthesis-test/design-compiler-graphical.html.                         Pinckney, Geoffrey Blake, Michael Cieslak, Reetuparna Das, Thomas F. Wenisch,
+[32] Yanfeng Jiang, Ning Sun, Zhengxian Lu, Shuang Peng, Yi Zhang, Fei Yang, and                  Dennis Sylvester, David Blaauw, and Trevor Mudge. 2012. Swizzle-switch net-
+     Tao Li. 2024. MEFold: Memory-Efficient Optimization for Protein Language                     works for many-core systems. IEEE Journal on Emerging and Selected Topics in
+     Models via Chunk and Quantization. In 2024 International Joint Conference on                 Circuits and Systems 2, 2 (2012), 278–294.
+     Neural Networks (IJCNN). IEEE, Piscataway, NJ, USA, 1–8.
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                    Seunghee Han, Soongyu Choi, and Joo-Young Kim
+
+
+[56] Anil Shanbhag, Holger Pirk, and Samuel Madden. 2018. Efficient top-k query            [64] Guangxuan Xiao, Ji Lin, Mickael Seznec, Hao Wu, Julien Demouth, and Song
+     processing on massively parallel hardware. In Proceedings of the 2018 International        Han. 2023. Smoothquant: Accurate and efficient post-training quantization for
+     Conference on Management of Data. Association for Computing Machinery, New                 large language models. In International Conference on Machine Learning. PMLR,
+     York, NY, USA, 1557–1570.                                                                  PMLR, 38087–38099.
+[57] Hardik Sharma, Jongse Park, Naveen Suda, Liangzhen Lai, Benson Chau,                  [65] Jinbo Xu. 2019. Distance-based protein folding powered by deep learning.
+     Joon Kyung Kim, Vikas Chandra, and Hadi Esmaeilzadeh. 2018. Bit fusion: Bit-               http://dx.doi.org/10.1073/pnas.1821309116. Proceedings of the National Acad-
+     level dynamically composable architecture for accelerating deep neural network.            emy of Sciences 116, 34 (Aug. 2019), 16856–16865.
+     In 2018 ACM/IEEE 45th Annual International Symposium on Computer Architecture         [66] Ali Hadi Zadeh, Isak Edo, Omar Mohamed Awad, and Andreas Moshovos. 2020.
+     (ISCA). IEEE, IEEE Press, Piscataway, NJ, USA, 764–775.                                    Gobo: Quantizing attention-based nlp models for low latency and energy ef-
+[58] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne                 ficient inference. In 2020 53rd Annual IEEE/ACM International Symposium on
+     Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro,                     Microarchitecture (MICRO). IEEE, IEEE, Piscataway, NJ, USA, 811–824.
+     Faisal Azhar, Aurelien Rodriguez, Armand Joulin, Edouard Grave, and Guil-             [67] Ali Hadi Zadeh, Mostafa Mahmoud, Ameer Abdelhadi, and Andreas Moshovos.
+     laume Lample. 2023. LLaMA: Open and Efficient Foundation Language Models.                  2022. Mokey: Enabling narrow fixed-point inference for out-of-the-box floating-
+     https://arxiv.org/abs/2302.13971.                                                          point transformer models. In Proceedings of the 49th Annual International Sym-
+[59] A Vaswani. 2017. Attention is all you need. Advances in Neural Information                 posium on Computer Architecture. Association for Computing Machinery, New
+     Processing Systems (2017).                                                                 York, NY, USA, 888–901.
+[60] Oreste Villa, Daniel R. Johnson, Mike Oconnor, Evgeny Bolotin, David Nellans,         [68] Jinnian Zhang, Houwen Peng, Kan Wu, Mengchen Liu, Bin Xiao, Jianlong Fu,
+     Justin Luitjens, Nikolai Sakharnykh, Peng Wang, Paulius Micikevicius, Anthony              and Lu Yuan. 2022. Minivit: Compressing vision transformers with weight
+     Scudiero, Stephen W. Keckler, and William J. Dally. 2014. Scaling the power wall:          multiplexing. In Proceedings of the IEEE/CVF Conference on Computer Vision and
+     a path to exascale. In SC’14: Proceedings of the International Conference for High         Pattern Recognition. IEEE, Piscataway, NJ, USA, 12145–12154.
+     Performance Computing, Networking, Storage and Analysis. IEEE, Piscataway, NJ,        [69] Yang Zhang and Jeffrey Skolnick. 2005. TM-align: a protein structure alignment
+     USA, 830–841.                                                                              algorithm based on the TM-score. Nucleic acids research 33, 7 (2005), 2302–2309.
+[61] Huizheng Wang, Jiahao Fang, Xinru Tang, Zhiheng Yue, Jinxi Li, Yubin Qin, Sihan       [70] Feiwen Zhu, Arkadiusz Nowaczynski, Rundong Li, Jie Xin, Yifei Song, Michal
+     Guan, Qize Yang, Yang Wang, Chao Li, Yang Hu, and Shouyi Yin. 2024. SOFA: A                Marcinkiewicz, Sukru Burc Eryilmaz, Jun Yang, and Michael Andersch.
+     Compute-Memory Optimized Sparsity Accelerator via Cross-Stage Coordinated                  2024. ScaleFold: Reducing AlphaFold Initial Training Time to 10 Hours.
+     Tiling. https://arxiv.org/abs/2407.10416.                                                  https://doi.org/10.1145/3649329.3657326. In Proceedings of the 61st ACM/IEEE
+[62] Wikipedia. 2024. 68–95–99.7 rule. https://en.wikipedia.org/wiki/68-95-99.7_rule.           Design Automation Conference (San Francisco, CA, USA) (DAC ’24). Association
+[63] Wikipedia. 2024. C (programming language). https://en.wikipedia.org/wiki/C_(p              for Computing Machinery, New York, NY, USA, Article 265, 6 pages.
+     rogramming_language).
+

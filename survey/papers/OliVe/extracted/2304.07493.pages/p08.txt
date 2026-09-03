@@ -1,0 +1,112 @@
+ISCA ’23, June 17–21, 2023, Orlando, FL, USA                                                                                                       Guo and Tang, et al.
+
+
+                                                                                          we propose the mixed-precision processing element (PE) for the
+                                   Weight Buffer                                          higher precision data types.
+                                                                OVP Decoder
+                                                                                          8-bit Int. For the GPU tensor core architecture, it is originally
+                                                                         Exp4   Int4
+                                                                                          designed with mixed-precision computation. For the systolic array,
+
+
+
+
+                                                   …
+
+
+
+
+                                                                Exp4
+                                                                                          our architecture naturally supports 8-bit computation with four
+
+
+
+
+                                                          0:3
+                Input Buffer
+      DRAM
+
+
+
+
+                                                   …
+                                                                                          4-bit PEs [72]. For an int8 number 𝑥, the higher 4 bits and the
+
+
+
+
+                                                                Int4
+                                                          4:7
+                                                                                     <<
+                                                                                          lower 4 bits can be split into two 4-bit numbers ℎ and 𝑙, and the 𝑥
+
+
+                                                   …
+                                                                                          can be represented by:
+
+                                                   …
+                                                                          32-bit
+                               …     …    …   …                        Accumulator                    𝑥 = (ℎ𝑥 ≪ 4) + 𝑙𝑥 =< 4, ℎ𝑥 > + < 0, 𝑙𝑥 > .
+                                   Output Buffer          OliVe MAC Unit                  We then can multiply two int8 numbers of 𝑥 and 𝑦:
+                                                                                                 𝑥 × 𝑦 = < 4, ℎ𝑥 > × < 4, ℎ 𝑦 > + < 4, ℎ𝑥 > × < 0, 𝑙 𝑦 >
+             Figure 8: OliVe integration on systolic array.                                              |        {z          } |          {z          }
+                                                                                                                   𝑃𝐸 0                      𝑃𝐸 1
+                                                                                                       + < 0, 𝑙𝑥 > × < 4, ℎ 𝑦 > + < 0, 𝑙𝑥 > × < 0, 𝑙 𝑦 >
+For example, when the bias is 2, a number 01012 is 4810 , since                                          |        {z          } |          {z          }
+its exponent is 210 + 102 = 410 and base integer is 112 = 310 .                                                    𝑃𝐸 2                     𝑃𝐸 3
+Therefore, its real value is 3 ≪ 4 = 48.
+                                                                                          Therefore, we can use four 4-bit PEs to calculate the above four
+   Similarly, we also design and implement the 8-bit outlier-victim
+                                                                                          multiplications and accumulate the products to get the final product
+pair decoder and the E4M3 abfloat outlier decoder, which are
+                                                                                          value of 𝑥 × 𝑦.
+straightforward extensions of 4-bit instances. As such, we do not
+present their details due to the limited space.                                           8-bit Abfloat Similarly, multiplication of 8-bit abfloat can be
+                                                                                          supported using the same approach. For an 8-bit abfloat number
+4.3      Systolic Array                                                                   𝑧, it is first decoded into an exponent 𝑒𝑧 and an integer 𝑖𝑧 . For 𝑖𝑧 ,
+                                                                                          we similarly split it into 𝑖𝑧 = (ℎ𝑧 << 4) + 𝑙𝑧 , then 𝑧 =< 4 + 𝑒𝑧 , ℎ𝑧 >
+The systolic array (SA) integration is shown in Fig. 8. SA uses the
+                                                                                          + < 𝑒𝑧 , 𝑙𝑧 >. Hence the same method can be used to perform 8-bit
+same outlier-victim pair decoder design (Fig. 6b) as GPU, which
+                                                                                          abfloat multiplication with four 4-bit PEs, where the abfloat has
+shows the wide applicability of our design. But, unlike GPU, we
+                                                                                          an extra 𝑒𝑧 than int8.
+only place the decoders along the borderlines, which can save most
+                                                                                              In the most extreme case, two outliers with abfloat may be
+decoders. For example, if the array size is 𝑛 ×𝑚, we only need 𝑛 +𝑚
+                                                                                          multiplied together. Because we adopt the 32-bit int as √    the accu-
+instead of 𝑛 × 𝑚 decoders. That is one advantage of SA over the
+GPU’s SIMD architecture. Our proposed OliVe-based data type can                           mulator, the maximum multiplicand should not be over 231 − 1.
+also support the systolic array processing element (PE) with an                           Therefore, for the outlier value with the abfloat√type, we will clip
+extra adder and shifter. We add an extra adder for every four PEs                         the absolute value of the outlier within 215 < 231 − 1 to avoid
+to support high-precision quantization, e.g., int8.                                       the overflow for the int32 accumulators. Our experiments show
+                                                                                          that the outlier values of the Transformer models are much smaller
+4.4      OliVe MAC unit                                                                   than 215 . Specifically, 215 is about 768𝜎 after normalization and
+                                                                                          quantization. As shown in Fig. 2, the maximum value of outliers
+After decoding for outlier and normal values, they are all trans-
+                                                                                          does not exceed 325𝜎. Thus, we observe that no outlier is truncated
+formed into unified exponent-integer pairs. To support the decoded
+                                                                                          in practice.
+exponent-integer pair computation, we need to add a shifter and
+an adder for the fixed-point MAC (multiply and accumulation) unit,
+                                                                                          4.6    Instruction Set
+as shown in Fig. 8 and the unit of Fig. 6 4-bit 16EDP. For example,
+we have two exponent-integer pairs < 𝑎, 𝑏 > and < 𝑐, 𝑑 >, where 𝑎                         For 4-bit tensor cores, the Turing GPU architecture adopts the
+and 𝑐 are exponents, 𝑏 and 𝑑 are integers, and < 𝑎, 𝑏 > represents:                       instruction mma.s32.s4.s4.s32. These four operands are matrices
+                                                                                          𝐷 (int32), 𝐴 (int4), 𝐵 (int4), and 𝐶 (int32), and 𝐷 = 𝐴 × 𝐵 + 𝐶.
+                                    < 𝑎, 𝑏 >= 𝑏 ≪ 𝑎                                       To support the OVP-based computation on GPU, we design a new
+                                                                                          instruction called mmaovp:
+Then, we can get the result:
+                                                                                                        𝑚𝑚𝑎𝑜𝑣𝑝 .s32. 𝑜𝑣𝑝𝑖4 . 𝑜𝑣𝑝 𝑓 4 .s32. 𝑠4 .
+                                    < 𝑎, 𝑏 > × < 𝑐, 𝑑 >                                                 | {z }       |{z} |{z}            |{z}
+                                                                                                        OVP−MMA                              bias
+                               = (𝑏 × 𝑑) ≪ (𝑎 + 𝑐)                                                                        int4   flint4
+
+                               = < 𝑎 + 𝑐, 𝑏 × 𝑑 >                                            Moreover, because of the memory-aligned design of the data type,
+                                                                                          OliVe maintains the original programming interface for GPUs. We
+Note that the final result can store with a 32-bit int.                                   can replace the original int-based instruction with OVP-based
+                                                                                          instruction (e.g., mmaovp) to easily construct the OVP-supported
+4.5      Mixed Precision                                                                  DNN quantization framework. Therefore, our OliVe framework
+As mentioned in Sec. 3, OliVe quantization can support the int8                           has comprehensive and practical applicability, which is the most
+for normal values and E4M3 abfloat for outlier values. Therefore,                         significant advantage of OliVe.
+

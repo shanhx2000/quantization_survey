@@ -1,0 +1,92 @@
+  Algorithm 2: Hierarchical Halving Bit-Packing with Byte                                          Min                                           Max
+                                                                               𝑥                                   …               …
+  Normalization (Vectorized)
+                                                                                        Positive number (Sign-Magnitude)          Negative number (2's Complement)
+   Input : data[0..N − 1]: Array of N 16-bit data values (N = 2k );
+           a: Bit-width of each input value (0 < a ≤ 8)                      𝑏−𝑥                         …     2    1       0          -1   -2   …
+   Output: byte_stream: Compressed byte-aligned output stream                           b-min                                                          b-max
+
+   // Initialization of packing parameters
+                                                                                                                            b                             𝟐𝒏 − 𝟏
+ 1 total_length ← 0
+ 2 width ← a
+                                                                             Maping      0           …                                       …
+ 3 length ← N
+ 4 normalized_bytes ← empty vector                                           Values                                        𝟐𝒏−𝟏 (b-x) < 0 Truncation Mapping
+                                                                                       (b-x) ≥ 0 Normal Mapping
+ 5 while width > 0 do
+         // Hierarchical halving: doubling width by merging pairs                  Fig. 7: Vectorized branch-free integer transformation.
+ 6       while length > 1 and width < 8 do
+ 7            length ← length/2                                          to the nearest multiple of 2 (Lines 23-26). The normalized
+ 8            for i ← 0 to length − 1 do
+ 9                  data[i] ← data[i] | (data[i + length] « width)       bytes are consolidated in a final folding pass to form the
+10            end                                                        output stream (Lines 28-32). The bit-unpacking process is
+11            width ← width × 2
+12       end                                                             precisely the inverse of the bit-packing process.
+         // Extract aligned bytes from the packed 16-bit lanes              Consequently, as illustrated in Figure 5, the least signif-
+13       for j ← 0 to length − 1 do
+              // Mask out the lower 8 bits and update residual data      icant m bits are truncated and compressed via hierarchi-
+14            temp_bytes[j] ← (data[j] « 8) » 8                          cal halving bit-packing. For groups needing more than m
+15            data[j] ← data[j] » 8
+16       end                                                             bits, the higher (n − m) bits are collected into a 32 KB
+17       Append temp_bytes to normalized_bytes                           buffer. Once full, these bits are compressed by hierarchical
+18       width ← width − 8
+19       total_length ← total_length + length                            halving bit-packing, and the buffer is then cleared. During
+20 end                                                                   decompression, an inverse Gather operation redistributes
+   // Padding to ensure even length for 16-bit aligned output
+21 if total_length%2 ̸= 0 then                                           the decompressed higher (n − m) bits to their original po-
+22       Append 0 to normalized_bytes                                    sitions. The original values are reconstructed by performing
+23       total_length ← total_length + 1
+24 end                                                                   vectorized Or operation with the decompressed lower m bits.
+   // Final stream construction via vectorized concatenation
+25 for i ← 0 to total_length/2 − 1 do                                    C. Vectorized Branch-Free Integer Transformation
+26       output_data ← normalized_bytes[i] |
+           (normalized_bytes[i + total_length/2] « 8)                       In the basic design, the exponent mapping relies on the
+27       Append output_data to byte_stream
+28 end                                                                   slow gather API, based on the observation 5 in Section
+29 return byte_stream                                                    III, we adopt the linear mapping function f (x) = b − x
+                                                                         as the core transformation scheme to optimize this process.
+constraints, we introduce an iterative bit-packing algorithm.
+                                                                         As shown in Figure 7, b is a linear mapping parameter
+The core of this method, as shown in the pseudocode
+                                                                         determined by the data distribution characteristics. When the
+(Algorithm 2), lies in lane folding and byte normalization.
+                                                                         input value is greater than the parameter b, the mapping result
+The algorithm begins with a block of N elements (where N
+                                                                         is negative. This approach cleverly utilizes the properties of
+is a power of two), each of 16-bit width but retaining only the
+                                                                         two’s complement representation to handle negative values.
+least significant a bits. It iterates until the effective bit width
+                                                                         Due to the use of bit-width quantization and the need to
+of each element is reduced to 8 bits. In each iteration, the
+                                                                         ensure correct decoding, an additional bit is required in the
+block is treated as a sequence of logical lanes. The folding
+                                                                         higher bit position to determine whether the value is negative:
+step logically left-shifts each element in the lower half by
+                                                                         for positive values, the (n + 1)-th bit must be 0, and the
+a bits and performs an element-wise Or operation with the
+                                                                         mapping range is [0, 2n − 1]; for negative values, the (n + 1)-
+corresponding element in the upper half (Lines 9-11). This
+                                                                         th bit must be 1, and the mapping range is [2n , 2n+1 − 1].
+merges two a-bit payloads into a single physical storage
+                                                                         This approach enables the replacement of irregular memory
+location, resulting in a new block of N/2 elements, each
+                                                                         access operations with efficient computation.
+with an effective width of 2a bits (Line 12).
+                                                                            The implementation of this mapping primarily consists
+   When the folding operation causes the effective bit width             of three stages. First, a vector addition unit subtracts the
+to exceed the 8-bit byte boundary, byte normalization is                 preset parameter b from all input elements simultaneously,
+triggered. As the folding is iterative, this effective bit width         shifting the center of the data distribution close to zero.
+grows with each iteration, potentially surpassing 8 bits mul-            Then, a vector multiplication unit inverts the intermediate
+tiple times. The data is then split into (i) the lower 8 bits,           results to achieve the mathematical transformation b − x. For
+forming a storable byte, and (ii) the remaining bits, which              example, with b = 123, an input x = 125 is transformed
+are treated as overflow. All overflow segments are collected             to 123 − 125 = −2, while an input x = 122 becomes
+into a new sub-block and processed recursively by the same               123 − 122 = 1. This combined operation ensures that high-
+algorithm (Lines 14-21). Then, by appending zero bytes to                frequency values in the input data are mapped to smaller
+the end of the byte stream, the total length is aligned upward           output values. Finally, we use shift operations to implement
+
+
+
+
+                                                                      1325
+

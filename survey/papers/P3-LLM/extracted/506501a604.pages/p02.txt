@@ -1,0 +1,127 @@
+                                                                                                  Embedding Table                                                               Language
+conventional integer format, and rely on calibration datasets            User Prompt                (𝑁VOC × 𝐻)
+                                                                                                                                                       𝐿×
+                                                                                                                                                                              Modeling Head
+to approximate the dynamic behavior of activations in a static           (𝑁T Tokens)                  Index   Embed                                                             (𝐻 × 𝑁VOC)                Output Token
+                                                                                                        0       [ …]              Decoder              ...     Decoder
+offline manner, thereby struggling to maintain good accuracy             “P3-LLM is ”
+                                                                                                                                   Layer                        Layer
+                                                                                                                                                                                   LM Head                   “awesome”
+
+
+
+
+                                                                                                       ...
+
+                                                                                                                  ...
+                                                                                                  𝑁VOC - 1      [ …]
+for other datasets due to overfitting. On the hardware side,
+adopting low-precision PCUs for LLM inference remains
+an open research problem in the architecture community,                                                W𝑄                   𝑄                                                                          Wdown
+                                                                                                                                         𝑁A
+
+
+
+
+                                                                                                                                              So�Max
+                                                                                                               RoPE
+                                                                                                                      𝑁A
+mainly because of the challenges in balancing memory saving,                                                                      𝑄⋅𝐾T
+
+
+
+
+                                                                                     Layer Norm
+
+
+
+
+                                                                                                                                                                                    Layer Norm
+                                                                         (𝑁T × 𝐻)                                                                              𝑁A                                        ×
+model accuracy, and hardware efficiency. MANT [29] and                     𝑋                           W𝐾                   𝐾                            𝑃⋅𝑉        W𝑂       +                   Act
+                                                                                                                                                                                                                    +
+Ecco [8] propose aggressive quantization methods and co-                                                              𝑁KV
+                                                                                                                                 𝐾𝑉$                                                             Wgate        Wup
+designed NPU accelerators, but suffer from low computa-                                                W𝑉                   𝑉
+                                                                                                                      𝑁KV                Self-Attention Module                                   MLP Module
+tional efficiency due to the complicated numerical formats
+and encoding to represent quantized operands. Thus, these                                                                           (a) LLM Architecture
+proposals cannot be directly applied to PIM with stringent                                        𝐻                             𝑁A Heads                                 𝐻                               𝑁A Heads
+area constraints. While a recent PIM work, Pimba [44], adopts              𝑁T                     𝑄
+                                                                                                                        𝑞 𝑞 𝑞 𝑞 𝑞 𝑞 𝑞 𝑞
+                                                                                                                                                       𝑁T                𝑄
+                                                                                                                                                                                                 𝑞 𝑞 𝑞 𝑞 𝑞 𝑞 𝑞 𝑞
+                                                                                                                           0 1 2 3 4 5 6 7                                                       0 1 2 3 4 5 6 7
+the 8-bit microscaling format to improve the area efficiency of                                                                                                              𝐻/𝐺
+PCUs, it overemphasizes preserving model accuracy with 8-bit                                                            𝑘𝑘𝑘𝑘𝑘𝑘𝑘𝑘                                                                  𝑘       𝑘     𝑘   𝑘
+                                                                                                  𝐾                                                                          𝐾
+KV-cache-only quantization, resulting in low memory savings                                                                0 1 2 3 4 5 6 7                                                         0      1     2   3
+
+                                                                                                  𝑉                     𝑣𝑣𝑣𝑣𝑣𝑣𝑣𝑣                                             𝑉                    𝑣       𝑣     𝑣   𝑣
+for edge LLM inference. Furthermore, offloading the self-                                                                  0 1 2 3 4 5 6 7                                                         0      1     2   3
+
+attention module of LLMs to low-precision PCU introduces                                                                        𝑁KV Heads                                                              𝑁KV Heads
+                                                                          Multi-Head Attention                                                         Grouped-Query Attention
+additional challenges, such as the difficulty of accurately                                                                      (b) Self-Attention Variants
+quantizing attention-scores.                                                                                  Fig. 1: Illustration of LLM architecture.
+   To overcome the above limitations, we propose P3 -LLM,
+an NPU-PIM integrated accelerator for low-Precision edge                            quantization algorithms Oaken [42], QuaRot [2], and
+LLM inference. Given the substantial memory and compu-                              QoQ [53], while offering an average of 4.9×, 2.0×, and
+tation demands of LLMs, P3 -LLM employs mixed-precision                             3.4× speedups over the SoTA LLM accelerators HBM-
+quantization with 4-bit weights and KV-cache to achieve high                        PIM [49], Ecco [8], and Pimba [44], respectively.
+compression, as well as 8-bit activations and attention scores
+to reduce computational complexity. Our key algorithmic                                         II. BACKGROUND
+innovation is an operand-dependent quantization scheme that              A. Architecture of Large Language Models (LLMs)
+leverages hybrid numerical formats to aggressively quantize
+                                                                            As depicted in Fig. 1(a), mainstream LLMs have a series
+different LLM operands with minimal accuracy loss. For
+                                                                         of decoder layers in addition to an input embedding table and
+KV-cache, we propose a dynamic, input-aware smoothing
+                                                                         an output language modeling (LM) head. During the prefilling
+strategy that mitigates outliers without calibration datasets,
+                                                                         stage of inference, the LLM receives a user prompt containing
+thus enabling accurate and efficient 4-bit integer quantization
+                                                                         NT tokens, and converts it to an input matrix through an
+while preventing overfitting. For attention-scores, we introduce
+                                                                         embedding table of size NVOC × H, where NVOC is the
+an unsigned 8-bit floating-point format with 4-bit exponent
+                                                                         vocabulary size and H is the hidden dimension size. The input
+and 4-bit mantissa (FP8-S0E4M4) to offer superior numerical
+                                                                         matrix is processed by L× decoder layers, followed by the
+fidelity. For activations, we explore the accuracy-efficiency
+                                                                         LM head at the end to produce the first output token. During
+tradeoffs among different 8-bit quantization options, and iden-
+                                                                         the decoding stage, the LLM takes this output token as input,
+tity the direct FP8-E4M3 cast as the optimal choice. Our
+                                                                         and performs the same operation as in the prefilling stage to
+quantization algorithm is further equipped with a low-precision
+                                                                         generate new tokens in an auto-regressive manner.
+PIM co-design, which features high-throughput and area-
+                                                                            The decoder layer serves as the fundamental component in
+efficient PCUs to flexibly support hybrid numerical formats.
+                                                                         LLMs, consisting of a self-attention module and a multi-layer
+Finally, we architect low-precision dataflow of different LLM
+                                                                         perceptron (MLP). The self-attention module begins with three
+modules by applying operator fusion to minimize the overhead
+                                                                         linear layers (WQ , WK , WV ) to generate query, key, and value
+of runtime dequantization.
+                                                                         vectors, respectively. In recent LLM architectures [38], [84],
+   The main contributions of this paper are summarized below:            [90], WQ and WK are usually followed by rotary position
+ 1) We introduce P3 -LLM, an algorithm-hardware co-design                embedding (RoPE) [83], which encodes positional information
+    solution with carefully optimized low-precision dataflow             into the query and key vectors through matrix rotation. The
+    to unleash the potential of PIM for edge LLM inference.              generated key and value vectors are also cached in off-
+ 2) We propose a novel LLM quantization scheme that em-                  chip memory for computation reuse during future decoding
+    ploys hybrid numerical formats to achieve an excellent               iterations, and are therefore referred to as the KV-cache. Then,
+    trade-off between model accuracy, memory footprint, and              each query and key-value vector is split into NA and NKV
+    computational efficiency.                                            heads, respectively, where NA is the number of attention heads
+ 3) We design a high-throughput and area-efficient PCU ar-               and NKV is the number of key-value heads. For every attention
+    chitecture to accelerate the proposed quantization scheme,           head, the query vectors are multiplied with the transposed
+    while remaining within the PIM area constraints.                     key vectors (Q · K T ), followed by a softmax function to
+ 4) Through comprehensive evaluation, we demonstrate that                calculate the attention-scores (P ). The attention-scores are
+    P3 -LLM achieves higher accuracy than SoTA LLM                       then multiplied with the value vectors (P · V ), and the results
+
+
+
+
+                                                                   605
+

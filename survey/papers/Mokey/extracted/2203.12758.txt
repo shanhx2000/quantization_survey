@@ -1,0 +1,1152 @@
+                                          Mokey: Enabling Narrow Fixed-Point Inference for
+                                          Out-of-the-Box Floating-Point Transformer Models
+                                                                       Ali Hadi Zadeh                                        Mostafa Mahmoud
+                                                           University of Toronto, Vector Institute                          University of Toronto
+                                                                     Toronto, Canada                                          Toronto, Canada
+                                                                hadizade@ece.utoronto.ca                             mostafa.mahmoud@mail.utoronto.ca
+
+                                                                      Ameer Abdelhadi                                        Andreas Moshovos
+                                                                   University of Toronto                             University of Toronto, Vector Institute
+arXiv:2203.12758v1 [cs.LG] 23 Mar 2022
+
+
+
+
+                                                                     Toronto, Canada                                           Toronto, Canada
+                                                                ameer.abdelhadi@utoronto.ca                               moshovos@ece.utoronto.ca
+
+
+
+                                            Abstract—Increasingly larger and better Transformer models        answer various questions, including solving a mathematical
+                                         keep advancing state-of-the-art accuracy and capability for          equation or writing an HTML script.
+                                         Natural Language Processing applications. These models demand           The development trend of these NLP models shows that the
+                                         more computational power, storage, and energy. Mokey reduces
+                                         the footprint of state-of-the-art 32-bit or 16-bit floating-point    more the parameters, the more powerful the model becomes.
+                                         transformer models by quantizing all values to 4-bit indexes         Unfortunately, this comes at a cost: More parameters require
+                                         into dictionaries of representative 16-bit fixed-point centroids.    more storage, data transfers, and computation [5]. From 2018
+                                         Mokey does not need fine-tuning, an essential feature as often       with GPT [6] and BERT [7] with hundreds of millions of
+                                         the training resources or datasets are not available to many.        parameters to 2021 with the 1.6 trillion parameter Switch
+                                         Exploiting the range of values that naturally occur in transformer
+                                         models, Mokey selects centroid values to also fit an exponential     transformer, parameter footprint increased from hundreds of
+                                         curve. This unique feature enables Mokey to replace the bulk         megabytes to terabytes. Computing hardware must meet their
+                                         of the original multiply-accumulate operations with narrow 3b        storage and compute needs and to do so within the constraints
+                                         fixed-point additions resulting in an area- and energy-efficient     of each use case. As these models are massive and as the on-
+                                         hardware accelerator design. Over a set of state-of-the-art          chip memory of modern silicon chips is limited, it is off-chip
+                                         transformer models, the Mokey accelerator delivers an order
+                                         of magnitude improvements in energy efficiency over a Tensor         memory accesses that account for most of the execution time
+                                         Cores-based accelerator while improving performance by at least      and energy consumption [8]–[10].
+                                         4× and as much as 15× depending on the model and on-chip                Transformer models also incur a quadratic growth in activa-
+                                         buffering capacity. Optionally, Mokey can be used as a memory        tion footprint when scaling the input sequence. For sequences
+                                         compression assist for any other accelerator, transparently stash-   of up to 128 tokens (e.g., GLUE dataset tasks [11]), buffering
+                                         ing wide floating-point or fixed-point activations or weights into
+                                         narrow 4-bit indexes. Mokey proves superior to prior state-of-       activations between layers requires anywhere between 1.5MB
+                                         the-art quantization methods for Transformers.                       to 2MB depending on the model, layer, and dataflow. Keeping
+                                                                                                              these activations on-chip is certainly possible and avoids the
+                                                                I. I NTRODUCTION                              one to two orders of magnitude higher energy and latency
+                                            Creating machines that can “understand” our language and          costs of off-chip memory. However, when processing longer
+                                         “interact” with us as we interact with each other has always         sequences such as multiple paragraphs or a book chapter,
+                                         been a dream that motivated many and captured the imagi-             activation volume can easily exceed on-chip buffer capacities
+                                         nations of even more. Transformer models have demonstrated           [12]–[15]. As an example, Figure 1 shows the total footprint
+                                         remarkable success towards this goal by tackling many natural        of activations and weights as a function of sequence length for
+                                         language understanding tasks. Recently, Open-AI’s GPT-3 [1],         BERT-Large. When the sequence length exceeds 512 tokens,
+                                         with its roughly 175 billion parameters, and Google’s Switch         activations dominate total memory footprint.
+                                         transformer with its 1.6 trillion parameters [2], proved that           Model compression reduces model size improving over-
+                                         attention-based models — given enough parameters — can               all efficiency. Recent model compression works fall under
+                                         perform tasks that they have not been explicitly trained for.        three general classes: Pruning which forces some weights
+                                         For example, with zero-shot learning [1], [3], a model that          or activations to zero [16]–[23] combined with “zero-aware”
+                                         is pre-trained for language modeling on copious amounts of           memory encoding. Knowledge distillation distills a larger,
+                                         text (including Common Crawl’s Petabyte datasets [4]) could          “teacher” model into a smaller “student” model [24]–[30].
+                                                                                                              Lastly, quantization where the parameters and/or activations
+                                                                                                              are quantized to shorter bit-widths [9], [31]–[35]. By default
+                                         Accepted at the 49th IEEE/ACM International Symposium on Computer    transformers use single-precision or 16b floating-point values.
+                                         Architecture (ISCA ’22) – DOI: 10.1145/3470496.3527438
+                         6000                                                 100%                                4) It uses fixed-point arithmetic yielding 16b fixed-point
+                                Weights   Activations                          90%
+  Total Footprint (MB)
+                         5000                                                                                        activations.
+
+
+
+
+                                                        Total Footprint (%)
+                                                                               80%
+                         4000                                                  70%                                5) It quantizes the 16b fixed-point output activations into 4b
+                                                                               60%
+                                                                                                                     indexes on-the-fly.
+                         3000                                                  50%
+                                                                               40%                                6) It generates all dictionaries off-line using a light-weight
+                         2000                                                  30%                                   method utilizing linear transformations over a pre-
+                                                                               20%
+                         1000
+                                                                               10%
+                                                                                                                     generated, model independent “Golden Dictionary”.
+                            0                                                   0%                                7) The Golden Dictionary is symmetric around zero requir-
+                                128 256 512 1024 2048                                128 256 512 1024 2048           ing only half of the entries to be stored.
+                                   Sequence Length                                      Sequence Length
+                                                                                                                  8) It uses two dictionaries per tensor, one for the bulk of the
+Fig. 1: BERT-Large: Weight and Activation Memory Footprint.                                                          values and another for outliers.
+                                                                                                                  9) Optionally, Mokey can be used as a compression plug-in
+                                                                                                                     to any other accelerator.
+Except for I-BERT [33] which quantizes all values to 8b                                                          In more detail, Mokey exploits the skewed, bell-shaped (Gaus-
+fixed-point, quantization methods still require floating-point                                                   sian) distribution of values naturally occurring in transformer
+or mixed fixed-point and floating-point units. In addition, all                                                  models: most of values are densely populated around their
+aforementioned compression methods require fine-tuning —                                                         mean (in a small range) and a small fraction of values
+further training for a few epochs over a previously trained                                                      (covering a wider range) are outliers.
+model — to compensate for lost accuracy. Fine-tuning is                                                             A key innovation in Mokey is that it adjusts the centroids in
+expensive, requires access to sufficient system resources [36]                                                   each dictionary to fit the original tensor’s Gaussian distribution
+and worse to datasets that might be unavailable to end-users.                                                    and an exponential function. This is only possible because, for
+Having to search for optimal hyperparameters and quantization                                                    the limited range of values used in transformers, a Gaussian
+per task further exacerbates the cost of fine-tuning. GOBO                                                       distribution can be approximated well by an exponential
+is a post-training compression method for weights only that                                                      function. It is this property that allows Mokey to replace 16-
+requires no fine-tuning [9]. GOBO quantizes the vast majority                                                    or 32-bit floating-point multiply-accumulate operations with
+of weights to 3b or 4b indexes into a dictionary of 8 or 16                                                      narrow, 3-bit, integer additions (see Section II).
+representative floating-point values (centroids). The very few                                                      Additionally, all the dictionaries are derived from a refer-
+remaining outlier values remain as-is (in single-precision 32b                                                   ence “Golden” Dictionary which is created using a non-linear
+floating-point/FP32 or FP16). Further, GOBO still requires                                                       quantization scheme based on Agglomerative clustering [37].
+floating-point units. Ultimately, a quantization method that                                                     The Golden Dictionary is independent of specific models and
+1) does not require fine-tuning, 2) quantizes weights and                                                        layers and the quantization method is shared across all models.
+activations, and 3) would require only fixed-point units, would                                                  This results in a lightweight post-training quantization process
+improve overall energy efficiency and execution time perfor-                                                     that simply applies a linear transformation of the Golden
+mance. This is the goal of this work.                                                                            Dictionary so that it fits the distribution of each tensor (as
+   Quantizing activations presents additional challenges com-                                                    described by the mean and standard deviation).
+pared to quantizing weights only. First, since weights are                                                          Optionally, Mokey can be used just for memory compression
+statically known, quantization is done off-line using itera-                                                     to only compress values to 4b indexes when storing them
+tive centroid selection algorithms. The runtime and energy                                                       to higher and more energy demanding levels of the memory
+overheads of these algorithms are prohibitive for the runtime                                                    hierarchy while expanding them to 16b fixed-point or FP16
+calculated activations. Quantizing activations calls for light-                                                  floating-values when requested by the lower memory hierarchy
+weight, online methods. Second, the value range of activations                                                   levels or directly by the processing units.
+is much wider than those for weights (see Table IV) [31]–[34].                                                      We evaluate Mokey over several FP16 pre-trained NLP
+Most quantization methods still require 8 bits per activation                                                    models and highlight the following experimental findings:
+or forego activation quantization altogether.
+                                                                                                                   • Mokey quantizes model parameters (weights, embed-
+   This work introduces Mokey, a post-training transformer
+                                                                                                                     dings) and activations to 4b indexes with an average
+model compression method for activations and weights that
+                                                                                                                     of 1.5% outliers for parameters and 4.5% outliers for
+reduces memory traffic and computation costs. The key char-
+                                                                                                                     activations while maintaining model accuracy.
+acteristics of Mokey are:
+                                                                                                                   • Mokey’s compute units consume 2.7× less energy and are
+ 1) It does not require fine-tuning.                                                                                 1.6× smaller than FP16 Tensor Cores units and boost
+ 2) It quantizes all weights and activations into 16-entry                                                           energy efficiency by one to two orders of magnitude
+    dictionaries of 16 bit fixed-point centroids storing all                                                         based on different configurations.
+    weights and activations as narrow indexes in memory.                                                           • Mokey as a memory-compression-only method for FP16
+ 3) It performs most computations directly on 4b dictionary                                                          models when deployed over a Tensor-cores based accel-
+    indexes without having to map them to their correspond-                                                          erator magnifies on-chip capacity and reduces off-chip
+    ing 16b centroids. This is Mokey’s most innovative aspect.                                                       traffic by 4× improving overall energy efficiency by 11×.
+
+
+
+                                                                                                             2
+                 II. M OKEY Q UANTIZATION                                             1600
+
+   It has been repeatedly shown that the values flowing through                       1400
+state-of-the-art attention-based NLP models form bell-shaped                          1200
+distributions per layer [9], [38], [39].                                              1000
+
+
+
+
+                                                                          Frequency
+   Mokey’s quantization exploits these naturally occurring dis-                       800
+tributions that all weights and most activations exhibit. In                          600
+contrast to past quantization methods that quantize each tensor
+                                                                                      400
+separately, Mokey uses a “Golden Dictionary” approach which
+proceeds as follows:                                                                  200
+
+Step 1: Golden Dictionary Generation: Mokey first generates                             0
+                                                                                             4   2         0        2        4
+and quantizes randomly generated, bell-shaped distributions                                           Value range
+with a mean of zero and a standard deviation of one. This               Fig. 2: Generating Golden Dictionary from a Random Gaus-
+step is performed once and is independent of the model under            sian Distribution Using Agglomerative Clustering.
+consideration. The resulting dictionary of centroids becomes
+Mokey’s “Golden Dictionary”. In this work, this dictionary
+contains 16b fixed-point values.                                        computation directly on indexes and does not need to convert
+Step 2: Per Tensor (Activation and Weights) Dictionary                  input activations into their 16b centroids.
+Generation: Mokey performs a profiling run of the model                    The rest of this section explains the dictionary generation
+collecting samples of the activation tensors. It uses the activa-       process and the exponential function approximation used to
+tion tensor samples and the statically known weight tensors to          replace the original floating-point multiply-accumulate oper-
+scale and shift the Golden Dictionary to best fit each tensor.          ations with narrow fixed-point operations comprising mostly
+These linear transformations utilize the target tensor’s mean           additions of dictionary indexes.
+and standard deviation. Mokey produces two dictionary sets per
+layer, one per input tensor — depending on the layer the input          B. Generating the Golden Dictionary (GD)
+is a (weight, activation) or an (activation, activation) tensor            The core of Mokey’s dictionary generation method is Ag-
+pair. Per tensor, Mokey splits the value range into two subsets:        glomerative Clustering (AC), a bottom-up approach which
+1) the Gaussian subset (G) contains the majority of values              initially considers each value as a separate cluster and that
+(more than 98% for weights and 95% for activations) which               proceeds to iteratively merge the closest clusters to reduce
+covers values near the mean. 2) The Outliers (OT) which are             overall cluster count to a desired target value. In contrast
+the rest of the values that are scattered in a much wider range.        to K-means, the method of choice in several prior works,
+Mokey’s profiling-based approach for activation works well;             Agglomerative Clustering is not affected by the initial cluster
+while individual activation values vary with the input, their           selection and results in higher accuracy in the quantized model.
+overall distribution per layer remains relatively unaffected. To        However, applying AC even when done offline given that
+validate this approach profiling runs use a single randomly             weight or activation tensors can contain nearly a million
+selected batch containing 8 input samples (however, runs with           values is impractical since AC requires O(n2 ) memory and
+even fewer input samples proved enough). Efficacy measure-              O(n3 ) runtime. Mokey overcomes this challenge by exploit-
+ment runs use a non-overlapping set of input samples from               ing the morphological similarity of the value distributions
+the validation set of each target task. While prior quantization        across tensors to apply AC using a “Golden Dictionary”
+methods use an iterative per tensor approach [9], [31], [40],           which it then scales to best fit each individual tensor. In
+Mokey’s quantization method, does so only during the Golden             essence, this approach applies AC run on a representative
+Dictionary generation. Per tensor dictionary generation is non-         distribution to estimate AC’s clustering for the per tensor
+iterative, resulting in a much faster overall process.                  distributions. The process is simple: first, generate a random
+Step 3: Pre-Encoding of Weights: Mokey then encodes all                 Gaussian distribution with 50,000 samples with a mean of
+weight tensors as indexes to their dictionaries (done offline).         zero (m = 0) and a standard deviation of one (s = 1).
+   At this point, the model is ready for inference.                     Then apply AC method on this distribution to produce the
+                                                                        quantization dictionary. To create the Golden Dictionary, we
+A. Inference: Runtime Encoding/Decoding of Activations                  repeat this process and compute an average over quantization
+   During runtime Mokey produces 16b fixed-point output                 dictionaries. Figure 2 shows the histogram for an example
+activations. These are converted to short indexes to the re-            generated distribution and the resulting Golden Dictionary. In
+spective dictionaries prior to storing to memory. Since the             this work, Golden Dictionary is generated once and is reused
+dictionaries have few entries, this is a lightweight process that       across all models studied.
+requires only a few runtime comparisons. Recall that in the
+original model, each output activation typically entails several        C. Generating Per Tensor Dictionaries
+hundreds of multiply-accumulate operations. As Section II-D                Mokey fits the Golden Dictionary (GD) to each tensor by
+will explain, the Mokey accelerator performs most of the                first determining the mean (m) and the standard deviation (s)
+
+
+
+                                                                    3
+                                                                                                         EA                  EW
+                                                                                                    A0 = a1 +b           W0 = a2 +b
+                                                                                                    A1 = a4 +b           W1 = a5 +b
+                                                                                                    …                     …
+                                                                                                            Exponential terms (E)
+
+                                                                          ∑# 𝐴𝑊 = A0W0+A1W1+ …
+                                                                                = a1+2 + ba1 + ba2 + b2 +
+                                                                                   a4+5 + ba4 + ba5 + b2 +
+                                                                         Range [0,14]      …                               Range [0,7]
+ Fig. 3: Fitting an Exponential Curve to Golden Dictionary.
+                                                                                        = (a3+a9+…)+b(a1+a4+…)+ b(a2+a5+…)+Nb2
+                                                                                                                                                             Constant
+                                                                                           Calculated as:      Sum of E Terms       Sum of E Terms
+of the tensor’s values. These two parameters are constant for                       (1) Histogram of exponents for Activations        for Weight
+                                                                                      (2) Weighted reduction                              Constant     Pre-computed
+weights and are estimated using profiling for activations. A                                                                                           when compiling
+                                                                                                                      “Constant”     Computed when quantizing
+simple linear transformation of GD is all that is needed: GD×                                                                        output of previous later
+s + m. This is done once per tensor using profiling.
+   Dictionary size affects overall accuracy. In general, the more       Fig. 4: Calculating output activations without having to expand
+entries a dictionary has, the better it represents the original         the quantized input activations and weights to their corre-
+tensor distribution and the better it preserves overall model ac-       sponding centroids.
+curacy. However, larger dictionaries incur higher overheads. To
+better balance dictionary overheads while preserving accuracy
+Mokey uses two small dictionaries per tensor. The first “Gaus-          composes MAC operations into exponent counting (histogram)
+sian” dictionary quantizes the bulk of the values, whereas the          for quantized indexes and some constants. In this simplified
+second “Outlier” dictionary maps the few remaining values of            example, all values are assumed to be positive and the layer’s
+much larger magnitude. To best explain how Mokey chooses                mean and standard deviation are assumed to be zero and one,
+the respective ranges, it is best to first discuss how Mokey            respectively.
+manages to map what were originally floating-point values and              In more detail: Since the Golden Dictionary is symmetrical
+operations into fixed-point values and operations. Unique to            around 0 and for a limited range, we first fit an exponential
+Mokey, the bulk of these operations manipulate narrow fixed-            curve to one-half of the Golden Dictionary. The other half
+point dictionary indexes instead of their respective centroids.         holds the opposite values. We used MATLAB’s curve-fitting
+                                                                        toolbox [41] to fit a curve of the form aint + b where a, b
+D. Integer Exponents for Compute Acceleration                           are the parameters that we are fitting and int is a list of
+   Mokey quantizes weights and activations to a few unique              integers from zero to half of the dictionary size. Since we
+values. For clarity, this section assumes that there is a single        have more values near zero and the density of the values
+dictionary of 16 values which all follow a Gaussian distri-             decreases as we go sideways, we apply a weighting scheme
+bution with a narrow range near its mean (outlier handling              during curve fitting to emphasize more densely populated
+is described in Section II-E). With this quantization scheme,           ranges. The weighting scheme uses a unit weight for the outer
+there are just 256 (16 × 16) possible multiplication products           bin, and doubles the weight for the bins as we move towards
+instead of the 232 possible products with the original FP16             zero. For 4 bit quantization, this results in 16 bins which are
+model. This represents an opportunity to replace the native             symmetrical around zero: 8 are positive and 8 are negative
+FP16 multiply-accumulate (MAC) operations, with counting                with identical magnitudes as their corresponding positive bin.
+per possible product (integer histogram), followed by a final           We fit the GD = aint + b curve on these 8 positive values
+multiplication of the integer counts with the product of their          where a = 1.179, b = −0.977, where int is an integer in
+respective centroids. However, we anticipate that having 256            range of [0, 7] and the fitting weights are in [27 , 20 ] range.
+counters per processing element will be impractical due to high         Figure 3 shows the resulting exponential function (curve) and
+energy and latency overhead compared to an FP16 MAC unit.               the original Golden Dictionary entries (dots).
+   We observe that a Gaussian distribution, provided that we               In the resulting 4 bit quantization, the most significant bit
+are only interested in values near its mean, can be approx-             is the sign of the value (0: positive , 1: negative) and the
+imated well with an exponential function where values are               following 3 bits are the index. For instance, if the quantized
+represented as aint + b, where int is an integer index and a            representation is 0b1011 the corresponding value would be
+and b are appropriately chosen constants. As we explain here,           −(a3 + b). We emphasize that a and b are fitted to the Golden
+this approximation enables Mokey to reduce what otherwise               Dictionary and this process is performed only once prior to
+would have been 256 possible products into just 15 possible             scaling the resulting dictionary to each tensor.
+exponent sums, making a histogram-based processing MAC                  Computing using Dictionary Indexes instead of Dictionary
+unit practical. Figure 4 illustrates, informally, how Mokey de-         Centroid Values: We can now exploit that our values fall on
+
+
+
+                                                                    4
+an exponential curve to simplify multiplication. At a high-level                                               is limited to [0, 7]. The second term (SoA2 ) is the sum of the
+the method takes advantage of property ai × aj = ai+j . After                                                  input activations for this layer. This term can be computed
+approximating the dictionary with values on an exponential                                                     while the output of previous layer is being quantized so that
+curve, we are guaranteed that when we are multiplying two                                                      is available in advance of this layer.:
+input tensors, input values are of the form θ(aint + b) × s + m                                                           n−1
+                                                                                                                          X                        intA
+                                                                                                                                                                            n−1
+                                                                                                                                                                             X                                            intA
+                                                                                                                                                                                                                                   
+                                                                                                               SoA = sA            µWi θAi a            i       = sA                (θWi sW .b + mW )θAi a                     i
+where theta is the sign, int a 3b Golden Dictionary index,                                                                i=0                                                i=0
+
+and s and m are constants, respectively, the standard deviation                                                                    n−1
+                                                                                                                                   X                       intA
+                                                                                                                                                                                             n−1
+                                                                                                                                                                                              X              intA
+                                                                                                                                                                                                                      
+                                                                                                                   = sA .sW .b               θWi θAi a               i       + sA .mW.                  θAi a     i
+and the mean of the tensor.                                                                                                        i=0                                                        i=0
+   For clarity, let us assume that the layer operates on a                                                           |                       {z
+                                                                                                                                            SoA1
+                                                                                                                                                                         }    |
+                                                                                                                                                                                               SoA2
+                                                                                                                                                                                                   {z                  }
+
+weight W and an activation A tensor. The respective values                                                                                                                                                                        (4)
+would then be of the form: θW (aintW + b) × sW + mW                                                            The third term (SoW ), similar to SoA is decomposed into two
+and θA (aintA + b) × sA + mA where θA , θW are signs,                                                          term as per Eq 5. The first term (SoW1 ) is the summation
+intW , intA are integer indexes, sW , sA are standard deviations                                               of the weights with respect to the sign of both weight and
+and mW , mA are means for the corresponding weight and                                                         activation, and it is computed similar to (SoA1 ). The second
+activation tensors, respectively.                                                                              term (SoW2 ) is a summation over weights and is a constant
+   The weight and activation values can be simplified to:                                                      that can be computed statically before inference.
+                           intA                                                                                                   n−1
+           A = θA (a            + b) × sA + mA                                                                                    X                       intW
+                                                                                                                                                                     
+                                                                                                                 SoW = sW                   µAi θWi a          i
+                             intA                                               intA                 (1)
+             = θA sA .a             +θA sA .b + mA = θA sA .a                          + µA                                       i=0
+                                                                                                                                  n−1
+                                    |     {z     }
+                                               µA                                                                                 X                                               intW
+                                                                                                                                                                                           
+                                                                                                                      = sW                  (θAi sA .b + mA )θWi a                     i
+                                                                                                                                  i=0
+                       intW
+        W = θW (a             + b) × sW + mW                                                                                            n−1
+                                                                                                                                        X                                                         n−1
+                                                                                                                                                                                                    X                        
+                                                                                                                                                                 intW                                                 intW
+                             int                                                   int               (2)              = sW .sA .b                   θAi θWi a        i             + sW .mA .                 θWi a       i
+           = θW sW         .a W +θ      W sW .b + mW             = θW sW         .a W         + µW                                          i=0                                                     i=0
+                                    |           {z           }                                                            |                        {z                          }     |                   {z                   }
+                                               µW
+                                                                                                                                                  SoW1                                                  SoW2
+                                                                                                                                                                                                                                  (5)
+   where a is a fitted parameter which is constant for all tensors
+across all layers and models, a sign (θ), intA and intW are                                                    The last term (P oM ) is decomposed in Eq. 6 to 4 terms.
+dictionary indexes, SA and SW are per tensor scalars scaling                                                   The first term is a summation of the sign of multiplication
+factors, and µA and µW are shifts.                                                                             (P oM1 ) which is computed during inference. The second and
+   Each output activation is a sum of activation times weight                                                  the third terms are the summation of activations’ sign (known
+products, which given the form of the input values can be                                                      when quantizing last layer) and weights’ sign (known before
+expanded into a sum of four terms:                                                                             inference) and the last term is a constant.
+                                                                                                                          n−1
+                                                                                                                          X                                n−1
+                                                                                                                                                           X
+ n−1               n−1
+                                                                                                                                                                                                                            
+ X                 X                    intA
+                                                             
+                                                                                 intW
+                                                                                                               P oM =            µAi .µWi             =             θAi sA .b + mA                 θWi sW .b + mW
+        Ai .Wi =            θAi sA .a        i + µA
+                                                   i
+                                                                  θWi sW .a          i + µW
+                                                                                           i                              i=0                              i=0
+ i =0              i=0                                                                                                                      n−1                         n−1
+                                                                                                                                        2
+                                                                                                                                            X                           X
+                              n−1
+                                                                                                                                                                               
+                              X                 int +intW
+                                                                                                                     = sA .sW .b                   θAi θWi + sA .mW .b     θAi
+              = sA .sW                  θAi θWi a Ai      i
+                                                                                                                                            i=0                                            i=0
+                              i=0                                                                                         |                  {z                  }       |               {z              }
+                   |                          {z                           }                                                            P oM1                                        P oM2
+                                              SoI
+                                                                                                                                              n−1
+                            n−1
+                            X                                                                      (3)                  + sW .mA .b
+                                                                                                                                              X            
+                                                                                                                                                        θWi + n.mA .mW
+                                             int
+                   + sA             µWi θAi a Ai                                                                                              i=0
+                                                                                                                                                              |   {z  }
+                            i=0                                                                                               |              {z            }    P oM4
+                                                                                                                                            P oM3
+                       |                {z               }
+                                        SoA
+                            n−1                                      n−1
+                                                                                                                                                                                                                                  (6)
+                            X                       intW
+                                                                    X                    
+                   + sW             µAi θWi a            i       +             µAi .µWi                        In conclusion computation can proceed as follows: 1) Add
+                             i=0                                     i=0
+                       |                 {z                  }       |          {z        }                    the indexes (3 bit values) for a weight and an activation
+                                        SoW                                    P oM
+                                                                                                               we want to multiply. 2) XOR the sign bit of weight and
+   The first term (SoI) is the sum of aintAi +intWi . Assuming                                                 activation and based on that result, 3) increment or decrement
+4b quantization (3b indexes plus 1b signs), intA +intW will be                                                 the occurrences tables for SoI (15 entries), SoA1 (8 entries),
+in range of [0+0, 7+7] = [0, 14] which given the quantization                                                  SoW1 (8 entries), and P oM1 (1 entry). 4) After filling the
+contains 15 unique values. Since the exponents are limited to                                                  occurrences tables (which typically will require thousands of
+15 values we can first add intA and intW and count how many                                                    cycles given the tensor sizes), multiply each count with its
+times each exponent occurs (count how many a0 , a1 ...a14                                                      corresponding value (a0 ...a15 ) and accumulate all products
+we have overall) then with 15 MAC operations (occurrences                                                      into a single value. 5) The final values are multiplied by their
+×a0 + ...+occurrences ×a14 ) we can compute the SoI term.                                                      coefficients and added with pre-computed terms (which at this
+   The second term (SoA) can be decomposed into two                                                            point are constants) (SoA2 , SoW2 , P oM2,3,4 ) producing the
+terms as per Eq. 4. The first term (SoA1 ) is a summation                                                      final output activation.
+of activations with respect to the sign of both weight and                                                        The output activation can then be quantized by comparing
+activation. This term is computed during computation similar                                                   it against the dictionary for the output activation tensor. In
+to SoA, but it needs smaller counters as the range of activation                                               practice, we find that 16-entry dictionaries prove sufficient.
+
+
+
+                                                                                                           5
+Values are quantized to a 4b indexes which are a 3b index                                                                           16 values
+into the stored dictionary entries and a 1b sign.
+
+
+
+
+                                                                                     OT Pointers Quantized Values
+                                                                                                                      9     2                          7
+
+
+
+
+                                                                                                                                                           per group
+                                                                                                                                                            4 lines
+E. Outliers
+
+
+
+
+                                                                                                                                                                       Memory Controller
+   Outliers (OT) are exceedingly rare and represent less than
+2% of weights and 5% of activations (varies per model
+and task). However, they do span over a disproportionally                                                            4b
+large value range. To quantize outliers, we adapt the Golden                                                          2         1     31
+Dictionary approach.
+   We could naı̈vely use a common dictionary for all values.                                                           6b     6b      6b      6b
+                                                                                                                    OT/group0              OT/group1
+Starting with the 16 centroid dictionary for the G values, we
+found that to support outliers, we need to widen the index                                                                 Off-Chip Memory
+range to int = 45. Encoding the index to such a dictionary                                                                Fig. 5: DRAM layout
+would require 6(index)+1(sign)=7 bits per value. We use a
+two-prong approach to limit index lengths to 4b. First, we use          98.5% G values and 1.5% outliers. G values are stored in the
+a separate outlier dictionary. Second, we take advantage of             form of exponents (4-bit) and outliers are stored as small (16
+the exceedingly rare occurrence of outliers to store all values,        entry–4-bit) dictionary indexes where the dictionary entries
+outlier or Gaussian, using a 4b index. A separate, space-               are 16b fixed-point values. A list of pointers identifies which
+and access-efficient list of pointers explicitly identifies which       indexes are to the outlier dictionary. Third, Mokey performs
+indexes correspond to outliers (all others index to the Gaussian        a run over a randomly selected batch of inputs to generate
+dictionary). Section III-A describes the encoding.                      the dictionaries for the activations. The profiling is to find the
+   Outliers require different handling during computation as            mean, standard deviation, and the outlier bins that activations
+they do not fit under the same exponents (0 to 7) as the                are using. The dictionaries and other constants per tensor
+Gaussian values. For any product where at least one of the              are stored along with the model. The space needed for this
+values is an outlier, Mokey converts the values into their              metadata pales in comparison with the size of the respective
+centroids and performs a multiply-accumulate. Since outliers            tensors; a G dictionary (8×16b entries), an OT dictionary
+are exceedingly rare, this is a rare occurrence (less than 4% of        (16×16b), plus a few constants and a list of outlier pointers.
+the multiplications in BERT). However, unless further action
+is taken, the centroids would be FP16 numbers necessitating              III. M OKEY M EMORY L AYOUT AND P ROCESSING U NITS
+FP16 capable MAC hardware. Fortunately, Mokey is further                   This section describes the memory encoding and processing
+enhanced to require only fixed-point values and hardware.               units of Mokey. Combined they reduce memory traffic and
+F. Integer Computation Throughout                                       footprint while performing most computations using narrow
+                                                                        fixed-point arithmetic.
+   Integer compute units are faster and more energy-efficient
+than floating-point units. Mokey maps what were originally              A. Off-Chip Memory Layout
+floating-point computations to the fixed-point (integer) do-
+                                                                           To take advantage of Mokey’s quantization for reducing off-
+main. The conversion to fixed-point arithmetic is done during
+                                                                        chip memory traffic and footprint, we need to map Gaussian
+profiling. The process starts after the mean, standard deviation,
+                                                                        and outlier values in a DRAM-friendly data container. Per
+the dictionary (bins) that we are going to use for outliers and
+                                                                        tensor, Gaussian and outlier values are represented as 4b
+the few constants (SoW, PoM) have been derived. To convert
+                                                                        indexes. Since outliers are rare, Mokey stores all values using
+these parameters to integer, Mokey first needs to set the total
+                                                                        4b indexes as shown in Figure 5. An extra list of pointers
+bit-width (b) and to compute the number of fractional bits per
+                                                                        identifies which of those indexes are outliers. The pointers
+layer (f rac). The number of fractional bits (f rac) needed is:
+                                                                        are encoded as follows: Conceptually, the regular “Quantized
+              f rac = b − ceil (log2 (max − min))            (7)        value” 4b index array is split into groups of 64, 4b indexes.
+                                                                        To identify those indexes that are outliers, the “OT Pointers”
+where max and min are the maximum and minimum values                    list first stores outlier count per group, followed by a list of
+that appear for the layer. The float (f l) to fixed-point(f x)          6b indexes marking their relative position within the group. In
+mapping then is:                                                        the example shown, group0 has two outliers at positions 1 and
+                f x = round(f l × 2f rac )/2f rac            (8)        31. This container is DRAM-friendly as accesses to the two
+                                                                        sub-arrays will be done through two streams, each proceeding
+G. Summary                                                              through the respective areas sequentially with the bulk of
+   In summary, Mokey quantized an input model as follows:               accesses going to the “Quantized Values” area. For simplicity,
+First, it generates the Golden Dictionary for quantization. This        at an appropriate level of the on-chip hierarchy the values can
+step is done once and the output is reused across all models.           be expanded to 5b (dictionary selection/1b, sign/1b, centroid
+Second, it quantizes the model’s parameters and embeddings.             index/3b) indexes. This facilitates single stream accesses per
+On average, these statically known values consist of about              tensor.
+
+
+
+                                                                    6
+B. Processing Units                                                    a local outlier-is-present signal isOtlCur = isOtlA ∨
+                                                                       isOtlW. A serial, cascaded leading-one-detector across all
+   Mokey hardware accelerator enables compute units to di-             GPEs detects the first GPE with outlier (isOtlCur = 1). The
+rectly operate on the quantized indexes using narrow fixed-            selected “leading” GPE with an outlier asserts its otlSel
+point processing elements (PEs) for the bulk of computation            signal (otlSel = 1) forcing the otlSel signals to be
+(Gaussian “G” values). Only for products where at least one of         deasserted (otlSel = 0) for all other GPEs. The one-hot-
+the operands (weight or activation) is an outlier (“OT”), Mokey        encoded otlSel is used to route the corresponding indexes
+PEs convert the values into their respective int16 centroids.          to the OPP (routing is done via per GPE AND gates and an
+This requires a simple lookup to the respective dictionary.            OR level shared across all GPEs).
+Tile architecture: Figure 6 shows the architecture of process-
+                                                                          The Outlier/Post-Processing (OPP) unit: First, when an
+ing unit of the Mokey hardware accelerator. As shown on the
+                                                                       outlier has been detected, where the isOtl signal is asserted,
+left, the accelerator comprises an array of 8 cascaded Gaussian
+                                                                       the OPP uses its G/OT-LUT to retrieve the outlier value and
+PEs (GPEs) which share an outlier/post-processing circuitry
+                                                                       performs a MAC operation. Second, in Post-processing where
+(OPP). At peak, each GPEi processes a group of compressed
+                                                                       sData will hold one of the summations (SoI, SoA1 , SoW1 ,
+activations (A0···7 ) and the corresponding group of compressed
+                                                                       and P oM1 ). A single PE will be selected iteratively using the
+weights (W0···7 ). The GPEs process the Gaussian-distributed
+                                                                       selector pePESel. The G/OT-LUT will operate as a G-LUT
+inputs only; the outliers are sent to the OPP unit for lookup
+                                                                       and produce the bases of the summations. Finally, the bases
+and accumulation. The OPP unit is activated only when an
+                                                                       from the G-LUT and the summations from the GPEs will be
+outlier is received, or by the end of the computation for post-
+                                                                       multiplied and accumulated.
+processing. At a high-level, most activation and weight pairs
+will use Gaussian values and will be processed by the GPEs             Output Activation Quantizers: Prior to storing them in
+that accumulate the partial sums described in Section II-D.            memory, the output activations (OA) of each layer are quan-
+The occasional pairs containing outliers are processed in the          tized using the prepared OT and G dictionaries. Figure 7
+OPP. Since these are rare, they are processed one at a time for        shows the organization of the quantization units. An output
+simplicity and area-efficiency. After the full tensors have been       activation OA is compared with every centroid from both
+processed, a final step uses the OPP to accumulate and scale           the G and the OT dictionaries. Since the dictionary values
+the various summations into the output 16b activation. The             are sorted, and assuming 16 values per dictionary, the output
+unit processes activations and values that have been encoded           of the comparators will be a 32b vector of 0s followed by
+in 5b (1b dictionary index, 1b sign, 3b dictionary index).             1s. A leading-one detector drives two 32-to-1 multiplexers,
+                                                                       respectively, selecting the two corresponding 16b centroids CL
+   The GPE is detailed in Figure 6 (middle). In the core of each
+                                                                       and CH: the one corresponding to the leading 1 position and
+GPE, four individually sized Counter Register-Files (CRFs)
+                                                                       the one before it or the same if the position happens to be
+accumulate the SoI, SoA1 , SoW1 , and P oM1 summations
+                                                                       the first one. To determine the nearest to the OA centroid of
+(Section II-D). The organization of the CRF units is illustrated
+                                                                       the two, OA is subtracted from each of CL and CH, and the
+in Figure 6 (right). Each line (addressed by wAddr) can
+                                                                       two differences are compared to find the smaller of the two
+be incremented or decremented using up/down, if wEn
+                                                                       identified by the signal Ci. The relative position of this centroid
+is asserted. The read address, rAddr is used to scan the
+                                                                       is then encoded as a 5b index. If written off-chip, a controller
+register-file content during post-processing using the post-
+                                                                       packs them to the format of Figure 5.
+processing address ppAddr. The multiplication output sign
+(θA θW ≡ sgnA ⊕ sgnA) is used to increment/decrement all
+CRFs. SoI is counted using a 15 × 8 CRF, and is addressed
+with A + W ≡ idxA+idxW. SoA1 is counted using a 8 × 8                  C. Using Mokey For Memory Compression Only
+CRF, and is addressed with A ≡ idxA. SoW1 is counted
+using a 8 × 8 CRF, and is addressed with W ≡ idxW. Finally,               Optionally, Mokey can be used just as a memory compres-
+P oM1 is counted using a 1 × 8 CRF (a single byte). As                 sion method where the values are transparently converted to
+the post-processing is performed only once for each layer, its         fixed-point 16b or (FP16 if desired) when written or read from
+timing is less critical. Thus, the post processing is performed        an appropriate level in the memory hierarchy. In this case,
+serially. Only one of the summations (SoI, SoA1 , SoW1 ,               when reading values, lookup tables can convert the indexes
+and P oM1 ) is selected for post processing as sData, and              into their corresponding centroids. Quantizers placed just
+is selected by the control signal sumSel.                              before the memory level pack the activation values into indexes
+   Scheduling outliers processing: Since it is exceedingly             to dictionaries. When the compression targets an on-chip
+rare but possible that more than one GPE receive an outlier            buffer, the activations are best encoded with 5b (1b dictionary
+simultaneously, the processing of outliers must be scheduled:          OT or G, 1b sign, 3b index), whereas when writing to off-chip
+the lowest index GPE that contains an outlier is selected for          memory, the Mokey off-chip memory format would improve
+processing; all other GPEs with outliers send a hold signal            space efficiency. Using the less efficient 5b representation on-
+back through the input channel (hldA, and hldW, to hold                chip avoids the overheads of creating the OT Pointer metadata
+the activations and weights, respectively). Each GPE generates         and the need for two access streams per tensor.
+
+
+
+                                                                   7
+                                                                                                                                                                                                                                             Activations
+
+
+
+
+                                                                          mulSelA
+                                                            addSelA
+
+
+
+
+                                                                          mulCnst
+                                                            addCnst
+
+
+
+
+                                                                                                ppAddr
+                                                                                                                                                                                                                                             Channel Ai
+
+
+
+
+                                                                                                ppEnb
+
+
+
+
+                                                                                                                                                                                                                                            isOtlA
+                                                                                                                                                                                                                                            sgnA
+                                                                                                                                                                                                                                            hldA
+
+
+                                                                                                                                                                                                                                                        idxA
+                                                                                                                                                                                                                                   otlA
+                                                                                                                                                                                                                                                                                                                    up/down
+                                                                                                                                                                                                                                                                                                                                   -1    1
+                                                                                rD1 rA1                                                                                                                                                                                                                                              0   1
+                                 wData
+                                                                                                                                A7
+                                Output
+                              accumulator                                           G/OT                                    otlA                                                                                                                  θA
+                                 8×16
+                                                     0
+                                                                                     LUT         isOtl                                                                                                                                                                                                                    wData
+                                                                                                                                                                                                    otlW
+                             wAddr
+
+
+
+
+                                                                                    16×16
+                                             rAddr
+
+
+
+
+                                                           mulSelB
+                                                           addSelB                                                        GPE7
+
+
+
+
+                                                                                                                                                                                                                                                                                                                       wAddr
+                                                                                                                                                                                                    hldW
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                 rAddr
+                                                                                                                                                                          Channel Wi
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                         1
+                                                                                                                                              A6                                                                                                                                                            wAddr
+
+
+
+
+                                                                                                                   otlW
+
+
+
+
+                                                                                                                                                                           Weights
+                                                                                                                                                                                                   isOtlW                                                                                          θAθW                                      rAddr
+                                     rData                                      rD2 rA2                                                    otlA                                                     sgnW
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                         0
+                                                                          1
+                                                                                                              W7                                                                                                                  θW
+                                                                                                                   sData                                                                                                                                              A+W          A
+
+
+
+
+                                                                                                                                                                                                                                                                            15×8
+                                                                                                                                                                                                                                                                                                                               rData
+
+
+
+
+                                                                                                                                                                                                                                                                                       8×8
+
+                                                                                                                                                                                                                                                                                             8×8
+
+                                                                                                                                                                                                                                                                                                      1×8
+                                                                                                                                                                                                   idxW
+                                                                          0
+                                                                                                                                       GPE6
+
+
+
+
+                                                                                                                                otlW
+                                                                                                                                                              A0                                                                       SoI
+    ppEnb                                                             isOtl                                                W6                                                                                                          SoA1
+                                                                                                                                sData                      otlA
+                                                                                                                                                                                                   sData                               SoW1                                                                           rData
+                                              ppPESel
+                                                                                                                                                         GPE0
+                                                                                                                                                                                                                                       PoM1
+                                                                                                                                                                                                                                                                                                              Counters
+
+
+
+
+                                                                                                                                                  otlW
+    Outlier/Post-                                                                                                                           W0                                                                                                                                                               Register-File
+    Processing (OPP)
+                                                                                                                                                   sData
+                                                                                                                                                                                                            Gaussian PE (GPE)                                                                                  (CRF)
+                                                                                                             Fig. 6: Architecture of Mokey Hardware Accelerator.
+
+                                                                                                                                                                                                            Decompression Engine
+                                      G_DICT0            G_DICT1 G_DICT2                    OT_DICT14 OT_DICT15                                                        however, we also 4b   study STS-B and SQuAD.                       32x16
+
+
+
+
+                                                                                                                                                                                                               Quantized Values
+                                                                                                                                                                                                                                           LUT
+
+                                                                                                                          16b CL
+                                                                                                                                       -
+                                                                                                                                                                       BERT: 64bBidirectional
+                                                                                                                                                                                         1b       Encoder Representations from Trans-
+
+
+
+
+                                                                                                                                                                               Memory Controller
+                                                                                                                                                                                                                                          32x16
+                                                                                                                                                                                                                                           LUT
+
+
+
+
+                                                                                                                                                                                                                                                       FP 16 values
+                                                                                                                                                   < Ci                formers (BERT) [7] is a well-known and widely used trans-
+                                                                                                                           16b CH                                      former model for NLP applications such as similarity detec-
+    Output Activation (OA)
+
+
+
+
+                                                                                                                                                                                                                                          32x16
+
+                                               16b                                                                                     -                                                                                                   LUT
+
+                                 16b
+                                                                                                                                                                       tion, sentiment
+                                                                                                                                                                                   64b
+                                                                                                                                                                                           analysis, and question answering. We apply
+                                                                                                                                                                                                                                   OT Set
+                                             <             <          <                         <        <                                                             Mokey on BERT-Base (12 Encoders, 110M parameters) and
+                                                                                                                                                                       BERT-Large (24 Encoders, 340M parameters) on MNLI (The
+                                                                      Leading 1                                                                                        Multi-Genre Natural Language Inference), STS-B (Semantic
+                                                                      detector
+                                                                          32b
+                                                                                                                                                                       Textual Similarity Benchmark) from GLUE benchmark, and
+                                                                                                                                                                       SQuADv1 [46] (Stanford Question Answering Dataset) task.
+                                                                          Encoder
+                                                                           5b
+                                                                                                                                                                       RoBERTa: A Robustly Optimized BERT Pretraining Ap-
+                                                                                      -     1                                                                          proach (RoBERTa) [43] shares the same architecture as BERT
+                                                                                                                                                                       but benefits from an optimized training recipe that leads to
+                                                                           Quantized OA                                                                                higher accuracy. We evaluate Mokey on RoBERTa-Large using
+                                                                                                                                                                       MNLI, STS-B and SQuAD v1 tasks. RoBERTa-Large has 24
+                                                     Fig. 7: Output Quantization Engine.                                                                               Encoder layers and a total of 340M parameters.
+                                                                                                                                                                       DeBERTa: Decoding-enhanced BERT with disentangled at-
+                                                                                                                                                                       tention (DeBERTa) [42] is a state-of-the-art transformer model
+                                                                          IV. E VALUATION                                                                              that increases the accuracy of Transformers by decoupling
+                                                                                                                                                                       the position of the tokens from their context embedding. We
+A. Model Task Performance
+                                                                                                                                                                       evaluate DeBERTa-XL (48 Encoder layers, 750M parameters)
+   We first evaluate the effect of Mokey quantization on task                                                                                                          on the MNLI task since trained MNLI models are publicly
+performance over various models, tasks, and datasets. Task                                                                                                             available.
+performance refers to how well the model performs each                                                                                                                    Table I reports the resulting task performance under the
+task. The metric used is task-dependent. We show that Mokey                                                                                                            “Score” columns. The “FP Score” column reports the task
+maintains task performance without requiring fine-tuning.                                                                                                              performance of the original FP32/FP16 models, whereas the
+   We applied Mokey on the following models: DeBERTa [42],                                                                                                             other two score columns report task performance when we
+a recent model from Microsoft that is in the top-ranked models                                                                                                         quantize weights alone or weights and activations. The higher
+on GLUE [11] benchmark, on Facebook’s RoBERTa [43]                                                                                                                     the score, the better the model performs. The change in task
+which is used widely used in sentiment analysis, and on                                                                                                                performance is also listed under the “Err” columns. Overall,
+models from Google’s BERT family of models [7] which                                                                                                                   Mokey is within 1% of the FP baseline and closer for the most
+powers the search engine to show more related results in                                                                                                               recent DeBERTa. The table also lists the fraction of outlier
+search queries. The pre-trained models were obtained from                                                                                                              values in weights (W OT%) and activations (A OT%). In the
+the Hugging Face Model hub [44]. The Golden Dictionary                                                                                                                 worst case, outliers account for just 2.5% of the overall values.
+was created by generating a random normal distribution and                                                                                                             In some applications, there may be enough on-chip buffering
+applying Agglomerative Clustering using the SciKit-Learn                                                                                                               to store the activations as-is. Accordingly, the table also reports
+library [45]. Our main benchmark to evaluate model accuracy                                                                                                            task performance when Mokey is applied only to weights.
+is the MNLI task in the GLUE dataset, as it is the most                                                                                                                Task performance is, as expected, slightly better and, in some
+sensitive task to quantization and has the most comprehensive                                                                                                          cases, even better than the FP baseline. Such variations in task
+set for language inference in the dataset [9], [39]. Furthermore,                                                                                                      performance are normal. The outlier fraction is also noticeably
+MNLI trained models are publicly available. Where possible,                                                                                                            lower for the weights, which is also expected as the activations
+
+
+
+                                                                                                                                                                   8
+                                             TABLE I: The Effect of Mokey Quantization on Task Performance (see text for definition.)
+                                                    Model Configuration                                  Weight only Quant.                   Weight + Activation Quant.
+                                            Model           Task         Metric             FP Score   W OT%         Score    Err             A OT%          Score     Err
+                                          BERT-Base         MNLI         Acc-m               84.44      1.6          84.80    -0.36             4.5          84.22     0.22
+                                          BERT-Large        MNLI         Acc-m               86.65      1.51         86.39    0.26               4           85.69     0.96
+                                          BERT-Large        STS-B        Spearman            90.25      1.51         90.12    0.13              2.5          89.51     0.74
+                                          BERT-Large        SQuAD        F1                  93.15      1.54         93.17    -0.02             1.7          92.22     0.93
+                                          RoBERTa-Large     MNLI         Acc-m               90.58      1.48         90.38    0.20              4.1          89.81     0.77
+                                          RoBERTa-Large     STS-B        Spearman            92.41      1.48         92.25    0.16              4.4          91.52     0.89
+                                          RoBERTa-Large     SQuAD        F1                  93.56      1.48         93.25    0.31              2.9          92.58     0.98
+                                          DeBERTa-XL        MNLI         Acc-m               91.75      1.2          91.78    -0.03             4.3          91.18     0.57
+
+
+
+                                                                                                              TABLE II: Area, Cycle Count and Energy for BERT-Base.
+           Accuracy (BRET - Base MNLI)
+
+
+
+
+                                           85.00%
+                                                                                                                                              Compute                BERT-Base/512KB buffer
+                                           84.17%
+                                                                                                                                                             2
+                                                                                                               Architecture           Units    Area (mm )            Cycle Count   Energy (J)
+                                           83.33%
+                                                                                                               FP16 Tensor Cores      2048            16.1             167M           0.36
+                                           82.50%                                                              FP16 GOBO              2560            15.9              52M           0.17
+                                                                                                               Mokey                  3072            14.8              29M           0.09
+                                           81.67%
+                                           80.83%
+                                           80.00%                                                           are divided into banks to meet the target access time and
+                                                    1
+                                                        3
+                                                            5
+                                                                7
+                                                                    9
+                                                                        11
+                                                                             13
+                                                                                  15
+                                                                                       17
+
+
+
+
+                                                                                                            bandwidth. Area and power for the on-chip memories are
+                                                                                                            modeled using CACTI [50].
+                                                            Profiling Trial #
+                                                                                                               We use post-layout energy and area estimates. All designs
+                                                                                                            are implemented in Verilog. Major arithmetic units are in-
+                                         Fig. 8: Profiling effect on accuracy.
+                                                                                                            stantiated from Synopsys DesignWare Building Block IP Li-
+                                                                                                            brary [51]. For synthesis, we use Synopsys’ Design Compiler
+                                                                                                            (ver. N-2017.09) [52] with a 65nm TSMC technology node
+exhibit a much larger range, as corroborated by the use of
+                                                                                                            targeting 1 GHz frequency and for placement and routing, we
+longer datatypes for activations in prior quantization work.
+                                                                                                            use Cadence Innovus (ver. 20.13) [53]. Power consumption
+   Our experiments show profiling has almost no effect on
+                                                                                                            is estimated in Innovus using the post-layout netlist with an
+the accuracy: Figure 8 shows the accuracy after profiling
+                                                                                                            activity factor generated by Intel ModelSim.
+model multiple times with different random samples of the
+training set and the result of profiling is almost identical each                                           C. Mokey Acceleration
+time. The reasons behind this are I) In our method, the bins                                                   The baseline architecture uses FP16 — an FP32 baseline
+get exponentially wider when the index (aindex ) gets larger.                                               which is more common today, would have resulted in higher
+This means the bins that will contain outliers are wide and                                                 benefits for Mokey. Table II reports area used by their process-
+capture an extremely wide range of values. II) weights in the                                               ing elements and their count for the baseline Tensor Cores,
+model act as a regularizer for the activations and shape the                                                GOBO (refer to section V) and Mokey. Since the area of
+output distribution. Also, transformer-based models have layer                                              each Mokey processing element (PE) is smaller than either
+normalization and softmax which limits the range of values.                                                 those of Tensor Cores or GOBO, Mokey can afford to pack
+                                                                                                            more elements within less area. Moreover, since Mokey stores
+B. Hardware Evaluation Methodology
+                                                                                                            values using short indexes, it does not need wide memories to
+   As our baseline, we use a spatial 2048 FP16 Tensor Cores-                                                supply its units. For example, the Mokey PE is 39% smaller
+based accelerator [47], [48] and we sweep a range of possible                                               compared to a tensor-core unit with an equivalent compute-
+on-chip buffer capacities. We use this baseline to demon-                                                   capability (MAC/cycle). This superior processing power per
+strate that Mokey compression alone can benefit an existing                                                 area and energy vs. the baseline is an additional advantage of
+accelerator and to also demonstrate that a design using the                                                 Mokey.
+Mokey processing units can outperform it. We also compare                                                   Comparison with Tensor Cores: We first compare Mokey
+with GOBO [9]. The dataflow for all designs is optimized to                                                 with the baseline Tensor Cores accelerator reporting execution
+minimize the number of off-chip transactions.                                                               time performance and energy efficiency. All measurements
+   Cycle counts are measured using a custom cycle-accurate                                                  are normalized over the corresponding baseline configuration.
+simulator that uses DRAMSIM3 [49] to model DRAM trans-                                                      Tensor Cores and Mokey use the same compute area and the
+actions for a DDR4-3200 dual-channel main memory. The                                                       same buffer capacity – total chip area for Mokey is smaller
+simulator has been tested with various microbenchmarks and                                                  as it uses narrower buffers and interconnect. Figure 9 reports
+verifies the correctness of the simulated output. Memories                                                  the execution time in cycles for the baseline configurations.
+
+
+
+                                                                                                        9
+                                                                          256KB on-chip buffer, Mokey increases compute/memory
+                                                                          overlap from 27% to 58%. Also, since Mokey can fit more
+                                                                          weights and activations on-chip it can better reuse values and
+                                                                          reduce the overall off-chip traffic. 3) Energy: Mokey compute
+                                                                          units are extremely energy efficient. Mokey, despite having
+                                                                          1.5× more compute units, it burns 2× less energy as they
+                                                                          perform mostly counting on narrow fixed-point indexes.
+                                                                          Comparison with GOBO: Figure 12 shows that Mokey is
+                                                                          faster than the GOBO accelerator. The figure shows Mokey’s
+                                                                          execution time normalized over GOBO with the same on-chip
+                                                                          buffer size. Whereas GOBO stores activations in FP16, Mokey
+                                                                          quantizes them to 4b. This magnifies on-chip buffer capacity,
+                                                                          boosting performance for tasks with longer sequence lengths
+    Fig. 9: Baseline Accelerator: Inference Cycle Counts.                 (e.g., SQuAD). With larger on-chip buffers, Mokey remains
+                                                                          faster albeit at a lesser degree since the source of performance
+                                                                          benefits shifts more to the difference in peak compute capa-
+                                                                          bility. Another advantage of Mokey is that its PEs are more
+As expected, using larger on-chip buffers decreases execution
+                                                                          efficient as they perform fixed-point operations vs. GOBO’s
+time as 1) it allows for more overlap between off-chip accesses
+                                                                          FP16 PEs. This is shown in Figure 13 which reports the overall
+and on-chip compute, and 2) reduces the number of off-chip
+                                                                          energy efficiency of Mokey over GOBO. Mokey consumes less
+transactions due to higher reuse.
+                                                                          energy and is 9× more energy efficient compared to GOBO
+   Figure 10 shows that Mokey reduces execution time com-                 with smaller buffers. The energy efficiency remains high at
+pared to the baseline. Although Mokey has some overheads                  2× even with the 4MB on-chip buffers.
+for computing outliers and for the post-processing stage, on
+average it outperforms the baseline by 11× when the buffers
+                                                                          D. Using Mokey for Memory Compression Only
+are small and by 4.1× faster for the large 4MB buffers.
+   Figure 11 also reports the resulting relative energy efficiency           We consider using Mokey only as compression mechanism
+for the Mokey accelerator. Even for the 4MB on-chip buffer                (weights and activations) over the Tensor Cores baseline.
+configurations, the Mokey hardware accelerator boosts energy              Larger on-chip buffers store more values on-chip, resulting
+efficiency by 13×. For the 256KB configurations Mokey is                  in 1) better overlap between computation and memory trans-
+78× more energy efficient.                                                actions, and 2) a reduction in DRAM transactions.
+Advantages of Mokey Hardware Accelerator: Table III                       Mokey Off-Chip Compression: In the first set of exper-
+shows breakdowns of area, performance, and energy for Tensor              iments, Mokey compresses values off-chip only. When the
+Cores and Mokey with BERT Large on SQuAD. 1) Area:                        values are transferred to the chip, they get expanded into FP16
+Since Mokey PEs are 39% smaller, more can fit in the same                 centroids. Figure 14 shows performance normalized over the
+compute area. Furthermore, since Mokey computes directly on               corresponding baseline configurations that do not use Mokey
+quantized indexes, it requires on-chip buffers with significantly         compression. The average speedup for a small 256KB buffer is
+narrower data interfaces and interconnects with area and                  about 3.9× and it improves when the on-chip buffer gets larger
+energy benefits. For example, due to the narrower interface,              to 4.3× for a 4MB buffer. These models are mostly memory
+Mokey’s 1MB buffers use as much area as the 256KB buffers                 bound, and with the smaller on-chip buffers, compute units
+of Tensor Cores. However, in this evaluation, we did not                  consume the data faster than DRAM transactions resulting in
+use this to Mokey’s advantage, e.g., by introducing more                  idle time. These configurations most of the time cannot overlap
+units. Instead we used an iso-compute-area and iso-buffer-                computation with off-chip memory transactions. As the on-
+capacity constraint and showed that Mokey outperforms Tensor              chip capacity grows larger, computation and off-chip access
+Cores even under this worse for Mokey constraint. If we were              overlap becomes increasingly frequent.
+to account for this advantage of Mokey, combined the 4×                      In general, off-chip compression reduces DRAM energy
+reduction in memory area and the reduction of values from                 consumption by a factor of 4× reducing overall relative energy
+16b to 5b, would translate into a nearly 13× amplification of             (Figure 15). With the 256KB on-chip buffer, on average 82%
+on-chip memory capacity. Section IV-D shows that the Mokey                of total energy is due to memory transactions. This is less with
+accelerator is still better than the Tensor Cores even when               the larger on-chip buffers as they access DRAM less. With the
+the latter uses Mokey just for on- and off-chip memory com-               4MB on-chip buffer, memory transactions account for 53% of
+pression. Processing with Tensor Cores requires converting the            energy consumption. Regardless, Mokey off-chip compression
+indexes into the corresponding centroids via lookup tables.               improves energy efficiency of the 256KB configuration by 11×
+   2) Performance: Mokey’s on-chip compression allows more                and by 7.8× for the 4MB configuration.
+values to be stored on-chip and increases the overlap of                  Mokey On-Chip Compression: In this application, Mokey
+compute and memory transactions. For example, with the                    stores 5-bit indexes in on-chip buffers and expands the
+
+
+
+                                                                     10
+        Fig. 10: Mokey Accelerator Speedup over Tensor Cores.                  Fig. 11: Mokey Energy Efficiency over Tensor Cores.
+
+
+
+
+           Fig. 12: Mokey Accelerator Speedup over GOBO.                         Fig. 13: Mokey Energy Efficiency over GOBO.
+
+      TABLE III: Area, Performance and Energy breakdown for Tensor Cores and Mokey for BERT Large on SQuAD.
+                                             256KB on-chip buffer              512KB on-chip buffer        1MB on-chip buffer
+                                             Tensor Cores   Mokey             Tensor Cores   Mokey        Tensor Cores   Mokey
+         Area (mm2 )
+            On-chip Buffer Area                  13.2        4.7                  16.8         8.0            24.7        14.6
+            Compute Area                         16.1       14.8                  16.1        14.8            16.1        14.8
+            Total Chip Area                      30.7       20.5                  34.5        23.9            42.7        30.8
+         Performance
+            Memory Transfer Cycles             3690 M       226 M               1730 M       151 M           938 M       108 M
+            Compute Cycles                      60 M         55 M                60 M         55 M            60 M        55 M
+            Total Cycles                       3734 M       249 M               1772 M       163 M           953 M       109 M
+            Compute/Memory Avg. Overlap %       26.7%       57.7%                29.0%       77.0%           76.5%       98.2%
+         Energy (J)
+           Off-chip Memory Energy                5.79       0.35                  2.72        0.24            1.47        0.17
+           On-chip Memory Energy                  0.1       0.01                   0.1        0.01            0.11        0.02
+           Compute Energy                        0.95       0.48                  0.95        0.48            0.95        0.48
+           Total Energy                          6.84       0.84                  3.77        0.73            2.53        0.67
+
+
+
+values once they are requested by compute units. In Fig-                 as Mokey boosts their effective capacity reducing off-chip
+ure 14 (OC+ON) set of bars report the corresponding speedup.             accesses. With the 256KB buffer Mokey improves energy
+Compressing data allows us to store more weights and activa-             efficiency by 54× and by 8× with the 4MB buffer.
+tions, maximize reuse and significantly reduces the number
+of DRAM transactions. The smaller the on-chip capacity,                                        V. R ELATED W ORK
+the higher the potential benefits from on-chip compression.
+In transformer models, activations grow quadratically with                  This section discusses how Mokey compares to state-of-the-
+respect to sequence length. BERT-Large and RoBERTa-Large                 art model compression methods for Transformer models.
+on the SQuAD task used a sequence length of 384 tokens,                  Integer/Floating-Point Quantization: Q8BERT quantized
+while for other model/tasks use a sequence length of 128. This           weights and activations to 8-bit fixed-point. It requires fine-
+explains why these two models on SQuAD task benefit the                  tuning to reduce quantization error and FP32 compute cores
+most from on-chip compression in the smaller buffer sizes. As            for some layers such as Softmax [32]. I-BERT also quantizes
+the on-chip buffer gets larger, eventually, all activations would        weights and activations to 8 bits, but by leveraging approx-
+fit on-chip and the weights need to be loaded only once from             imations for nonlinear functions it uses fixed-point through-
+off-chip. With Mokey compression, the on-chip buffer size at             out [33]. Table IV compares Q8BERT and I-BERT with
+which this becomes possible is smaller.                                  Mokey. Mokey is a post-training method and can be applied
+  Energy reduction with on-chip memory compression ex-                   on out-of-the-box models without requiring access to datasets
+hibits a similar trend as with off-chip as shown in Figure 15.           or systems that are capable of training these models. Mokey
+Energy reduction is significant with the smaller on-chip buffers         reduces activation and weight footprint by approximately 2×
+
+
+
+                                                                    11
+Fig. 14: Tensor Cores speedup w/ Mokey Memory compression for Off-chip only (OC) and Off- and On-chip (OC+ON) traffic.
+
+
+
+
+Fig. 15: Tensor Cores Relative Energy w/ Mokey Memory compression for Off-chip only (OC) and Off- and On-chip (OC+ON).
+
+TABLE IV: Comparing Various Quantization Methods for BERT-Base on the MNLI task. INT Comp indicates if the computation
+is in fixed-point domain. Compression Ratio reports the total memory footprint reduction.
+       BERT-Base MNLI     Parameters (bit)   Activations (bit)   Accuracy (m)     Error   INT Comp    Post-Training   Compression Ratio
+       FP32 Baseline            32                  32              84.44           -        7             7                 1×
+       Q8BERT [32]               8                  8               83.75         0.69       3             7               4.0×
+       I-BERT [33]               8                   8              84.12         0.32       3             7               4.0×
+       Q-BERT [31]               4                   8              83.89         0.55       7             7               6.9×
+       GOBO [9]                  3                  32              83.76         0.68       7             3               4.1×
+       TernaryBERT [34]          2                   8              83.30         1.14       7             7               10.8×
+       Mokey                     4                   4              84.22         0.22       3             3               7.9×
+
+
+
+compared to Q8BERT and I-BERT, has higher accuracy, and                     and the distillation process requires training the model while
+performs all computations in fixed-point with most using 3b.                searching for suitable hyperparameters. SpAtten prunes less
+Dictionary-Based Quantization: Q-BERT is a group-wise                       effective cascade heads and tokens from attention layers [23].
+dictionary-based quantization method [31]. It divides the pa-               HAT is a NAS method which alters model architecture to best
+rameters of each layer into groups (typically 128) each of                  fit a target hardware configuration [54].
+which it quantizes to a dictionary of 4 to 16 representative
+values. Q-BERT quantizes activations to 8b. It requires fine-                                     VI. C ONCLUSION
+tuning. GOBO is a post-training dictionary-based quantization                  The bulk of the operations and data transfers in state-of-
+method that quantizes weights only to 3b or 4b (activations                 the-art NLP models are due to multiply-accumulate operations
+remain in FP16 or FP32) [9]. GOBO uses an iterative centroid                (MACs) over floating-point values. Mokey introduces a unique
+selection method similar to k-means. Table IV compares Q-                   quantization that maps the original floating-point value space
+BERT and GOBO with Mokey. Compared to Q-BERT, Mokey                         into a few fixed-point values which are a small subset of a
+requires no fine-tuning, reduces footprint for activations more,            larger fixed-point value space. Mokey chooses this subset so
+and has better accuracy. Compared to GOBO, Mokey quantizes                  that all its values fit under some exponential curve. It is this
+both weights and activations, achieves higher accuracy, and                 property that enables Mokey to replace MACs over floating-
+replaces floating-point arithmetic with narrow fixed-point op-              point tensors, transforming them into counting of 4b centroid
+erations. Mokey quantizes layers based on a Golden Dictionary               indexes without even having to map to the centroid values
+which is faster than GOBO’s iterative process.                              themselves — at the end, a few scaling operations using fixed-
+Pruning, Distillation and NAS: Model pruning, Distillation                  point arithmetic map the final result into the target fixed-point
+and Neural Architecture Search (NAS) can reduce model size                  value space. Since Mokey adjusts the exponential curve to best
+and are orthogonal to quantization methods such as Mokey.                   fit each layer, it does not restrict the set of possible centroid
+TernaryBERT uses a combination of knowledge distillation                    values. We expect that future work will expand and improve
+and quantization to compress BERT [34]. It quantizes weights                upon quantization methods such as Mokey. These are methods
+to 2b and activations to 8b. TernaryBERT’s extreme quanti-                  that carefully select not only the target value space, but also
+zation comes at the expense of a 1.14% drop in accuracy,                    a subset within it to maximize cost reduction opportunities.
+
+
+
+                                                                      12
+                        ACKNOWLEDGEMENT                                              [22] K. Shim, I. Choi, W. Sung, and J. Choi, “Layer-wise pruning of
+                                                                                          transformer attention heads for efficient language modeling,” arXiv
+  This work was supported by the NSERC COHESA Strategic                                   preprint arXiv:2110.03252, 2021.
+Research Network and an NSERC Discovery Grant. The                                   [23] H. Wang, Z. Zhang, and S. Han, “Spatten: Efficient sparse attention
+                                                                                          architecture with cascade token and head pruning,” in 2021 IEEE
+University of Toronto maintains all rights to the technologies                            International Symposium on High-Performance Computer Architecture
+described.                                                                                (HPCA), pp. 97–110, IEEE, 2021.
+                                                                                     [24] V. Sanh, L. Debut, J. Chaumond, and T. Wolf, “Distilbert, a distilled
+                             R EFERENCES                                                  version of bert: smaller, faster, cheaper and lighter,” 5th Workshop on
+                                                                                          Energy Efficient Machine Learning and Cognitive Computing - NeurIPS,
+ [1] T. B. Brown, B. Mann, N. Ryder, M. Subbiah, J. Kaplan, P. Dhariwal,                  2019.
+     A. Neelakantan, P. Shyam, G. Sastry, A. Askell, et al., “Language               [25] G. Aguilar, Y. Ling, Y. Zhang, B. Yao, X. Fan, and C. Guo, “Knowledge
+     models are few-shot learners,” arXiv preprint arXiv:2005.14165, 2020.                distillation from internal representations,” in Proceedings of the AAAI
+ [2] W. Fedus, B. Zoph, and N. Shazeer, “Switch transformers: Scaling to                  Conference on Artificial Intelligence, vol. 34, pp. 7350–7357, 2020.
+     trillion parameter models with simple and efficient sparsity,” CoRR,            [26] H. Touvron, M. Cord, M. Douze, F. Massa, A. Sablayrolles, and
+     vol. abs/2101.03961, 2021.                                                           H. Jégou, “Training data-efficient image transformers & distillation
+ [3] M.-W. Chang, L. Ratinov, D. Roth, and V. Srikumar, “Importance                       through attention,” in International Conference on Machine Learning,
+     of semantic representation: Dataless classification,” in Proceedings of              pp. 10347–10357, PMLR, 2021.
+     the 23rd National Conference on Artificial Intelligence - Volume 2,             [27] R. Masumura, N. Makishima, M. Ihori, A. Takashima, T. Tanaka,
+     AAAI’08, p. 830–835, AAAI Press, 2008.                                               and S. Orihashi, “Hierarchical transformer-based large-context end-to-
+ [4] C. C. nonprofit 501(c)(3) Organization, 2021.                                        end asr with large-context knowledge distillation,” in ICASSP 2021-
+ [5] R. Desislavov, F. Martı́nez-Plumed, and J. Hernández-Orallo, “Compute               2021 IEEE International Conference on Acoustics, Speech and Signal
+     and energy consumption trends in deep learning inference,” arXiv                     Processing (ICASSP), pp. 5879–5883, IEEE, 2021.
+     preprint arXiv:2109.05472, 2021.                                                [28] S. Mukherjee and A. H. Awadallah, “Distilling bert into sim-
+ [6] A. Radford, K. Narasimhan, T. Salimans, and I. Sutskever, “Improving                 ple neural networks with unlabeled transfer data,” arXiv preprint
+     language understanding by generative pre-training,” 2018.                            arXiv:1910.01769, 2019.
+ [7] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, “Bert: Pre-training of        [29] L. Liu, H. Wang, J. Lin, R. Socher, and C. Xiong, “Mkd: a multi-task
+     deep bidirectional transformers for language understanding,” in NAACL-               knowledge distillation approach for pretrained language models,” arXiv
+     HLT, 2019.                                                                           preprint arXiv:1911.03588, 2019.
+ [8] A. Ivanov, N. Dryden, T. Ben-Nun, S. Li, and T. Hoefler, “Data                  [30] Y. Jiang, B. Sharma, M. Madhavi, and H. Li, “Knowledge distillation
+     movement is all you need: A case study on optimizing transformers,”                  from bert transformer to speech transformer for intent classification,”
+     Proceedings of Machine Learning and Systems, vol. 3, 2021.                           arXiv preprint arXiv:2108.02598, 2021.
+ [9] A. H. Zadeh, I. Edo, O. M. Awad, and A. Moshovos, “GOBO:                        [31] S. Shen, Z. Dong, J. Ye, L. Ma, Z. Yao, A. Gholami, M. W. Mahoney,
+     quantizing attention-based NLP models for low latency and energy                     and K. Keutzer, “Q-bert: Hessian based ultra low precision quantization
+     efficient inference,” in 53rd Annual IEEE/ACM International Symposium                of bert.,” in AAAI, pp. 8815–8821, 2020.
+     on Microarchitecture, MICRO 2020, Athens, Greece, October 17-21,                [32] O. Zafrir, G. Boudoukh, P. Izsak, and M. Wasserblat, “Q8bert: Quantized
+     2020, pp. 811–824, IEEE, 2020.                                                       8bit bert,” 5th Workshop on Energy Efficient Machine Learning and
+[10] P. Ganesh, Y. Chen, X. Lou, M. A. Khan, Y. Yang, H. Sajjad, P. Nakov,                Cognitive Computing - NeurIPS, 2019.
+     D. Chen, and M. Winslett, “Compressing large-scale transformer-based            [33] S. Kim, A. Gholami, Z. Yao, M. W. Mahoney, and K. Keutzer, “I-bert:
+     models: A case study on bert,” Transactions of the Association for                   Integer-only bert quantization,” arXiv preprint arXiv:2101.01321, 2021.
+     Computational Linguistics, vol. 9, p. 1061–1080, Sep 2021.                      [34] W. Zhang, L. Hou, Y. Yin, L. Shang, X. Chen, X. Jiang, and Q. Liu,
+[11] A. Wang, A. Singh, J. Michael, F. Hill, O. Levy, and S. R. Bowman,                   “Ternarybert: Distillation-aware ultra-low bit bert,” arXiv preprint
+     “GLUE: A multi-task benchmark and analysis platform for natural                      arXiv:2009.12812, 2020.
+     language understanding,” in 7th International Conference on Learning            [35] I. Chung, B. Kim, Y. Choi, S. J. Kwon, Y. Jeon, B. Park, S. Kim, and
+     Representations, ICLR 2019, New Orleans, LA, USA, May 6-9, 2019,                     D. Lee, “Extremely low bit transformer quantization for on-device neural
+     OpenReview.net, 2019.                                                                machine translation,” arXiv preprint arXiv:2009.07453, 2020.
+[12] A. Katharopoulos, A. Vyas, N. Pappas, and F. Fleuret, “Transformers             [36] O. Sharir, B. Peleg, and Y. Shoham, “The cost of training NLP models:
+     are rnns: Fast autoregressive transformers with linear attention,” in                A concise overview,” CoRR, vol. abs/2004.08900, 2020.
+     International Conference on Machine Learning, pp. 5156–5165, PMLR,              [37] M. L. Zepeda-Mendoza and O. Resendis-Antonio, Hierarchical Agglom-
+     2020.                                                                                erative Clustering, pp. 886–887. New York, NY: Springer New York,
+[13] S. Wang, B. Z. Li, M. Khabsa, H. Fang, and H. Ma, “Linformer:                        2013.
+     Self-attention with linear complexity,” arXiv preprint arXiv:2006.04768,        [38] E. Wang, J. J. Davis, R. Zhao, H.-C. Ng, X. Niu, W. Luk, P. Y. K.
+     2020.                                                                                Cheung, and G. A. Constantinides, “Deep neural network approximation
+[14] M. Zaheer, G. Guruganesh, K. A. Dubey, J. Ainslie, C. Alberti,                       for custom hardware,” ACM Computing Surveys, vol. 52, p. 1–39, May
+     S. Ontanon, P. Pham, A. Ravula, Q. Wang, L. Yang, et al., “Big bird:                 2019.
+     Transformers for longer sequences.,” in NeurIPS, 2020.                          [39] M. A. Gordon, K. Duh, and N. Andrews, “Compressing bert: Studying
+[15] I. Beltagy, M. E. Peters, and A. Cohan, “Longformer: The long-                       the effects of weight pruning on transfer learning,” arXiv preprint
+     document transformer,” arXiv preprint arXiv:2004.05150, 2020.                        arXiv:2002.08307, 2020.
+[16] J. Mao, H. Yang, A. Li, H. Li, and Y. Chen, “Tprune: Efficient                  [40] S. Han, H. Mao, and W. J. Dally, “Deep compression: Compressing
+     transformer pruning for mobile devices,” ACM Trans. Cyber-Phys. Syst.,               deep neural network with pruning, trained quantization and huffman
+     vol. 5, apr 2021.                                                                    coding,” in 4th International Conference on Learning Representations,
+[17] S. Kim, S. Shen, D. Thorsley, A. Gholami, W. Kwon, J. Hassoun, and                   ICLR 2016, San Juan, Puerto Rico, May 2-4, 2016, Conference Track
+     K. Keutzer, “Learned token pruning for transformers,” arXiv preprint                 Proceedings (Y. Bengio and Y. LeCun, eds.), 2016.
+     arXiv:2107.00910, 2021.                                                         [41] MATLAB, version 9.9.0 (R2020a). Natick, Massachusetts: The Math-
+[18] F. Lagunas, E. Charlaix, V. Sanh, and A. M. Rush, “Block pruning for                 Works Inc., 2020.
+     faster transformers,” arXiv preprint arXiv:2109.04838, 2021.                    [42] P. He, X. Liu, J. Gao, and W. Chen, “Deberta: Decoding-enhanced bert
+[19] A. Parnami, R. Singh, and T. Joshi, “Pruning attention heads of trans-               with disentangled attention,” arXiv preprint arXiv:2006.03654, 2021.
+     former models using a* search: A novel approach to compress big nlp             [43] Y. Liu, M. Ott, N. Goyal, J. Du, M. Joshi, D. Chen, O. Levy, M. Lewis,
+     architectures,” arXiv preprint arXiv:2110.15225, 2021.                               L. Zettlemoyer, and V. Stoyanov, “Roberta: A robustly optimized bert
+[20] J. Li, R. Cotterell, and M. Sachan, “Differentiable subset pruning of                pretraining approach,” arXiv preprint arXiv:1907.11692, 2019.
+     transformer heads,” arXiv preprint arXiv:2108.04657, 2021.                      [44] T. Wolf, L. Debut, V. Sanh, J. Chaumond, C. Delangue, A. Moi,
+[21] D. Peer, S. Stabinger, S. Engl, and A. Rodriguez-Sanchez, “Greedy                    P. Cistac, T. Rault, R. Louf, M. Funtowicz, and J. Brew, “Hugging-
+     layer pruning: Decreasing inference time of transformer models,” arXiv               face’s transformers: State-of-the-art natural language processing,” ArXiv,
+     preprint arXiv:2105.14839, 2021.                                                     vol. abs/1910.03771, 2019.
+
+
+
+
+                                                                                13
+[45] F. Pedregosa, G. Varoquaux, A. Gramfort, V. Michel, B. Thirion,
+     O. Grisel, M. Blondel, P. Prettenhofer, R. Weiss, V. Dubourg, J. Vander-
+     plas, A. Passos, D. Cournapeau, M. Brucher, M. Perrot, and E. Duch-
+     esnay, “Scikit-learn: Machine learning in Python,” Journal of Machine
+     Learning Research, vol. 12, pp. 2825–2830, 2011.
+[46] P. Rajpurkar, J. Zhang, K. Lopyrev, and P. Liang, “Squad: 100,000+
+     questions for machine comprehension of text,” arXiv preprint
+     arXiv:1606.05250, 2016.
+[47] Z. Jia, M. Maggioni, B. Staiger, and D. P. Scarpazza, “Dissecting
+     the NVIDIA volta GPU architecture via microbenchmarking,” CoRR,
+     vol. abs/1804.06826, 2018.
+[48] L. Durant, O. Giroux, M. Harris, and N. Stam, “Nvidia developer blog,”
+     May 2017.
+[49] S. Li, Z. Yang, D. Reddy, A. Srivastava, and B. Jacob, “Dramsim3:
+     A cycle-accurate, thermal-capable dram simulator,” IEEE Computer
+     Architecture Letters, vol. 19, no. 2, pp. 106–109, 2020.
+[50] N. Muralimanohar, R. Balasubramonian, and N. Jouppi, “Cacti 6.0: A
+     tool to model large caches,” HP Laboratories, 01 2009.
+[51] Synopsys Inc., DesignWare® Building Block IP User Guide, December
+     2016. Ver. M-2016.12.
+[52] Synopsys Inc., Design Compiler® User Guide, September 2017. Ver.
+     N-2017.09.
+[53] Cadence Design Systems Inc., Cadence Innovus User Guide, January
+     2021. Ver. 20.13.
+[54] H. Wang, Z. Wu, Z. Liu, H. Cai, L. Zhu, C. Gan, and S. Han, “Hat:
+     Hardware-aware transformers for efficient natural language processing,”
+     arXiv preprint arXiv:2005.14187, 2020.
+
+
+
+
+                                                                                14
+

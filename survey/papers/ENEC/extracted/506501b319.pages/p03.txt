@@ -1,0 +1,60 @@
+One AI core typically integrates one AI Cube (AIC) unit              on typical data types, their performance often degrades
+and two AI Vector (AIV) units. For instance, the Ascend              significantly on model weight data. Recently, several methods
+910B2 NPU incorporates 24 such AI Cores, providing a                 (e.g., ZipNN [24] and its extension [23], DFloat11 [62],
+total of 24 AIC units and 48 AIV units. The AIC is                   Huff-LLM [60]) have identified that the high randomness
+optimized for high-performance matrix operations, offering           of floating-point mantissas interferes with the compressibil-
+exceptional throughput for dense linear algebra, albeit with         ity of exponents, leading to suboptimal results. Moreover,
+limited operational flexibility. In contrast, the AIV supports       DietGPU [31], the ANS-based [18], [40], [47], [52], [56]
+large-scale vectorized operations, including data gathering,         compressor on GPU, has introduced a dedicated float codec
+reduction, and other collective operations.                          specifically designed for model floating-point data. To ad-
+   Memory Hierarchy and Data Path. On the memory                     dress this, they propose separating the exponent and mantissa
+side, the Ascend NPUs feature a high-bandwidth memory                components before compression. While this approach im-
+(HBM) and an L2 cache shared across all AI Cores. For AIV            proves compression ratios, the exponent compression still re-
+operations, input data must first be loaded into a local buffer      lies on variable-length coding, which is poorly suited for effi-
+known as the Unified Buffer (UB), typically on the order of          cient implementation on Ascend NPUs due to irregular mem-
+kilobytes. The AI Cube unit employs multiple levels of on-           ory access and control flow, thereby limiting their practical
+chip buffers such as L1, L0A, L0B, L0C, and FP buffers,              deployment efficiency on Ascend NPUs. Recently, Huawei
+as illustrated in Figure 2. Data movement between different          has developed a compression algorithm named HANS [3];
+memory hierarchies is managed by Memory Transfer Engines             however, its compression ratio and throughput performance
+(MTEs), which not only handle data transfers but can also            still remain limited and it is also closed-source.
+perform in-flight data format and type conversions.
+   Programming Model and Execution Pipeline. Huawei                  C. LC Framework to Search Optimal Compression Algorithm
+introduced AscendC, a C++ programming model for Neural                  To achieve efficient compression on Ascend NPUs,
+Networks (CANN) [14], to enable high-performance operator            lightweight operations are essential. For this purpose, we
+development on Ascend NPUs. AscendC employs a multi-                 have enhanced the emerging and significant open-source data
+pipeline abstraction to enable fine-grained hardware control,        compression tool—the LC framework [7] and utilized it to
+allowing developers to fully exploit hardware’s potential. It        search for lightweight component combinations that deliver
+simplifies programming through key abstractions like tensors         either the optimal compression ratio or the highest through-
+and queues. A tensor encapsulates data that will be operated         put. This framework provides a wide range of common
+on by the AIC/AIV units, while queues handle synchroniza-            compression components and preprocessing methods, among
+tion: after an operation completes, the result is enqueued           which the Reducer is the sole component used for shortening
+(EnQue), and dependent operations dequeue (DeQue) it.                data sequences, employing techniques such as HCLOG, RLE,
+More details can be found in the user documentation [14].            RRE, and RZE to leverage various types of data redundancy.
+                                                                        Among these techniques, HCLOG employs a grouped bit-
+B. Lossless Floating-Point Compressors                               packing strategy: it divides a 16 KB data block into a fixed
+   General-purpose Lossless Floating-point Compressors.              number of 32 sub-chunks, calculates the minimum leading
+Lossless compressors for floating-point data enable com-             zero count in each sub-chunk as metadata, and stores only
+pression without information loss, making it valuable for            the valid bits. However, a single outlier can force the entire
+applications like image [16], time series data [36], [38], and       sub-chunk to adopt a higher bitwidth, thereby reducing the
+scientific data [5], [9], [33]. The core techniques of lossless      compression ratio. To address this issue, we have extended
+compression primarily fall into two categories: one leverages        the LC framework with a series of HCLOG compressors that
+the identification of spatial redundancy patterns, while the         support varying numbers of sub-chunks.
+other exploits the varying frequencies of different symbols.
+The first category is characterized by LZ-based compression                III. DATA A NALYSIS OF AI M ODEL W EIGHTS
+methods (e.g., LZW [53], LZ78 [64], LZ77 [65]) and related              Model weights are typically stored in one of three floating-
+optimizations [61], which operate by sequentially scanning           point formats: FP32, FP16, or BF16. Recently, BF16 has
+the data stream and replacing repeated substrings with shorter       gained popularity for large models due to its wider expo-
+references. The second category is represented by entropy            nent range, which offers training stability [32], [35], [54].
+coding techniques such as Huffman coding [25]–[27], [43],            Although lower-precision integer formats such as INT8 [13]
+[48], [57] and arithmetic coding [34], which assign shorter          and FP8 [44] have been explored for model compression,
+bit representations to more frequently occurring symbols,            they are not the primary focus of this study for several
+thereby reducing the overall bit length.                             reasons. First, INT8 and FP8 offer lower precision than BF16,
+   Dedicated Lossless Floating-point Compressors for                 risking accuracy. Second, INT8 and FP8 formats typically
+AI Model. Despite the high compression efficiency and                require quantization, which constitutes a separate lossy com-
+throughput of general-purpose compressors like Zstd [10]             pression step and offers limited additional compressibility
+
+
+
+
+                                                                  1321
+

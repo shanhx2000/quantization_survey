@@ -1,0 +1,78 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                     Seunghee Han, Soongyu Choi, and Joo-Young Kim
+
+
+                                                                            PE Lane                                   8 PEs                                                                                                   RDA
+      PE Cluster            20 PE Lanes
+                                                                               PE           PE      PE           PE            PE           PE            PE              PE                                                  RDA
+                PE Lane PE Lane                     PE Lane                                                                                                                                                                             ...
+                  4       4                 ...       4                             Adder                Adder                      Adder                      Adder
+                                    Arbiter                                                                                                                                                          PE                16 Multipliers
+(c)                                                                   (b)                                                                                                                            5bit 5bit 5bit 5bit             Sign bit 5bit   5bit
+        bias                                                                                                                                                                                                                        Extended
+       Scale       Dynamic Accumulation Logic (DAL)                                                                                                                                                                                  in RDA
+                                                                                                                  4-to-1 Adder Tree                                                                       Mul          Mul                      Mul
+      Factor                                                                                                                                                                                   (a)                                      ...
+                                      ...
+                                                                            bias    +            bias    +                          +     bias                 +     bias                                Shifter      Shifter                  Shifter
+                            80                     5(4)
+                      80x(2 PEs)     5x(4 PE Lanes)                                                          4                                                                                                       16-to-1 Adder Tree
+                                     4x(5 PE Lanes)
+                                                                                                    4x(2 PEs)                     1x(8 PEs / 1 PE Lane)                                 1x(1 PE)
+      RMPU Engine                       4 PE Clusters
+                                                                                                                        4x(1 PE Lane) 4x(1 PE Lane) 4x(1 PE Lane) 4x(1 PE Lane) 4x(1 PE Lane)
+        PE Cluster     PE Cluster     PE Cluster     PE Cluster                                                  DAL
+                                                                                                                               4-to-1               4-to-1                  4-to-1               4-to-1
+         80        5(4) 80        5(4) 80        5(4) 80        5(4)                                                         Adder Tree           Adder Tree              Adder Tree           Adder Tree
+                                                                                                                   Scale                   Scale                Scale                   Scale                                4-to-1
+                                                                                                                  Factor                  Factor               Factor                  Factor                              Adder Tree
+                                     (10x) 2-to-1 Adder
+(d)                                                                                                      (e)
+                                                  (5x) 2-to-1 Adder                                                                  +                    +                        +                     +
+                                                                                                                                                                                                                    Scale
+                                                  5-to-1 Adder Tree           320x(2 PEs)                                                                                                                          Factor
+                                                                              20x(4 PE Lanes)
+                                                                              16x(5 PE Lanes                          bias       +         bias       +            bias        +        bias         +              bias       +
+          320    20(16)      10         5                                     10x(8 PE Lanes)
+                                                                              5x(16 PE Lanes)                           1x(4 PE Lane) 1x(4 PE Lane) 1x(4 PE Lane) 1x(4 PE Lane)
+                                   Mux & ReLU                                 1x(80 PE Lanes)                                                                                                                         1x(4 PE Lane)
+                                                                                                                        1x(5 PE Lane) 1x(5 PE Lane) 1x(5 PE Lane) 1x(5 PE Lane)
+
+
+Figure 9: Microarchitecture of (a) Processing Element (PE), (b) PE Lane, (c) PE Cluster, (d) RMPU Engine, and (e) Dynamic
+Accumulation Logic (DAL). For each module, the context provided in parentheses indicates either the source of input or the
+interpretation of the accumulated output. In the dataflow representation, thin lines denote a single value while thick lines
+represent multiple values.
+
+
+among tokens with the same shape. To address this issue, RMPU                                                            RMPU Engine. The RMPU Engine is the core computational
+introduces a dynamically reconfigurable computation module and                                                        unit of RMPU, designed with a dynamic adder tree architecture
+a data aligner that optimizes resource allocation based on workload                                                   that allows hierarchical reconfiguration. Each computational stage
+characteristics.                                                                                                      produces intermediate results that carry distinct semantic meanings
+   RMPU Architecture. RMPU consists of Reconfigurable Data                                                            within the processing pipeline. These results are dynamically used
+Aligners (RDAs), RMPU Engine, and RMPU Output FIFOs. The RDA                                                          across multiple operations, enabling efficient resource allocation
+prepares and supplies data according to bit-width requirements,                                                       and maximizing the utilization of computational units.
+while the RMPU Engine performs computations using a dynami-                                                              At the lowest level, the Processing Engine (PE) serves as the
+cally reconfigurable adder tree structure. The RMPU Output FIFOs                                                      fundamental computation module. As shown in Figure 9(a), one
+efficiently queue and transfer computation results to the GCN. This                                                   PE consists of 16 minimal computation units and is capable of per-
+architecture enables the dynamic allocation of computational re-                                                      forming multiplication between two 16-bit input values. A PE Lane
+sources, maximizing hardware utilization while maintaining high                                                       integrates 8 PEs, as shown in Figure 9(b), enabling more complex
+levels of parallelism. Additionally, RMPU leverages token-wise                                                        operations such as the inner product. From this stage, the mod-
+quantization, which eliminates redundant dequantization steps,                                                        ule adopts multiple dataflows to support various operations. Each
+further improving efficiency.                                                                                         operation follows a specific dataflow determined by its computa-
+   Reconfigurable Data Aligner (RDA). To ensure efficient com-                                                        tional characteristics. The PE Lane supports two dataflows. The first
+putation across varying data precisions, the RMPU Data Aligner                                                        dataflow accumulates the results from two PEs along with a bias,
+(RDA) partitions each token’s data into 4-bit chunks. Here, the 4-bit                                                 producing 4 output values. It is utilized in the computation process
+precision is chosen as it is the lowest that AAQ can optimize in our                                                  of MHA with a head dimension of 32. The second dataflow employs
+system, as detailed in Section 4.2 and Section 7.1. The RDA first                                                     an adder tree to accumulate the results from all PE modules.
+splits all input values into 4-bit segments while extracting scaling                                                     At the next level, the PE Cluster serves as a key computational
+factors and outlier index information. Subsequently, it sends these                                                   unit component. As shown in Figure 9(c), each PE Cluster contains
+segments to the controller for control signal generation. To main-                                                    20 PE Lanes and Dynamic Accumulation Logic (DAL). A matrix
+tain consistency with the original data, each chunk undergoes sign                                                    multiplication operation consists of a dot product between two
+extension. Specifically, the chunk containing the most significant                                                    vectors having the same inner dimension. The required number of
+bit (MSB) is extended using its MSB value as the sign bit, while all                                                  computational units varies depending on the quantization scheme.
+other chunks are extended by appending zeros. This alignment can                                                      For instance, in a dot product between two 128-dimensional vector
+fully utilize the RMPU Engine’s computational resources. Although                                                     tokens, if one token is quantized with 124 inliers at 4-bit precision
+the position of outliers varies across quantized tokens, maintaining                                                  and four outliers at 16-bit precision while every value in other
+a uniform number of 4-bit chunks within tokens that share the same                                                    token is 16-bit precision, the required computational resources are
+quantization scheme significantly reduces alignment overhead.                                                         calculated as follows: 4 × 124 (inliers) + 16 × 4 (outliers) = 560 (4-bit
+

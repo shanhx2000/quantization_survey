@@ -1,0 +1,105 @@
+              Original data (BF16/FP16/FP32)            Sign            Mantissa             Exponent               Bit Mask                        Compressed Exponent        Block Size: 16384 elements             Block Num: N        b,n,m: Integer transform parameters                   L: Group size
+
+
+                 16Bits                1                   16Bits                        3                           16Bits                                      4                 Low m Bits                         High n-m Bits                     5
+                  16384                                                                                                                                                                                                                             Hierarchical                                     Thread 0
+                                  Exponent                                             Integer                                                                Bit-Width
+                                                  127     126     ...      123                             -1       0              ...          3                           111     000     ...    011          111       000   ...       000       Halving Bit-
+                                  Extraction                                       Transformation                                                            Quantization
+                                                                                                                                                                                                                                                      Packing
+                                                  126     125     ...      124                              0       1              ...          2                           000     001     ...    010          000       000   ...       000                                                        Thread 1
+  N
+
+                                                  127     126     ...      118                             -1       0              ...          8                           111     000     ...    000          111       000   ...       001
+                                                                                                                                                                                                                                                                                                     Thread 47
+                                                                                                                                     Grouping
+                                                                         2                                                                                                                                                                                                                      AIV number : 48
+                                                                   Parameter                                                  16
+                                                                   Determine                                                                                    Keep the lower m          Keep the higher n-m bits
+ Mantissa + Sign                                                                                             -1         0            ...            2           bits
+ Direct Storage                                                                                                                                                                                          16                                                 1   0   1                                1   0   0
+                                                                                                      1
+                                                                                                      0         0       1            ...            1                                             -1      ...         2
+                                                                                                      2
+                                                                                                      4                                                                                                                                         1   0   0   1   0   1
+   Main process                                                                                                                                                              Select groups        -1      ...         3
+                                                                                                                1       2            ...            8                        with bit width
+                                              Exponent                                                                                                                                                                                                                                  0   0    1   1   1   0
+   Data flow                                                              b      126
+                                                                                                                                                                             greater than
+                                              Frequency                                                                                    16                                m                    1       ...         8
+                                                                          n          6                                                                  Compare with                                                                  0    0    1   1   1   0   1   0   0   1   0   1
+   Internal                                                                                          Calculate                                          threshold m
+                                                                                                                                           2
+   process                                                                m          3
+                                                                                                     the max                                                            10001...1                      Direct Storage                                                                            0   0   1   1
+                                                                          L        16                bitwidth of
+   Related
+                                                                                                     each group                            4
+                                                                                                                                                                            Bit Mask                                                                    1   0   1   0   0   1   0   1                    Storage
+   operations                123 124 125 126 127
+
+
+
+                                                               Fig. 5: Overview of optimized ENEC compression design on Ascend NPUs.
+
+                                                                                                                                                                        During compression, the process begins by extracting
+File Header Uncompressed Part                     Mask Part                          Compressed Exponent
+                                                                                                                                                                     exponent( 1 ) and calculating the exponent frequency to de-
+                                                                                               E0          EN       ···           Thread 0                           termine optimal parameters( 2 ). After applying the branch-
+                                                                              Prefix
+   Header           Mt S       Mt S               M        M
+                                                                                                                            ···
+
+
+
+
+                                        ···                      ···
+                                                                               Sum
+                                                                                              EN-1        E2N-1     · · · Thread N-1
+                                                                                                                                                                     free integer transformation( 3 ) in Section V-C, the data
+  32 Bytes         Block 0    Block 1           Block 0 Block 1
+                                                                                                                                                                     is grouped and the bit-width of each group’s maximum
+                                                                                                                                                                     value is determined. This bit-width is compared against a
+                    S     Sign    Mt       Mantissa        M      Mask           E       Compressed Exponent
+                                                                                                                                                                     threshold to generate and store a compact bit mask and then
+Fig. 6: Compressed stream layout. The bit mask is used to distin-                                                                                                    it distinguishes elements based on this bit mask( 4 ). Finally
+guish anomalous groups within each data block. Prefix sums provide                                                                                                   using hierarchical halving bit-packing( 5 ) in Section V-B to
+direct starting positions for each thread’s compressed data.                                                                                                         generate compressed file (Figure 6).
+design does not deliver optimal performance. Performance                                                                                                                During decompression, the bit mask is first read and
+analysis of the compression kernel reveals that gather ta-                                                                                                           converted to integer values, followed by computing prefix
+ble lookups account for 35% of the time (Line 3), while                                                                                                              sums using the intra-segment dependency decoupled scan
+reduction max operations consume 40% (Line 7). Similarly,                                                                                                            (Section V-D) to obtain offset for the reverse gather operation
+analysis of the decompression kernel shows that prefix sum                                                                                                           on the compressed data stream. Subsequently, an inverse
+operations take 30% of the time (Line 19), with gather                                                                                                               vectorized, branch-free integer transformation is performed
+table lookups occupying 45% (Line 23). Collectively, these                                                                                                           to restore the exponent data. Finally, the original data is
+limitations result in low throughput, preventing the system                                                                                                          reconstructed by reading the stored sign and mantissa bits.
+from achieving high-performance efficiency. Therefore, in                                                                                                            B. Bit-Width Quantization with Hierarchical Halving Bit-
+Section V, we comprehensively optimize the compression                                                                                                               Packing
+and decompression processes of the basic design based on
+                                                                                                                                                                        In the basic design, the variable bit-width packing re-
+Observations 3, 4 and 5 from Section III.
+                                                                                                                                                                     quires inefficient reduction max and multiplication/division
+               V. O PTIMIZATIONS OF ENEC                                                                                                                             operations on Ascend NPUs. To address this, based on the
+   Drawing on the observations from Section III and hard-                                                                                                            observation 3 and 4 in Section III, we adopt the lossless
+ware characteristics from Section IV, this section details                                                                                                           bit-width quantization with hierarchical halving bit-packing
+the optimizations on the basic ENEC from Section IV-B                                                                                                                techniques. The data block is organized using a group-
+in their order of implementation, directly corresponding to                                                                                                          interleaved scheme, where each group comprises L elements.
+the ablation studies presented in Section VI. Specifically,                                                                                                          The number of bits required to pack a group is determined
+we first present the optimized ENEC algorithm in Section                                                                                                             by calculating the bit width of the largest element within
+V-A. Subsequently, from Section V-B to V-E, we delve into                                                                                                            that group. We propose a two-level bit-width quantization
+the specific optimization methods and fine-grained tuning                                                                                                            strategy: if the required bit width is less than or equal to
+mechanisms employed to maximize performance.                                                                                                                         a threshold m, all elements within the group are stored
+                                                                                                                                                                     uniformly using m bits; otherwise, all elements are stored
+A. Overview of optimized ENEC                                                                                                                                        using n bits, where n represents the minimum number of
+  Our optimized ENEC approach, as illustrated in Figure 5,                                                                                                           bits required to represent different occurring exponents. This
+processes model weights by dividing them into fixed-length                                                                                                           approach enables substituting the computationally expensive
+data blocks that are processed in parallel by multiple threads                                                                                                       reduction max operation with efficient bitwise OR operation.
+(with the number of threads determined by the number of                                                                                                                 To achieve both extreme compression and high perfor-
+AIV cores) in a cyclic manner.                                                                                                                                       mance for tensor blocks under strict hardware alignment
+
+
+
+
+                                                                                                                                                            1324
+

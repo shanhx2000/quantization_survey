@@ -1,0 +1,66 @@
+ISCA ’23, June 17–21, 2023, Orlando, FL, USA.                                                                              Tanner Andrulis, Joel S. Emer, and Vivienne Sze
+
+
+                                                                                            layer. The last layer has an outsized effect on DNN accuracy [6]
+                                                                                            and a less efficient last-layer slicing has little effect on overall en-
+                                                                                            ergy/throughput as intermediate layers dominate DNNs (Fig. 7).
+
+                                                                                             Algorithm 1: Preprocessing Weight Slicing and Centers
+                                                                                             1 Func SliceEncodeWeights(layer, testInputs, errorBudget)
+                                                                                                  /* DNN layer preprocessing. Requires a layer (shape,
+                                                                                                       quantization, weights), test inputs (activations
+                                                                                                       from ten images/tokens in this paper), and a
+Figure 8: (Left) DNN input/weight value distributions with-                                            scalar error budget (0.09 in this paper).            */
+out slicing and (Right) per-bit densities. The second-to-last                                     slicing = FindBestSlicing(layer, testInputs, errorBudget)
+layer of ResNet50 is shown, representing a typical DNN                                       2    centers = FindOptimalCenters(layer, slicing)
+layer. Bell-curve-distributed weights can be split about a cen-                              3    return slicing, centers
+ter into two similar distributions with sparse high-order bits.                              4
+Unsigned inputs have naturally-sparse high-order bits.                                       5 Func FindBestSlicing(layer, testInputs, errorBudget)
+                                                                                                  /* Implementation of Adaptive Weight Slicing from
+    To capture all these factors, we take an empirical approach. We                                   Sec. 4.2. 10-1000ms per layer.                        */
+define the error budget as the average magnitude error allowed for                           6    expectedOutputs = layer.Run(testInputs)
+nonzero outputs of a layer after outputs are fully computed and                              7    possibleSlicings = GetAllPossibleSlicings()
+quantized to 8b. Only nonzero outputs are counted when calculating                           8    bestSlicing = possibleSlicings[0]
+average magnitude error to give a more consistent calculation for                            9    bestNSlices = CountSlices(bestSlicing)
+layers with varying output sparsity.7                                                       10    bestError = ∞
+    To calculate error, we use ten inputs chosen randomly from the                          11    for 𝑠𝑙𝑖𝑐𝑖𝑛𝑔 ∈ 𝑝𝑜𝑠𝑠𝑖𝑏𝑙𝑒𝑆𝑙𝑖𝑐𝑖𝑛𝑔𝑠 do
+validation set. It suffices to use so few inputs because changing                           12        centers = FindOptimalCenters(layer, slicing)
+slicings may change the error by an order of magnitude or more,                             13        outputs = layer.SimulateCrossbar(testInputs, slicing,
+and these differences are easily detected.8 The order-of-magnitude                                      centers)
+differences stem from the shape of the column sum distribution                              14        errors = |expectedOutputs - outputs|
+(Fig. 3). The distribution tails shrink exponentially, so changes in                        15        meanError = Mean(errors[expectedOutputs != 0])
+the distribution width (i.e., due to slicings) have an exponential                          16        nSlices = CountSlices(slicing)
+effect on the saturation rate.                                                              17        betterSlicing = nSlices < bestNSlices ||
+    The error budget is set to 0.09 in our tests, corresponding to one                                  (nSlices==bestNSlices && meanError < bestError)
+in eleven 8b outputs being off by one on average. After quantization,                       18        if meanError < errorBudget && betterSlicing then
+the errors created by ADC saturation are generally small and cause                          19             bestSlicing = slicing
+a low accuracy loss, shown in Table 4.                                                      20             bestNSlices = nSlices
+                                                                                            21             bestError = meanError
+4.2.2 Choosing Weight Slices. Weight slices are calculated with
+                                                                                            22    return bestSlicing
+the preprocessing procedure shown in Algorithm 1. Preprocess-
+                                                                                            23
+ing occurs once when compiling a DNN for RAELLA, taking 10-
+                                                                                            24 Func FindOptimalCenters(layer, slicing)
+1000ms per layer on an Nvidia RTX 2060 GPU. After preprocessing,                                  /* Solve Center+Offset Eq. (2). <1ms per layer.
+sliced+encoded weights are programmed to crossbars for use with                                       Returns a center for each weight filter.                    */
+any number of inferences.                                                                   25    centers = SolveOptimizationProblem(layer, slicing)
+    For an M-bit weight and up to N bits per ReRAM, we define a                             26    return centers
+                                                          Í
+slicing as a tuple of integers 1 ≤ 𝑠 0 ..𝑠 𝑗 ≤ 𝑁 such that 𝑠𝑖 = 𝑀. For
+8b weights, ≤ 4b per ReRAM, slicings include (4b,4b), (2b,1b,1b,4b),
+and (1b,2b,2b,3b). There are 108 slicings in total.                                         4.2.3 Adaptive Weight Slicing in Hardware. Given 4b ReRAMs, each
+    To find the best slicing for a DNN layer, we iterate through all                        can be programmed with 24 − 1 analog levels. To program 3b or 2b
+108 slicings. For each, we Center+Offset encode weights following                           slices, we use the lowest 23 − 1 or 22 − 1 levels. Given a 3b weight
+Section 4.1, simulate the crossbar with ten test inputs, and record                         slice XXX, this corresponds to programming a device with 0XXX.
+error. We choose the slicing that uses the fewest slices and has                            This is only a restriction of the available range and therefore does
+below-budget error. For slicings with the same number of weight                             not require a change to ReRAMs. Crossbars already need shift+add
+slices, the lower-error slicing is chosen.                                                  circuits to add column sums across weight and input slices; adaptive
+    We use 1b input slices when comparing weight slicings. We al-                           slicing requires only changing the shift+add pattern.
+ways use the most conservative 1b per weight slice for the last                                The main overhead depends on the number of weight slices.
+7 This is important when ReLU is folded into quantization. If ReLU zeros an output, it      Each additional weight slice increases required ReRAMs and ADC
+will likely zero any error associated with that output as well. If ReLU zeros many out-     converts. RAELLA can use between two weight slices (4b/slice,
+puts, then average error is lowered while error per nonzero output remains consistent.
+8 In fact, this algorithm usually picks the same slicings when testing just one input. If   most efficient) and eight weight slices (1b/slice, least efficient). Most
+we test with Gaussian noise as input, then slicings match for > 90% of layers.              layers use three weight slices.
+

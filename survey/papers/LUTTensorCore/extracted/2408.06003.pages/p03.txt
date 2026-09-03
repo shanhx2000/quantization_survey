@@ -1,0 +1,96 @@
+LUT Tensor Core: A Software-Hardware Co-Design for LUT-Based Low-Bit LLM Inference                                                                                                                    ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+                                                                                                                                                                INT1 Weights (4xN)
+                                                                                                                                                                  0        0                1
+                                               Weight-Only                            FP16 Activations (1x4)                                                                                                                   FP16 Outputs (1xN )
+                                              Quantized LLMs                                                                                                      0        1                1
+                    Add & Norm                                                                A          B             C        D                                                  …                                           LUT[1]       LUT[9]               …                   LUT[14]
+                                                                                                                                                                  0        0                1
+                                                Linear: mpGEMM                                                    Precompute                                      1        1                0
+                          Feed                       GeLU                                         Lookup Table (LUT)
+                         Forward
+                                                Linear: mpGEMM                                         Index                         0000                                 0001                    …                               1110                 1111
+         N×                                                                                            Result                          0                                   D                      …                             A+B+C           A+B+C+D
+                    Add & Norm
+                                           Output Projection: mpGEMM
+                     Multi-Head                                                        Figure 3: A naive LUT-based mpGEMM tile example of FP16
+                                              Self Attention: GEMM                     activations and INT1 weights. With the precomputed table, a
+                     Attention
+                                             QKV Projection: mpGEMM                    table lookup can replace a dot product of 4-element vectors.
+                                                                                                                           cuBLAS_WFP16AFP16                                        CUTLASS_WINT4AFP16                                      LUT_GEMM_WINT4AFP16
+
+
+
+
+                                                                                   Speedup vs cuBLAS
+Figure 1: Decoder-only transformer blocks in LLMs. The pri-                                        5                                                                      1.25                                                           1.25
+
+
+
+
+                                                                                                                                        LUT-GEMM Seg. Error
+
+
+
+
+                                                                                                                                                                                                         LUT-GEMM Seg. Error
+
+
+
+
+                                                                                                                                                                                                                                                                       LUT-GEMM Seg. Error
+mary computations are GEMM operations (or mpGEMM op-                                               4     3.51
+                                                                                                                       4.02
+                                                                                                                                     3.77                                 1.00                                                           1.00
+                                                                                                                                                                                 0.79      0.76                                0.80
+erations with weight quantization).                                                                3                          2.52
+                                                                                                                                                                          0.75                         0.69                              0.75   0.62
+                                                                                                                                                                                                                                                          0.51       0.50
+                                                                                                   2            1.94                                                      0.50                                                           0.50
+                           W(INT4/2/1)                                                             1                                                                      0.25                                                           0.25                                                0.24
+                                                                                                                                                              0.64 0.62
+                                   Dequantization                                                                                                                                   0.02      0.02                                0.02             0.01       0.01                              0.01
+                                                                                                   0                                                                      0.00                                                           0.00
+    W(FP16)    A(FP16)      W(FP16)      A(FP16)    W(INT4/2/1)      A(FP16)                              M0 M1 M2 M3                                                             M0 M1 M2 M3                                                    M0 M1 M2 M3
+                                                                                                           a) Matmul BS=1                                                        b) Matmul BS=1024                                              c) Matmul BS=4096
+          GEMM                     GEMM                     mpGEMM
+                                                                                      Figure 4: mpGEMM kernel performance with shapes M0-
+                                                                                      M3 extracted from LLAMA2-70B. 𝑊𝐼 𝑁𝑇 4𝐴𝐹 𝑃 16 denotes INT4
+         O(FP16)                   O(FP16)                  O(FP16)
+           (a)                       (b)                      (c)                     weights and FP16 activations. LUT-based software kernels
+                                                                                      (LUT-GEMM) underperform dequantization-based kernels
+Figure 2: (a) GEMM, (b) Indirect mpGEMM with dequantiza-
+                                                                                      (CUTLASS) on the A100 GPU.
+tion, (c) Direct mpGEMM for low-bit LLM inference.
+
+minimal accuracy loss for 4-bit weights [12, 64, 76]. Recent studies                  products between high-precision activations and low-precision
+and practices show that 2-bit weight quantization outperforms 4-bit                   weights, which are then stored in lookup tables (LUT) for fast
+in model accuracy at the same memory budget using quantization-                       retrieval. Instead of precomputing a massive table for all possible
+aware training (QAT) [14, 42, 49]. BitNet further shows that training                 combinations of high-precision and low-precision values (e.g., FP16
+models with 1.58-bit (ternary) or even 1-bit (binary) weights from                    × INT4, which would require a table of size (216 × 24 )), LUT-based
+scratch can achieve comparable accuracy with 16-bit models [44, 68].                  mpGEMM organizes computations in a tiled manner. For each
+ParetoQ[42] also reports 2-bit quantization offers promising po-                      small tile of the mpGEMM operation, i.e., each small group of
+tential for memory reduction and speedup considering hardware                         activations, a LUT is precomputed specifically for these activation
+constraints.                                                                          values and reused across weight columns. This approach minimizes
+   Conversely, activations are generated on-the-fly with high vari-                   table size and maintains efficiency by dynamically building LUTs
+ance, presented as dynamic outliers [10, 18, 73]. Due to the presence                 for each tile during computation. Figure 3 illustrates a basic example
+of outliers, it is challenging to quantize activations below 8 bits. Dif-             where a small tile consists of 1×4 FP16 activations and 4×N INT1
+ferent combinations of weight and activation bit-widths have been                     weights. With an activation vector length of 4, the lookup table
+explored across various models and scenarios [10, 14, 15, 19, 68],                    size is 16. In this case, each result of the dot product of length 4
+suggesting that no universal solution fits all scenarios.                             can be obtained through a simple table lookup. The table can be
+                                                                                      reused N times, which is significant given the size of the weight
+2.2    LUT-based mpGEMM for Low-Bit LLM                                               matrix. Larger activation vectors or higher-bit weights require
+The varying bit-widths of weights and activations lead to a unique                    proportionally larger lookup tables.
+requirement of mixed-precision GEMM (mpGEMM), such as INT4/2/
+1 multiplied by FP16, illustrated in Figure 2. Current commercial                      2.3                      Gaps in Current LUT-based Solutions
+LLM inference hardware, such as GPUs and TPUs, lack native                            LUT-based mpGEMM is promising due to its advantages in elimi-
+support for mpGEMM, focusing instead on conventional GEMM                             nating dequantization and multiplication and reducing additions
+with uniform input formats. Dequantization-based mpGEMM                               through simple table lookups. However, existing software and hard-
+bridges this gap by upscaling low-precision weights to match high-                    ware implementations face challenges and gaps:
+precision activations [50, 69]. However, this approach introduces                        Software LUT kernel. LUT-based mpGEMM software kernels
+additional dequantization operations and forgoes the efficiency                       often face challenges related to limited instruction support and
+gains of low-precision computation.                                                   inefficient memory access. The limitations are two-fold: First, GPU
+   LUT-based mpGEMM is an increasingly attractive approach                            instruction support for table lookups is limited. The most effec-
+for low-bit LLM inference [26, 38, 45, 53, 71]. It precomputes dot                    tive available instruction, prmt (permute), has a limited width that
+                                                                               3
+

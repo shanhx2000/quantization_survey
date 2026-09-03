@@ -1,0 +1,68 @@
+LightNobel: Improving Sequence Length Limitation in Protein Structure Prediction Model via Adaptive Activation Quantization                   ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+running every protein on 80 GB of GPU VRAM is infeasible. There-                                  Table 2: Area and power analysis of LightNobel.
+fore, we measure peak memory requirements through actual GPU
+executions for shorter protein sequences and estimate the require-                                                   Module                               Area (mm²)    Power (mW)
+                                                                                                                   Token Aligner                             0.005            5.959
+ments by applying equivalent computational processes for longer                             Scratchpads (Token: 128KB x 2, Weight: 64KB, Output: 128KB)      2.023            0.188
+protein sequences. Without the chunk option, GPUs inefficiently                                                              RDA                             0.005            2.844
+                                                                                                                        RMPU Engine                          1.017          473.903
+store multiple intermediate activations, such as the score matrix,                        RMPU
+                                                                                                                     RMPU Output FIFO                        0.105          112.400
+leading to high peak memory requirements. The chunk option mit-                                                         1 RMPU Total                         1.127          589.147
+                                                                                                                  32 RMPUs Total                            36.068        18,852.688
+igates this overhead by processing data in smaller chunks but still                                          Global Crossbar Network                        25.133         9,215.658
+retains redundant intermediate activations in memory, resulting in                                                 Local Crossbar Network                    0.785          287.989
+non-negligible memory overhead. LightNobel significantly reduces                          VVPU
+                                                                                                                       128 SIMD Lanes                        0.115           21.094
+                                                                                                                             SSU                             0.001            0.823
+peak memory requirements by employing quantization and Token-                                                           1 VVPU Total                         0.902          309.907
+wise Multi-Head Attention, enabling computation at the token level.                                               128 VVPUs Total                           115.433        39,668.033
+                                                                                                                Controller & Others                          0.141          147.775
+AAQ compresses activations, further minimizing memory usage.                                                  LightNobel Accelerator                        178.802    67,804.55 (67.8 W)
+Unlike chunking, which processes data channel-wise, LightNobel
+achieves higher efficiency through parallel token-level computation.
+As a result, LightNobel processes every dataset within 80 GB of                         total area and 22.36% of the total power consumption. The crossbar
+memory, supporting sequence lengths of up to 9,945, which is 1.45×                      networks play a pivotal role in the system’s dataflow management,
+longer than the longest protein in CASP16 dataset, which is 6,879.                      including pipelining and ordering for dynamic dataflow, enabling
+   Computational Benefits. To evaluate LightNobel’s benefit on                          dequantization-free computation for multi-precision values in the
+computational cost, we conduct experiments comparing the com-                           RMPU as well as top-k sorting and quantization in the VVPU. Also,
+putational costs of the baseline PPM and LightNobel. We evaluate                        the RMPU Engine serves as the core module for computational
+LightNobel’s computational benefits by comparing its computa-                           power. These results justify the observed area and power consump-
+tional cost with the baseline PPM. Figure 16(a) shows the compu-                        tion of LightNobel.
+tational cost as sequence length increases. To calculate the com-                          When compared to GPUs, LightNobel requires only 21.94% of
+putational cost, we convert every operation to equivalent INT8                          area and 19.37% of power compared to A100, and 21.63% of area and
+operations and accumulate. LightNobel reduces the average com-                          22.60% of power compared to H100. It achieves up to 37.29×, 43.35×
+putational cost by 43.38% compared to baseline PPM due to two                           higher power efficiency than A100 and H100 with the chunk option
+key factors. First, AAQ lowers the cost of single data computation,                     and up to 5.39×, 5.21× without it. These results are particularly
+particularly for multiplications, which scale quadratically with pre-                   significant, as the LightNobel accelerator is implemented in a 28nm
+cision reduction. Second, LightNobel eliminates redundant dequan-                       process, whereas A100 and H100 use more advanced 7nm and
+tization in matrix multiplications by applying the scale factor only                    4nm processes, underscoring LightNobel’s superior area and power
+once at the end rather than repeatedly for each value, optimizing                       efficiency. Moreover, since LightNobel supports significantly longer
+the most compute-intensive operation in attention-based models.                         sequence lengths compared to GPUs, it is expected to have even
+   Memory Footprint Benefits. To evaluate LightNobel’s ben-                             better efficiency for longer sequence lengths.
+efits on memory footprint, we conduct experiments comparing
+the memory footprints of the baseline PPM and LightNobel. Fig-                          9 Related Works and Discussion
+ure 16(b) shows the memory footprint as the sequence length in-
+creases. LightNobel achieves 74.10% lower memory footprint on                           9.1 Previous Works on PPM
+average. This reduction stems from AAQ, which minimizes activa-                         There have been efforts to optimize PPM, but they have failed to
+tion size via quantization during each PPM operation. Additionally,                     address critical memory-related challenges. Fastfold [14] and Scale-
+LightNobel quantizes residual connections between layers, often                         fold [70] tackle communication overhead issues between multiple
+overlooked in prior studies, further enabling a smaller memory                          GPUs during PPM training by employing scheduling and paral-
+footprint and improving scalability. Since the number of tokens                         lelism techniques. While these methods improve training scalabil-
+increases quadratically with sequence length in PPM, token-wise                         ity, the benefits are limited in the inference phase. MEFold [32] and
+quantization proportionally reduces peak memory usage, enabling                         PTQ4Protein [51] introduce quantization to PPM. MEFold applies
+efficient processing of longer sequences. This property ensures that                    weight-only quantization, leaving memory-related challenges aris-
+LightNobel can efficiently handle longer sequences.                                     ing from activation unresolved. It supports a maximum sequence
+                                                                                        length of 2,828 with a peak memory requirement of 78.7 GB in an 80
+                                                                                        GB memory environment. LightNobel achieves the same with just
+8.4     Area and Power Analysis                                                         12.1 GB of memory, improving scalability by 6.05×. PTQ4Protein
+We conduct area and power analysis of the proposed system. Table 2                      quantizes both weights and activations but conducts experiments
+shows the detailed breakdown of the area and power estimations                          only on proteins with a maximum sequence length of 700, reducing
+of the LightNobel accelerator. The total area is 178.80 mm2 , and the                   peak memory to 11.6 GB. For the same sequence length, Light-
+total power consumption is 67.80 W. The crossbar networks are the                       Nobel achieves a peak memory usage of 7.1 GB, indicating 1.63×
+most dominant component, accounting for 70.28% of the total area                        better scalability. These gaps widen with longer sequences. More-
+and 67.95% of the total power consumption. The second dominant                          over, both Mefold and PTQ4Protein suffer from significant accuracy
+component is the RMPU Engine, which accounts for 18.20% of the                          degradation as their quantization precision decreases, which can
+

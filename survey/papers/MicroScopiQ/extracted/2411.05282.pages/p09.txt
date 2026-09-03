@@ -1,0 +1,59 @@
+MicroScopiQ: Accelerating Foundational Models through Outlier-Aware Microscaling Quantization                                 ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                Table 2: Quantization Results for LLMs. We report WikiText2 perplexity numbers (lower the better).
+
+                                                OPT[102]                LLaMA-2[91]                 LLaMA-3[63]         Mixtral [38]            Phi-3[2]
+      Method                        W/A        6.7B 175B             7B    13B    70B                8B   70B              8x7B              3.8B 14B
+      Baseline                      16/16      10.86 8.34            5.47  4.83   3.31               6.13 2.85              3.84              6.33   4.31
+      OliVe [30]                     4/16      12.20 9.09           11.52 9.34    7.23              10.29 5.65              6.19              8.57   7.81
+      GOBO [99]                      4/16      10.97 8.71            5.79  5.03   3.45               7.11 3.53              4.22              6.64   4.78
+      GPTQ [25]                      4/16      11.12 9.09            6.23  5.58   4.28               8.12 3.75              4.68              7.17   5.13
+      AWQ [53]                       4/16      10.97 8.74            5.82  5.19   4.08               7.96 3.58              4.36              6.72   4.99
+      OmniQuant [81]                 4/16      10.96 8.72            5.74 5.02 3.47                  7.09 3.46              4.19              6.67   4.82
+      MicroScopiQ (Ours)            4/16       10.91 8.62           5.65 5.02 3.42                  6.89  3.25             4.07              6.61 4.70
+      OliVe [29]                     4/4       55.44 14.17          19.28 14.96 13.59               27.65 9.34             23.53             17.63 15.29
+      OmniQuant [81]                 4/4       11.61 9.88           11.47 8.32    5.41              10.21 5.30              5.98              8.21   6.40
+      SmoothQuant [95]               4/4       19.54 17.62          20.47 15.63 17.62               29.54 19.32            37.54             18.11 15.39
+      Atom [103]                     4/4       11.15 9.02            6.16  6.12   5.20              8.12  4.69              5.35              7.59   5.95
+      MicroScopiQ (Ours)             4/4       10.97 8.95           6.11 5.57 4.48                  8.12  4.65             5.03              6.95 5.41
+      OmniQuant [81]                 2/16      11.61 9.66            9.62  7.56   6.11               9.13 6.17              6.02              7.09   6.28
+      SDQ [37]                       2/16      12.09 10.04          10.47 8.09    6.98              10.54 6.93              7.62              7.39   6.92
+      MicroScopiQ (Ours)            2/16       11.51 9.42           8.43 7.06 6.01                  8.97  5.91             6.02              7.16 6.03
+      OmniQuant [81]                 2/8       11.99 10.23           9.62  8.92   6.83               9.39 6.59              6.29              7.95   7.37
+      Atom [103]                     2/8       11.95 10.13           9.23  8.54 6.33                 9.13  6.35            6.14               7.46   7.29
+      MicroScopiQ (Ours)             2/8       11.77 9.98           9.06 8.06 6.33                  9.08  6.02              6.17             7.38 6.82
+
+6     MicroScopiQ Integration in GPUs                                                 6.2       HW: Potential Tensor Core Modification
+In this section, we demonstrate the integration of MicroScopiQ                        Following prior modeling [29, 73], each tensor core [1, 14] performs
+into GPUs via SW (§6.1) and HW (§6.2) modifications. For a matrix                     16-bit FEDPs (four-element dot products). Therefore, each tensor
+multiplication problem of size 𝑀 × 𝑁 × 𝐾, each GPU thread block                       core at 4-bits can conduct 16EDPs. Efficiently accelerating Micro-
+[55, 103] is responsible for computing a 𝑇𝑚 × 𝑇𝑛 output tile. This                    ScopiQ requires simultaneous INT+FP support within the tensor
+computation is performed iteratively along the 𝐾 dimension (Fig-                      core. Following the functionality of ReCoN in §5.4, each 16EDP
+ure 9), which is referred to as the main loop. MicroScopiQ quantized                  operation requires a variable right shifter (Inliers: >> 0, Outlier
+models face acceleration challenges on GPUs due to: (a) high-cost                     Upper Half: >> 1, Outlier Lower Half: >> 2) to account for the FP
+pointer arithmetic from distributed outliers and (b) tensor cores’                    mantissa for outlier products. With typical GPU die sizes (RTX 2080
+inability to co-issue INT and FP operations [14], preventing di-                      Ti: 754 𝑚𝑚 2 ), adding a shifter has negligible overhead (∼ 0.1%).
+rect acceleration of tiles. Our SW, HW optimizations address these
+issues to maximize GPU performance.                                                   7 Experimental Evaluations
+                                                                                      7.1 Experimental Setup5
+6.1     SW: Kernel-Level Optimizations                                                Models and Datasets. We evaluate on OPT [102], LLaMA2 [91]
+Register Caching. We implement a virtual caching layer [7] to                         LLaMA3 [63], Phi-3 (SLM) [2] and Mixtral (MoE) [38] LLM model
+efficiently distribute outliers within a warp. Instead of each thread                 families. The VLMs evaluated are OpenFlamingo [5], VILA [54] and
+block loading and merging outliers from shared memory, we use                         LlaVa [56]. We use a calibration dataset consisting of 256 random
+shfl_sync(m, r, t) [7] for intra-warp communication. This prim-                       samples from the PILE dataset [26], so as to not overfit to any
+itive allows a thread to share its register r while reading the value                 particular downstream domain [53]. We compare different LLMs
+from thread t within the same warp, using m as the thread selector                    based on perplexity (PPL ↓) on the WikiText2 [62] dataset and
+mask. With 𝐵 𝜇 = 8, each warp (32 threads) has 4 𝜇𝐵s, allowing                        benchmark accuracy on 6 different tasks BoolQ [12], HellaSwag
+efficient intra-warp outlier merging based on the permutation list.                   [100], PIQA [8], ARC-c [13], MMLU [33] and Winogrande [79].
+GEMM on Tensor Cores. Due to MicroScopiQ’s MX-FP format for                              Similarly, we evaluate VLMs on 5 vision-language benchmarks:
+outliers and MX-INT for inliers, mixed tiles after outlier merging                    COCO captioning [10], VQAv2 [28], VizWiz [31], TextVQA [85],
+(iteration 0 in Figure 9) must first be dequantized to FP16 before                    and GQA [35]. Additionally, to demonstrate generalizability we also
+GEMM execution. In contrast, inlier-only tiles (iteration 1) can                      evaluate Convolutional Neural Network (CNN) baselines-ResNet50,
+leverage 4-bit INT tensor cores for efficient acceleration but still                  VGG16 and State Space Model (SSM) baselines-VMamba [58], Vim
+require INT32-to-FP16 dequantization for accumulation along the                       [104]. For these models we employ a calibration dataset of 64 sam-
+K-dimension (Figure 9) with other tiles. We implement this block-                     ples from the Imagenet training set [76].
+level dynamic decision to deliver maximum performance. However,
+the need for repeated dequantization and lack of multi-precision                      5We denote each quantization configuration by its 𝑏𝑏 to enhance readability and
+support is a significant bottleneck on GPUs.                                          facilitate clear comparisons.
+

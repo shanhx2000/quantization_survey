@@ -1,0 +1,81 @@
+Transitive Array: An Efficient GEMM Accelerator with Result Reuse                                                                                                                                                                                        ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                        2       Record                                                         4        Backward Pass: Keep Connections with Smallest Distance                                                                                                                           Transitive
+                                                                                                   1       2           4         8                           1         2         4         8                               1       2       4        8         6: Has Suffix 14,   Lane 1                  Sparsity
+                                        1       2         4       8                                                                                                                                                                                          keep connections.
+                                                                                                                                                                                                                                                                                  TransRow      Prefix     (XOR)
+ Row Trans
+Index Row         RI TR
+                                                                                         3         5       6           9      10       12            3       5         6         9        10        12            3        5       6       9       10         12                      1 0001      0         0001
+                                3       5       6         9       10       12
+     0   2        0   2
+                                                                                                   7   11           13        14                             7         11        13       14                               7       11      13      14                                 5 0101      1         0100
+                                        7       11        13      14
+     1   5   L1 4     1                                                                                                         15: Remove                                                 14: All connections
+                                                                                             Level 4 15                                              Level 3                15                                        Level 2 15
+                                                                                                                                                                                                                                                    10: No Suffix , remove            7 0111      5         0010
+                                                                                                                              connections with                                              are Distance>1.                                            all connections.
+     2 15         6   2         Present              15                   Absent                                                Distance>1.                                                Keep the first one.
+                                                                                                                                                                                                                                                                                      15 1111     7         1000
+     3 14    L2 1     5
+                                                                                                   3   Forward Pass: Find All Candidate Connections                                                                                    1       2        4        8                Lane 2
+     4   1        3 14                                                                                                                                                                                                                                                            TransRow      Prefix
+             L3                             1       2         4       8                                1           2         4        8                                     1         2        4         8                     3       5       6        9       10      12
+     5   7        5   7                                                                                                                                                                                                                                                               2 0010      0         0010
+                                    3       5       6         9    10       12                 3       5           6         9        10    12                    3         5        6         9     10      12                        7    11          13      14
+     6   2   L4 2 15                                                                                                                                                                                                                                                                  6 0110      2         0100
+
+                                            7    11          13    14              3: Has Prefix,      7           11        13       14         12: No Prefix,             7        11        13    14                  Lane 1:                   15            Lane 2:
+                                                                                                                                                                                                                                                                                      14 1110     6         1000
+                                                                                connect candidates.                                                  Skip.                                                                4 OPs                                   4 OPs
+                                                                                                                                                                                                                        1, 5, 7, 15                             2, 2, 6, 14
+     1 PopCount Sort            Level 1                 15                                    Level 2                   15                                        Level 3                 15
+                                                                          Distance = 1                                               Distance > 1                                                                      5   Balance & Result (Forest)                              6    Scoreboard Info (SI)
+
+Figure 5: Scoreboarding process. Step 1 : Sort TransRows by Hamming order. Step 2 : Record present TransRows in the Hasse
+graph. Step 3 (Forward pass): Assign candidate prefixes to all nodes. Step 4 (Backward pass): Propagate suffix requests for
+nodes without a Distance = 1 prefix, searching for the prefix with the shortest distance and retaining the closest prefix for all
+nodes. Step 5 : Generate a balanced forest. Step 6 : Output the final Scoreboard information (SI).
+
+ Algorithm 1: 4-bit Scoreboarding Forward Pass.                                                                                                                       Algorithm 2: 4-bit Scoreboarding Backward Pass.
+   Input: Node list, 𝑁 [16] { int Count; int Distance; Bitmap Prefix[4];                                                                                             Input: Node list, 𝑁 [16] { int Count; int Distance; Bitmap Prefix[4];
+           Bitmap Suffix; }                                                                                                                                                  Bitmap Suffix; }
+ 1 for i in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] do                                                                                                 1 for i in [15, 7, 11, 13, 14, 3, 5, 6, 9, 10, 12, 1, 2, 4, 8] do
+ 2     N[i].Distance = +∞                                                                                                                                          2     Backward(i)
+ 3   for i in [0, 1, 2, 4, 8, 3, 5, 6, 9, 10, 12, 7, 11, 13, 14] do                                                                                                3 def Backward(int idx):
+ 4       Forward(i)                                                                                                                                                4     int dis = N[idx].Distance
+ 5 def Forward(int idx):                                                                                                                                           5     if 1 < dis < 4 and N[idx].Count > 0 then
+ 6     int dis = N[idx].Distance                                                                                                                                   6          prefix = GetPrefixFromHasse(N[idx].Prefix[dis - 1])
+ 7     if (dis >= 4 and idx != 0) then return                                                                                                                      7          SetSuffix(prefix[0], idx) // Only the first prefix.
+ 8     if ((N[idx].Count > 0) or idx == 0) then dis = 0                                                                                                            8 def SetSuffix(int idx, int suffix):
+ 9     while suffix ∈ GetSuffixFromHasse(idx) do                                                                                                                   9     N[idx].Suffix.insert(suffix)
+10          SetPrefix(suffix, dis + 1, idx)                                                                                                                       10     N[idx].Count = 1
+11 def SetPrefix(int idx, int Distance, int prefix):                                                                                                              11   Keep PB with the smallest distance; remove others.
+12     N[idx].Prefix[Distance - 1].insert(prefix)
+13     N[idx].Distance = min(N[idx].Distance, Distance)
+
+                                                                                                                                                                  Subsequently, we set the suffix information and update the prefix
+                                                                                                                                                              node’s Count to 1 (Lines 8-10). For example, Node 6’s Count is set to
+   For example, as depicted in Fig. 5 3 , Nodes 1 and 2 will have their                                                                                       1, designating Node 14 as its suffix. If Node 6 has a distance > 1 and
+temporary distances set to 0 due to their Count > 0. Subsequently,                                                                                            < 4, the backward pass would continue tracing the path to the first
+Node 5 receives prefix information from Node 1 with a distance of                                                                                             node with distance 1, forming a complete path to Node 14 within
+1, recording them into prefix bitmap. Similarly, all nodes update                                                                                             a distance of 4. After that, we will only keep the prefix bitmap
+their prefix information with corresponding distances. A special                                                                                              with the smallest distance (Line 11). This mechanism ensures each
+case is Node 14, which has a distance of 2 from Node 2. Due to                                                                                                node maintains a single prefix, facilitating efficient parallelism and
+its Count > 0, Node 14 still sends a distance of 1 to Node 15. This                                                                                           preserving correct partial ordering within the Hasse graph.
+mechanism retains more available prefix information, forming a                                                                                                    Balanced Forest. As shown in Fig. 5 5 , after the forward and
+more effective graph.                                                                                                                                         backward passes, we maintain a concise Hasse graph with valid
+   Backward Pass for Suffix. As shown in Alg. 2 and Step 4 , the                                                                                              prefixes having the smallest distances, thereby constructing the
+backward pass is a reverse process of the forward pass to retrieve                                                                                            forest. We implement a workload counter and priority supervision
+suffix information. The algorithm primarily constructs paths for                                                                                              to assign each node a Lane ID, ensuring balanced distribution across
+nodes with Count > 0 and distance > 1 to their valid prefix nodes                                                                                             the trees. For example, Node 15 has two prefixes, Node 7 and Node
+(Lines 5-7). Notably, we select only one prefix (defaulting to the first                                                                                      14. Since Node 2 corresponds to two TransRows, Node 15 is assigned
+available) from the first valid Prefix Bitmap (PB) field to build the                                                                                         to Lane 1 to achieve load balancing.
+path (Line 7). Selecting multiple prefixes could result in redundant                                                                                              Scoreboard Information (SI). Using this approach, we success-
+paths for a node. For instance, in Fig. 5 4 , Node 14 has two prefix                                                                                          fully construct a balanced forest through the Scoreboard mecha-
+nodes, 6 and 10, each with a distance of 2. If both prefixes are                                                                                              nism. In practice, the Hasse graph is transformed into a simplified
+selected, two paths would be formed: 2 → 6 → 14 and 2 → 10 →                                                                                                  table, referred to as Scoreboard Information (SI), which contains
+14. This redundancy leads to unnecessary computations. Therefore,                                                                                             two key elements: each TransRow and its corresponding Prefix, as
+we retain only one path by keeping the first prefix.                                                                                                          illustrated in Fig. 5 6 . The overhead of SI is minimal. The total
+

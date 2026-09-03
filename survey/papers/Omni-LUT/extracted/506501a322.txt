@@ -1,0 +1,1814 @@
+                    2026 ACM/IEEE 53rd Annual International Symposium on Computer Architecture (ISCA)
+
+
+
+
+     Omni-LUT: Energy-Efficient LUT-based Accelerator
+       with Hardware-Aware KV Cache Quantization
+                  Cheng-Han Tsai         Kuan-Chen Chou          Yu-Hsin Wang             Chieh-Dun Wen         Tsung Tai Yeh
+                                              National Yang Ming Chiao Tung University
+                                                          Hsinchu, Taiwan
+               {charlestsai1729.cs10, chouchou0518.cs10, hsin.cs13, aidan988.cs10}@nycu.edu.tw, ttyeh@cs.nycu.edu.tw
+
+
+      Abstract—Large language model (LLM) inference incurs sub-               based mpGEMM instead precomputes partial products for
+   stantial computation and energy consumption. Lookup-table                  combinations of multiple activations, replacing costly mixed-
+   (LUT)-based general matrix multiplication (GEMM) accelerators              precision multiplication with table lookups and accumulation
+   reduce this burden by replacing costly multiplications with table
+   lookups. However, existing designs only support activation-weight          [28], [50], [52], [53], [67]. Therefore, LUT-based GEMM
+   GEMM (AW-GEMM) in LLM linear layers, while LUT execution                   accelerators have demonstrated strong energy efficiency for
+   for activation-activation GEMM (AA-GEMM) in attention has                  activation-weight GEMM (AW-GEMM) in LLM linear layers.
+   not been realized. As AA-GEMM is a major contributor to                       While previous LUT-based GEMM accelerators [50], [52]
+   the computation and energy costs of LLM inference in long-                 can efficiently handle AW-GEMM in mixed-precision LLM
+   context scenarios, supporting both GEMM types–not just AW-
+   GEMM–is crucial. To solve this problem, we propose Omni-LUT,               inference, there has been little focus on activation-activation
+   a hardware-software co-designed LUT-based GEMM accelerator                 GEMM (AA-GEMM), where both GEMM operands are run-
+   that supports both AW-GEMM in linear layers and AA-GEMM                    time activations. This gap becomes more important as context
+   in attention with efficient LUT execution. Omni-LUT uses a                 length increases. For a sequence of length T , AW-GEMM in
+   hardware-aware Key-Value (KV) cache quantization design that               linear layers scales as O(T ), while AA-GEMM in attention
+   combines offline calibration with lightweight online quantization,
+   preserving model accuracy while enabling compatibility with                scales as O(T 2 ) during prefill due to the Query-Key and at-
+   LUT-based GEMM accelerators. It also supports a more accurate              tention score-Value multiplications across token pairs. During
+   quantization direction by leveraging quantization compensation             decode, AW-GEMM cost for each generated token does not
+   during LUT creation. Omni-LUT further comprises a phase-                   scale with context length, whereas attention must read and
+   adaptive hybrid-stationary LUT-based systolic array to improve             compute over the full Key-Value (KV) cache, making both
+   the efficiency of both the prefill and decode phases in LLMs.
+   Across diverse long context workloads, Omni-LUT achieves                   AA-GEMM cost and KV cache traffic grow with context
+   1.25×–1.91× higher energy efficiency than the state-of-the-art             length [16], [17]. Therefore, to remain efficient under long
+   (SOTA) LUT-based GEMM accelerator under an equal peak-                     context serving, an LLM accelerator should support efficient
+   throughput hardware setup, while maintaining competitive model             LUT execution for both AW-GEMM and AA-GEMM.
+   accuracy compared with SOTA KV quantization methods.                          Because AA-GEMM uses cached Keys and Values as
+                                                                              operands, extending low-bit LUT execution to attention re-
+                         I. I NTRODUCTION
+                                                                              quires KV cache quantization. Naive low-bit KV quantiza-
+      Recent advances in large language models (LLMs) [1], [9],               tion causes severe accuracy degradation because Key and
+   [14], [25], [62], [63] have rapidly increased the demand for               Value activations contain substantial outliers. To address the
+   efficient inference on resource-constrained systems. Quanti-               challenge of outliers, prior outlier-aware [8], [18], [20], [38]
+   zation has become a key technique for reducing model size,                 and KV cache quantization methods [29], [46], [59] isolate
+   memory traffic, and computation cost, enabling the deploy-                 these values, retain a subset of the data in original high
+   ment of LLMs on edge and power-limited platforms [12], [30].               precision. While such designs can improve accuracy, they
+   In particular, weight quantization has reduced LLM weights                 also introduce dedicated dequantization or high-precision side
+   to 4-bit precision and even lower, while largely preserving                processing. After dequantization, the computation also falls
+   model quality [19], [22], [24], [48], [66]. However, activation            back to conventional, less energy-efficient FP×FP GEMM.
+   outliers make low-bit activation quantization more difficult, so           Moreover, unlike offline weight quantization, KV activations
+   activations typically remain in higher precision [6], [51]. As             are generated online during inference, so any practical solution
+   a result, weight-quantized LLM inference becomes a mixed-                  must keep the runtime overhead of quantization very small.
+   precision GEMM (mpGEMM) problem, where low-bit integer                     Even if the KV cache is converted into a hardware-friendly
+   weights (2/3/4-bit integer (INT)) are multiplied by high-                  low-bit format, another barrier remains in LUT hardware. Ex-
+   precision (16/32-bit floating-point (FP)) activations [50].                isting LUT-based GEMM accelerators apply scaling after the
+      Conventional GEMM accelerators, including GPUs and                      table lookup, which does not support the accuracy-preferred
+   TPUs [34], [35], do not natively support FP-INT mpGEMM                     quantization direction required by low-bit weights, Keys, and
+   efficiently. In practice, low-bit weights are dequantized into a           Values. Therefore, extending LUT execution from AW-GEMM
+   higher-precision format before GEMM. Lookup-table (LUT)-                   to AA-GEMM requires both a LUT-consumable KV cache
+
+
+979-8-3315-5065-3/26/$31.00 ©2026 IEEE                                  322
+DOI 10.1109/ISCA66397.2026.00037
+quantization method and a scale-aware LUT generation mech-                                   Input Tokens
+anism.                                                                  Omni-LUT                   is        a
+                                                                                                                                MHA
+   To address these challenges, we propose Omni-LUT, a                                       Prefill Phase
+quantization-hardware co-design that extends LUT-based ex-                                                         KV
+                                                                                                                  Cache               Q       K    V
+ecution from AW-GEMM in linear layers to AA-GEMM                                             Decode Phase
+in attention. On the quantization side, Omni-LUT uses                                          Layer 0                                MatMul
+
+
+
+
+                                                                          Self-regression
+hardware-aware binary-coding quantization for the KV cache                                     Layer 1
+                                                                                                             QKV Generation
+                                                                                                                  Multi-Head          Scale
+without relying on high-precision outlier isolation. For the                                                       Attention
+
+
+
+
+                                                                                                  ...
+Key cache, Omni-LUT performs offline-calibrated per-channel                                                         (MHA)         SoftMax
+                                                                                                                  Projection
+binary-coding quantization (BCQ) and improves accuracy                                         Layer N
+                                                                                                                 Feed Forward             MatMul
+with Attention-aware Sensitivity-based Bit Allocation (AS-                                                         Network
+Bit), which assigns additional bit-planes to sensitive Key
+                                                                      BCQ-based quantization                 scheme
+channels. For the Value cache, Omni-LUT uses online per-
+                                                                                            Output Tokens
+token binary-coding uniform quantization (BC-UQ), which
+is simple yet sufficiently accurate for runtime deployment.                                      Fig. 1: Structure of LLM Inference.
+A Binary-coding Quantization Unit (BQU) quantizes each
+generated Key and Value vector into binary-coding bit-planes
+used by the LUT processing elements. On the hardware side,                                                   II. BACKGROUND
+Omni-LUT integrates the BQU and a scale-aware LUT Gen-
+eration Unit (LGU) with a phase-adaptive hybrid-stationary           A. LLM Inference
+LUT-based systolic array. The LGU embeds scaling and                    As shown in Fig. 1, the LLM inference [65] consists of two
+zero-point compensation into LUT construction. This enables          phases: prefill and decode. The prefill phase is responsible for
+the row-wise scaling direction needed by weights, Keys,              processing the entire input token sequence at once. During this
+and Values, so AA-GEMM can stay on the LUT datap-                    prefill phase, the LLM generates the Query (Q), Key (K), and
+ath without sacrificing model accuracy. Together, the BQU            Value (V) activations for each token. The resulting K and V
+and LGU provide the binary-coding bit-planes and scale-              tensors for all input tokens are written back to memory, known
+aware lookup tables needed by the systolic array to execute          as the KV cache. Because the prefill phase is used to process
+both AW-GEMM and AA-GEMM. The systolic array uses a                  matrix multiplications involving a large number of input token
+weight-stationary (WS) dataflow for GEMM-dominated prefill           sequences, it is typically computationally intensive, especially
+and a general matrix-vector multiplication (GEMV)-optimized          in the presence of long prompts (contexts) [13], [21], [54],
+output-stationary variant (OS-V) for decode, sustaining high         [78]. Once the prefill is complete, the decode phase begins
+utilization across both phases.                                      to generate the output token, processing one token at a time
+   Experiments show that Omni-LUT improves energy effi-              through an auto-regressive loop. For each iteration, the LLM
+ciency by 1.25×–1.91× over the SOTA LUT-based GEMM                   takes the single token generated in the previous step as its
+accelerator under an equal peak-throughput hardware setup            input and must load the entire KV cache from memory. In
+in long context workloads, while maintaining competitive             each attention layer, the LLM generates the Q, K, and V
+model accuracy compared with SOTA KV cache quantization              activations for the newly generated token. The new Q conducts
+methods, and maintains strong hardware area efficiency. The          the attention computations for all existing K and V pairs,
+contributions of this paper are summarized as follows:               including those stored in the KV cache from previous steps.
+                                                                     Whenever a new output token is generated, this new key-value
+  • We propose Omni-LUT, a LUT-based GEMM accelerator                pair is appended to the cache. The decode phase is memory-
+    that extends efficient low-bit LUT execution from AW-            intensive because each generated token requires reading the
+    GEMM to AA-GEMM.                                                 accumulated KV cache from memory.
+  • We develop a hardware-aware KV cache quantization
+    design, including offline-calibrated per-channel Key BCQ         B. LLM Quantization
+    with AS-Bit and lightweight online per-token Value BC-              Quantization transforms the high-precision data, including
+    UQ, that preserves model accuracy without relying on             the weights and activations of LLMs, into a low-bit data
+    high-precision outlier processing.                               representation. A simple method is uniform quantization [22],
+  • We introduce a scale-aware LUT Generation Unit that
+                                                                     [44], [45], [69], which maps a continuous value range to 2q
+    embeds scaling and zero-point compensation into LUT              discrete, evenly-spaced levels, meaning the step size between
+    construction, enabling the accuracy-optimal quantization         each level is constant. Uniform quantization [20], [29], [38],
+    direction for weights, Keys, and Values.                         [73] is useful for evenly distributed data, but it fails when non-
+  • We design a phase-adaptive hybrid WS/OS-V LUT-based
+                                                                     uniform data distributions are present, such as when the data
+    systolic array that improves utilization across GEMM-            contains significant outliers. The non-uniform quantization
+    dominated prefill and GEMV-dominated decode.                     avoids this by allocating its discrete levels based on the data’s
+
+
+
+
+                                                               323
+                                 0000   -A-B-C-D                                                        Instead of dequantizing low-precision weights, the LUT-
+                                 0001   -A-B-C+D                                                     based GEMM [53] precomputes the dot products of high-
+                        Generate 0010   -A-B+C-D
+                          LUT    0011   -A-B+C+D                                                     precision activations and low-precision weights, which are
+       A B C D
+
+
+
+
+                                         ...
+                                 1100   +A+B-C-D                                                     stored in the LUT. As shown in Fig. 2, the LUT-based GEMM
+  Input Activation               1101   +A+B-C+D
+                                 1110   +A+B+C-D                                                     divides activations into groups, and the dot products of a small-
+   Scaling Factor                1111   +A+B+C+D                                                     grouped activation with low-bit weights are precomputed and
+  1.3 2.4 3.7 ... 5.7     Get                              1.3 •           3.7 • ... 5.7 •
+                                                                   2.4 •                             stored in a LUT. Each dot product in the LUT is in a high-
+                         Search 1.3       1111
+   1    1   0     0                                       T[1111] T[1101] T[0011]   T[0001]
+                          Key   2.4       1101
+                                3.7       0011                   Output Activation
+                                                                                                     precision format. For instance, in Fig. 2, four activations are
+   1    1   0 ... 0
+                                                                                                     grouped, and the LUT preserves only 16 precomputed high-
+                                          ...
+   1    0   1     0              5.7      0001
+   1    1   1     1                                                                                  precision dot products. In each cycle, this group looks for
+    BCQ Weight                                                                                       binary values in one column of the quantized matrix to retrieve
+  {-1 ➜ 0, +1 ➜ 1}
+                                                                                                     the corresponding values stored in the LUT. The number of
+                Fig. 2: LUT-based mpGEMM Operations                                                  LUT lookups is proportional to the length of the bits in the
+                                                                                                     low-precision weight (i.e., the 2-bit weights require twice the
+                                                                                                     LUT lookups to obtain the final dot products). The LUT is
+actual distribution, thereby reducing the quantization errors                                        reused multiple times when conducting dot products between
+when outliers exist.                                                                                 an activation tile and binary values in each column of the
+  Binary-coding quantization (BCQ) [15], [70] is a type                                              quantized matrix. The partial sum is yielded after completing
+of non-uniform quantization method. It approximates a full-                                          each LUT lookup and is accumulated to produce the final
+precision vector W by decomposing it into a high-precision                                           results. Finally, a new LUT will be created when conducting
+scaling factor vector a and a binary-coding matrix B, where                                          the dot products of a new activation group. Our work utilizes
+B contains only the values −1 and +1. This reconstruction,                                           LUT-based mpGEMMs for the computations of Key and Value
+which is inherently non-uniform, is expressed as:                                                    activations to improve the efficiency of LLM inference.
+                                                k
+                                                X                                                      III. BCQ-BASED KV C ACHE Q UANTIZATION D ESIGN
+                                  Wi ≈                Bij · aj                           (1)
+                                                j=1                                                  A. KV Value Distribution
+where k denotes the number of binary bases used for the                                                 As observed in prior research [29], [46] and shown in Fig. 3,
+approximation, Bij represents the binary coefficient for the                                         the Key (K) and Value (V) caches exhibit distinct statistical
+i-th weight and the j-th basis, and aj is the corresponding                                          properties. The Key cache demonstrates strong per-channel
+scaling factor. By extending the traditional BCQ representation                                      characteristics, where certain channels consistently present as
+with an offset and structured power-of-2 scalers, the BCQ                                            outliers with significantly large magnitudes. By contrast, the
+method is adapted to be compatible with uniform quantization                                         Value cache exhibits highly dynamic data distributions, lacking
+schemes.                                                                                             this stable per-channel structure in its vector magnitudes
+   Prior works [29], [46], [59], [60] reveal that the KV caches                                      and ranges. This fundamental divergence naturally suggests
+consist of distinct value distributions, posing a challenge in                                       distinct quantization strategies. The stable outlier pattern in
+reducing their bit widths while maintaining LLM inference                                            the Key cache makes per-channel quantization a suitable and
+accuracy. To address this and minimize model accuracy loss,                                          effective approach. In contrast, the variable nature of the Value
+previous works often adopt a hybrid strategy: it uses per-                                           cache necessitates a more adaptive per-token quantization
+channel quantization for the Key cache, validating the distinct                                      method.
+value distributions found across its different channels, while                                       B. Binary-Coding Uniform and Binary-Coding Quantization
+applying per-token quantization to the Value cache. Prior
+research [29], [37], [46] also isolates these outliers, represents                                      Following Section III-A, we employ a per-channel quanti-
+them in a higher-precision format, and performs additional                                           zation strategy for the Key cache. The required statistics are
+calculations for these preserved outliers.                                                           global, depending on the distribution across all tokens, which
+                                                                                                     prevents accurate on-the-fly estimation during autoregressive
+C. LUT-based mpGEMM on LLMs                                                                          inference. Therefore, we pre-compute the quantization param-
+   Recent quantization methods have significantly reduced the                                        eters, specifically the scaling factors and offsets, offline using
+bit widths of weights in LLM to 2-4 bits, demonstrating                                              a representative calibration dataset. Omni-LUT supports two
+that this low-bit weight quantization does not tremendously                                          distinct methods for this offline calibration, both designed to
+decrease the accuracy of LLM inference. However, commer-                                             express the final quantized value in a hardware-friendly binary
+cial accelerators, such as GPUs and TPUs, do not natively                                            coding format.
+support the resulting activation-weight (AW) mixed-precision                                         Binary-Coding Uniform Quantization (BC-UQ). We first
+GEMM (mpGEMM). This problem is typically addressed                                                   perform simple per-channel uniform quantization, finding a
+by additional dequantization operations that upscale the low-                                        single scale and zero-point for each channel from the calibra-
+precision weights to match the high-precision activations; this                                      tion data. To fit this into our binary-coding framework, we do
+approach leads to inefficiencies in LLM inference.                                                   not learn the scaling factors. Instead, we set them to a fixed
+
+
+
+
+                                                                                               324
+                                                                   Fig. 3: Data visualization of Query, Key and Value at LLaMA2-7B Layer-4.
+
+
+                                       LLaMA2-7B                                                                              Effective Bitwidth
+                                     Effective Bitwidth                                                           3.0   3.2     3.4       3.6      3.8        4.0
+                                                                                                                                                                              Algorithm 1: BCQ Alternating Optimization [70]
+                         3.0   3.2      3.4      3.6       3.8      4.0                                     1.0
+                   6.2                                 Key-Aware
+                                                                                                                                                                               Input: Key calib. Kcal , bit width B, rounds R
+Perplexity (ppl)
+
+
+
+
+                                                       Attention-Aware                                                                                                         Output: scaling factors α∗ , Binary codes B∗
+                                                                          Normalize Perplexity (ppl) Drop
+
+
+
+
+                   6.0                                                                                      0.8
+                   5.8                                                                                                                                                    1 α, B ← GREEDY_INIT(Kcal , B);
+                                                                                                            0.6                                                           2 for r ← 1 to R do
+                   5.6
+                                       LLaMA2-13B                                                                                                                         3     α ← LEAST_SQUARES(B, Kcal , α);
+                   5.4                                                                                      0.4
+                                                       Key-Aware                                                                                                                B ← BST(Kcal , α);
+Perplexity (ppl)
+
+
+
+
+                                                                                                                                                                          4
+                   5.3                                 Attention-Aware
+                   5.2                                                                                      0.2                                      opt-6.7b             5    return α, B;
+                   5.1                                                                                                                               llama2-7b
+                                                                                                                                                     mistral-7b
+                   5.0                                                                                      0.0
+                         0.0   0.2      0.4      0.6      0.8       1.0                                           0.0   0.2     0.4       0.6      0.8        1.0
+                                     High Bits Fraction                                                                       High Bits Fraction
+
+                                        (a)                                                                                      (b)                                      cost and sensitivity to the calibration dataset are evaluated in
+                                                                                                                                                                          Section VI-A.
+ Fig. 4: (a) Impact of attention-aware quantization on perplexity
+                                                                                                                                                                             For the Value cache, as discussed in Section III-A, its
+ across varying high-bit fractions. (b) Normalized perplexity
+                                                                                                                                                                          distributions are highly token-dependent, so we apply online
+ drop as a function of high-bit fraction across various model
+                                                                                                                                                                          per-token BC-UQ, which is simple and fast enough to be
+ architectures.
+                                                                                                                                                                          feasible during inference.
+
+ power-of-2 basis, and the entire basis is scaled by the uniform                                                                                                          C. AS-Bit: Attention-Aware Sensitivity-Based Bit Allocation
+ scaler:
+                                                                                                                                                                             While BC-UQ and BCQ are compatible with the binary-
+                                                              2b − 1                                                                                                      coding format of LUT-based GEMM accelerators, they use
+                                              zbcq = zu −                                                                                                                 a fixed bit width for all channels. This design fails to ex-
+                                                                  2                                                                                        (2)
+                                     αbcq = [αu · 2−1 , αu · 20 , . . . , αu · 2b−2 ]                                                                                     ploit the flexibility of LUT-based GEMM accelerators that
+                                                                                                                                                                          can handle variable bit widths. Moreover, we observe that
+ This enables uniform quantization in the binary-coding format                                                                                                            such naive fixed-bit schemes suffer significant performance
+ supported by the LUT-based GEMM accelerator.                                                                                                                             degradation, especially on smaller models. We hypothesize
+ Binary-Coding Quantization (BCQ). This is a theoretically                                                                                                                that this degradation occurs because not all Key channels are
+ more powerful method compared to uniform quantization                                                                                                                    equally important for computing the attention scores. Each
+ because of its non-uniform feature. Instead of using a fixed                                                                                                             Key channel has its own distribution and thus contributes
+ basis, we learn the optimal scaling factors directly from the                                                                                                            differently to the final QK ⊤ dot product. A fixed low-bit
+ calibration data. Following prior work [70] on BCQ, we                                                                                                                   budget penalizes all channels uniformly, harming the few
+ employ an alternating update approach to find the optimal                                                                                                                critical, high-sensitivity channels.
+ parameters, as shown in Algorithm 1. This iterative process                                                                                                                 To address this issue, we propose AS-Bit (Attention-aware
+ refines the scaling factors and the binary codes by alternating                                                                                                          Sensitivity-based Bit allocation), an adaptive bit-allocation al-
+ between two steps: first, fixing the codes and solving for                                                                                                               gorithm for the Key cache. The core idea is to assign higher bit
+ the optimal scaling factors that minimize reconstruction error,                                                                                                          width to channels that are more sensitive to quantization error,
+ and second, fixing the scaling factors and finding the new                                                                                                               while assigning lower bit width to the remaining channels. We
+ optimal binary codes. This method yields a more accurate                                                                                                                 define the sensitivity of a channel based on its impact on the
+ representation, especially at low bit widths, at the cost of                                                                                                             final attention score.
+ a more intensive offline calibration step. This calibration is                                                                                                              In the attention mechanism A = QK ⊤ , quantization error in
+ performed once per model before deployment; its empirical                                                                                                                the Keys, ∆K, is scaled by the magnitude of the corresponding
+
+
+
+
+                                                                                                                                                                    325
+                                                                                           BQU
+                              Weight buffer
+                             Weight   Buffer
+                                                                                              TSE              BEA
+                                                                                                                                                               Pre-defined α
+                                                                                               Min & Max
+                   LGU     PE          PE       PE    PE                                     Comparison Tree
+
+                                                                                                                        α0                    α1               α2                    α3
+         Unified                                                                              Scaling Factor
+         Unified   LGU     PE          PE       PE    PE                                        Calculator
+  BQU    buffer                                                                                                  AddSub                  AddSub         AddSub                  AddSub
+         Buffer
+
+
+
+
+                            ...
+
+
+
+                                       ...
+
+
+
+                                                ...
+
+
+
+                                                      ...
+                    ...
+
+
+                                                                                                                 Sign Bit                Sign Bit       Sign Bit                Sign Bit
+                   LGU     PE          PE       PE    PE    Input Dataflow                 Token In                          Sign-flip                              Sign-flip
+
+                                                            Weight Dataflow                                    Binary                        Binary   Binary                        Binary
+                                                                                                               Weight                        Weight   Weight                        Weight
+                                  Accumulator               Output Dataflow
+
+
+
+        Fig. 5: System-level overview of Omni-LUT.                                       Fig. 6: Architecture of the Binary-coding Quantization Unit
+                                                                                         (BQU).
+
+Query entries Q. Consequently, the effective sensitivity of a
+                                                                                                 IV. O MNI -LUT H ARDWARE I MPLEMENTATIONS
+Key channel depends both on its intrinsic quantization error
+and on the energy of the corresponding Query channel. We                                 A. Omni-LUT Architecture Overview
+capture this with the per-channel Query energy E[Q2 ]d :                                    Fig. 5 presents the system-level overview of the pro-
+                                         Tcal
+                                                                                         posed Omni-LUT GEMM accelerator. The architecture com-
+                                     1 X                                                 prises on-chip unified buffers for activations, dedicated weight
+                   E[Q2 ]d =                  (Qt,d )2 ,                     (3)
+                                    Tcal t=1                                             buffers, a LUT Generation Unit (LGU), a Processing-Element
+                                                                                         (PE) array, an accumulator, and a Binary-coding Quantization
+where Tcal is the number of calibration tokens and d indexes                             Unit (BQU). The compute fabric is organized as a 32×4 PE
+channels. As illustrated in Fig. 3, the Query also exhibits stable                       array with a systolic array structure, supporting both weight-
+per-channel structure, making E[Q2 ]d a reliable sensitivity                             stationary and output-stationary dataflows. Specifically, it can
+factor.                                                                                  also be reconfigured into a 1D architecture to mitigate the
+   We denote by MSEb [d] the per-channel quantization error                              low PE utilization issue in GEMV operations, as further
+of the Keys at bit width b:                                                              discussed in IV-D. During operation, input activations and their
+                               Tcal                                                      corresponding scaling factors are fetched from the buffer and
+                           1 X                        2
+           MSEb [d] =               Kt,d − Kq,b [t, d] ,                     (4)         passed to the LGU. The LGU generates the scale-aware lookup
+                          Tcal t=1                                                       table (detailed in IV-C), which is then streamed into the PE
+where Kt,d is the original Key and Kq,b [t, d] is the quantized-                         array. Concurrently, weight data is retrieved from the weight
+dequantized Key at bit width b.                                                          buffer and is either loaded and held within designated PEs or
+   Given a low bit width bℓ and a high bit width bh , we measure                         propagated downward along the PE columns, enabling flexible
+the marginal gain of using the higher precision for channel d                            hybrid-stationary execution. Partial sums produced by the PE
+as                                                                                       array are processed by the final accumulator and written back
+                                                                                         to the unified buffer. The BQU (detailed in IV-B) performs
+          ∆Jd = E[Q2 ]d · MSEbℓ [d] − MSEbh [d] .
+                                                      
+                                                             (5)
+                                                                                         on-the-fly quantization for KV activations, reading data from
+Intuitively, ∆Jd is the reduction in Key quantization error from                         the unified buffer and updating it with the resulting quantized
+bℓ to bh , weighted by how strongly the corresponding Query                              values.
+channel amplifies that error.                                                            B. Binary-coding Quantization Unit (BQU)
+   During offline calibration, the AS-Bit algorithm computes
+the Query energy E[Q2 ]d and the Key MSE for both bit                                      The BQU is a lightweight engine responsible for the online
+width (MSEbℓ [d] and MSEbh [d]) by performing dual-path                                  conversion of floating-point Key and Value activations into the
+quantization on the Key calibration data. Using these metrics,                           BCQ representation. This output format is directly consumed
+it evaluates the marginal gain ∆Jd for each channel and                                  by the LUT-based PEs. As illustrated in Fig. 6, the BQU is
+identifies the top k% of channels with the largest ∆Jd values.                           designed with two distinct paths to implement our adaptive
+These high-sensitivity channels are assigned the higher bit                              quantization strategy:
+width bh , while all remaining channels use bℓ . As Fig. 4(a)                              • Key Path: Employs per-channel quantization, where scal-
+
+confirms, AS-Bit allocation enables models to reach near high-                                ing factors are calibrated offline and the BCQ bit planes
+bit accuracy with minimal high-precision bits. This attention-                                are computed online.
+aware method significantly reduces perplexity even when only                               • Value Path: Employs per-token uniform quantization,
+
+10-30% of channels use high-precision bits, and it does so                                    where both the scaling factors and the BCQ bit planes
+more rapidly than approaches considering only Key MSE.                                        are computed online.
+Fig. 4(b) further shows that despite varying sensitivities across                        To support this dual-path algorithm, the BQU is internally
+different models, the overall trend illustrates that high accuracy                       divided into two primary hardware sub-blocks: the Token-
+is maintainable even at low high-bit fractions.                                          Scale Estimator (TSE) and the BCQ Encoder Array (BEA).
+
+
+
+
+                                                                                   326
+                     α1 α2 α3 ... αn                                                                               LUT Generation Unit
+                                                    α1 • A     α2 • A   - α3 • A         - αn • A
+                     1   1   0       0             +α1 • B   +α2 • B    - α3 • B         - αn • B
+                                                                                   ...                              Scaling Stage
+   A   B C D         1   1   0 ... 0         =     +α1 • C   - α2 • C   +α3 • C          - αn • C
+                     1   0   1     0               +α1 • D   +α2 • D    +α3 • D          +αn • D                                   A           B         C        D
+                                                                                                                                 αA          αB        αC       αD
+                     1   1   1     1
+                                             (a)
+
+                α1       1   1   0       0          α1 • A     α1 • A   - α1 • A         - α1 • A
+                α2       1   1   0 ... 0           +α2 • B   +α2 • B    - α2 • B         - α2 • B
+  A    B C D                                 =                                     ...                                               Add/Sub             Add/Sub
+                α3       1   0   1     0           +α3 • C   - α3 • C   +α3 • C          - α3 • C
+                α4       1   1   1     1           +α4 • D   +α4 • D    +α4 • D          +α4 • D
+
+                                             (b)                                                                      Add/Sub         Add/Sub          Add/Sub        Add/Sub
+                                                                                                                                                                                      +
+Fig. 7: Comparison of column-wise vs. row-wise scaling                                                               LUT     LUT     LUT      LUT
+factor. (a) Column-wise scaling factor. (b) Row-wise scaling                                                         [000]   [001]   [010]    [011]
+                                                                                                                                                      LUT     LUT     LUT     LUT
+factor.                                                                                                             Table Generation Stage            [100]   [101]   [110]   [111]
+
+
+
+                                                                                                                Fig. 8: Scale-aware LUT Generation Unit (LGU) of Omni-
+Token-Scale Estimator (TSE). The TSE computes the per-                                                          LUT.
+token scaling factors that are used to quantize Value activations
+with binary-coding uniform quantization (BC-UQ). Its core
+component is a pipelined reduction tree that processes all                                                      Runtime implication. In our implementation, the BQU width
+elements of an incoming value token in parallel to find                                                         is 128, which matches the maximum head dimension in
+the minimum (xmin ) and maximum (xmax ) values. From                                                            the evaluated models, including OPT [79], LLaMA2 [64],
+these extrema, the TSE calculates two uniform quantization                                                      LLaMA3 [25], Mistral [32], Mixtral [33], and Qwen3 [71].
+parameters—a zero-point (zpv ) and a step size (δv ):                                                           Therefore, one Key or Value head vector can be quantized
+                     xmax + xmin        xmax − xmin                                                             without splitting it into multiple passes. In other words, the
+          zpv =                  , δv =                                                             (6)         online KV quantization does not add extra cycles.
+                          2               2b − 1
+where b is the target bit width for the quantized Value activa-                                                 C. Scale-aware LUT Generation Unit (LGU)
+tion. A key aspect of our method is that the final BCQ scaling                                                     The LGU is a critical component that builds the lookup
+factors, {αi }, are directly derived from this uniform step size.                                               tables used by the PE array. It is responsible for pre-computing
+The TSE yields these factors by multiplying δv with a set of                                                    the scaled partial sums required for our BCQ-based dot
+pre-defined power-of-two base scales (e.g., {4, 2, 1, 0.5} for                                                  product. These generated LUT entries are then streamed to
+q = 4 bits). These token-specific scaling factors {αi } and                                                     the PEs and reused across many lookups. The design of our
+zero point zpv are then forwarded to the BCQ Encoder Array.                                                     LGU is fundamentally motivated by the need to support the
+BCQ Encoder Array (BEA). The BEA converts full-                                                                 accuracy-optimal quantization direction, which prior works do
+precision Key and Value vectors into their quantized binary-                                                    not address.
+coding representation. Given an input vector x, a zero-point                                                    Quantization direction and why it matters. Prior LUT-based
+vector zp, and scaling factors {αi }, the BEA produces a binary                                                 GEMM accelerators [52] utilize a single scale after the lookup,
+matrix B ∈ {−1, +1}q×d such that                                                                                which only supports column-wise scaling of the quantized
+                                             q                                                                  matrix (Fig. 7(a)). However, the accuracy-optimal direction
+                                                                                                                is row-wise (Fig. 7(b)):
+                                             X
+                         x ≈ zp +                  α i ⊙ Bi                                         (7)
+                                             i=1                                                                   • Weights: best with row-wise scaling, as reported by prior
+                                                                                                                      work [73];
+where d is the vector length and Bi is the i-th bit-plane.
+                                                                                                                   • Keys: best with per-channel scaling [46]; when used in
+   The BEA implements a greedy residual algorithm. It first
+                                                                                                                      QK T , this is equivalent to row-wise K;
+initializes the residual r(0) and then iteratively refines it for
+                                                                                                                   • Values: best with per-token scaling; in Attn × V , this is
+each bit-plane i = 1, . . . , q:
+                                                                                                                      again row-wise with respect to V.
+                       r(0) = x − zp,                                                               (8)         Post-lookup scaling cannot provide different scales for the four
+                                                                                                                elements in the group, so it fails to support the desired direc-
+         Bi = sign r(i−1) , r(i) = r(i−1) − Bi · αi ,
+                         
+                                                                                                    (9)
+                                                                                                                tion. To clarify terminology: We use an A × W formulation
+Each step decides whether to add or subtract αi to pull                                                         in this paper. Therefore, our “row-wise” scaling is equivalent
+the residual closer to zero; the remaining is handled by                                                        to what prior work using a W × A formulation might refer to
+subsequent, smaller αi . This greedy algorithm is unified for                                                   as “column-wise” scaling.
+both paths. The distinction lies in the source of its inputs: for                                                  Omni-LUT, therefore, performs scaling inside the LUT
+the Key Path, the per-channel zpk,c and αi,c are fetched from                                                   generator. For each bit-plane, the LGU first multiplies each
+offline-calibrated results; for the Value Path, the token-wise                                                  activation in the 4-element group by its own scaling factor
+zpv and αi are provided by the TSE.                                                                             (row-/channel-/token-specific) using floating-point multipliers.
+
+
+
+
+                                                                                                          327
+                                                                                                                LUT                                      LUT                         LUT
+
+                                                             Weight Buffer                                       RAC                                      RAC                         RAC
+
+                                                LGU           PE         ...        PE                           RAC                                      RAC                         RAC
+                                                                         ...
+
+
+
+
+                                                                                                                      ...
+
+
+
+
+                                                                                                                                                            ...
+
+
+
+
+                                                                                                                                                                                        ...
+                                                LGU           PE         ...        PE
+                          BQU
+                                   Unified                                                                       RAC                                      RAC                         RAC
+                                   Buffer                      ...       ...
+
+
+
+
+                                                                                     ...
+                                                 ...
+
+
+
+
+                                                LGU           PE         ...        PE
+                                                                         ...
+                                                                                                                 Weight                                   Weight                      Weight
+
+                                                              Accumulator
+                                                                                                                            +                                      +                           +
+
+
+
+
+                                                                                                          ...
+
+
+
+
+                                                                                                                                                   ...
+
+
+
+
+                                                                                                                                                                               ...
+                              Input Dataflow           Weight Dataflow         Output Dataflow
+                                                                                                                (a)                                      (b)                         (c)
+
+            Fig. 9: Reconfigurable PE microarchitecture supporting WS and OS-V modes. (a) PE overview, showing the unified datapath
+            shared by both execution modes. (b) WS dataflow, where weights are stored locally and partial sums propagate along the
+            systolic chain during the GEMM-dominated prefill phase. (c) OS-V dataflow, where weights are streamed from row-level
+            FIFOs and partial sums are accumulated locally to enable full-array GEMV parallelism during decode.
+
+                                                   LUT WS                LUT OS              LUT OS-V                                 current LUT. Therefore, LUT generation does not introduce
+                        2.0                                                                             1.68
+Normalized Throughput
+
+
+
+
+                                                                                                                                      additional stall cycles.
+                        1.5
+                                    1.00                                            1.00       1.13
+                        1.0                      0.76        0.76                                                                     D. Hybrid Stationary and GEMV-optimized LUT-based Sys-
+                        0.5                                                                                                           tolic Array
+                        0.0                                                                                                              The core of Omni-LUT’s compute fabric is a 32×4 sys-
+                                             Prefill Phase                                 Decode Phase
+                                                                                                                                      tolic array, designed to accelerate the mpGEMM central to
+Fig. 10: Throughput comparison of different stationary ap-                                                                            our LUT-based approach. This array multiplies floating-point
+proaches (OPT-6.7B, input tokens=4096, output tokens=512).                                                                            activations (pre-processed by the LGU) with the quantized
+                                                                                                                                      BCQ bit-planes of the weights and KV cache.
+                                                                                                                                         This array must handle two distinct computational patterns:
+                                                                                                                                      compute-intensive GEMM in the prefill phase, and GEMV in
+With these four scaled values, the LGU then enumerates
+                                                                                                                                      the decode phase. A conventional 2D systolic array, designed
+all required combinations and writes the results as table
+                                                                                                                                      for GEMM-heavy workloads, suffers from severe underuti-
+entries. The LGU also performs zero-point compensation at
+                                                                                                                                      lization during this GEMV phase, as only a single row or
+this stage, eliminating the need for a final, separate addition
+                                                                                                                                      column of PEs is active at a time. This creates a significant
+to the partial sum; for the first bit-plane, it computes the
+                                                                                                                                      performance bottleneck. To identify the optimal architecture
+dot product of the activation group and its corresponding
+                                                                                                                                      for these varying workloads, we evaluate three different sta-
+per-row zero-point vector, adding this scalar result to every
+                                                                                                                                      tionary implementations of the LUT-based systolic array: a
+entry in the generated table. This placement both enables the
+                                                                                                                                      weight stationary approach (LUT WS), an output stationary
+accuracy-optimal direction and amortizes the scaling and offset
+                                                                                                                                      approach (LUT OS), and a proposed GEMV-optimized output
+costs. This scale-aware generation is the key enabler for Omni-
+                                                                                                                                      stationary approach (LUT OS-V). Our analysis in Fig. 10
+LUT to extend LUT-based computation from AW-GEMM to
+                                                                                                                                      quantifies this trade-off by comparing these three approaches.
+AA-GEMM without sacrificing model accuracy.
+                                                                                                                                      This figure shows that in the GEMM-heavy prefill phase, the
+LGU Microarchitecture. The LGU is a two-stage pipeline,                                                                               LUT WS reaches the highest throughput, achieving 1.3× better
+as shown in Fig. 8. The scaling stage applies four scaling                                                                            performance than the OS-based approaches due to its high
+factors to the current bit-plane activations. The table generation                                                                    weight reuse. Conversely, in the decode phase, both traditional
+stage forms the eight base entries for the 4-element group                                                                            approaches are inefficient. Our proposed OS-V, however, is
+using a reuse-oriented adder/subtractor network; requiring only                                                                       specifically designed for this bottleneck and achieves 1.49×
+6 adders and 6 subtractors. We also materialize a half-LUT                                                                            and 1.68× higher throughput than OS and WS. This anal-
+[67]; the PE uses sign symmetry to obtain the complementary                                                                           ysis confirms that no single approach is optimal for both
+entries. The LGU operates in parallel with the PE array. After                                                                        phases. Therefore, Omni-LUT’s array is designed as a hybrid-
+one LUT is generated, the LGU starts generating the LUT for                                                                           stationary system, dynamically reconfigurable to use the WS
+the next activation group while the PE array consumes the                                                                             for prefill and the OS-V for decode.
+
+
+
+
+                                                                                                                                328
+GEMV-Optimized OS (OS-V) Implementation. Our OS-V                           TABLE I: GEMM engine specifications (500 MHz, 7 nm)
+mode reconfigures the M × N array to compute a wide 1 ×
+                                                                                                                         Peak Tput.      Area
+(M × N ) output tile from a single input vector, rectifying the                Design           Format      PE Shape
+                                                                                                                          (TOPS)        (mm2 )
+low PE utilization of a conventional OS for GEMV. This is
+                                                                                FPE           W16KVA16        64x64         4.1           0.64
+enabled by two key microarchitectural features:                             Tender-int8        W8KVA8         64x64         4.1           0.20
+   • LUT Broadcast: The single LUT generated by the first                    FIGLUT           W4KVA16         32x4          4.1       0.39/1.03∗∗
+                                                                           Omni-LUT-KV4       W4KV4A16        32x4          4.1           0.53
+      row’s LGU is broadcast vertically to all M rows of the               Omni-LUT-KV3       W4KV3A16        32x4       4.1/5.46∗        0.53
+      PE array. The other LGUs are gated to save power.
+                                                                           ∗ Omni-LUT-KV3: 4.1 TOPS (AW), 5.46 TOPS (AA).
+   • Parallel Weight FIFOs: Each of the rows is fed by its own
+                                                                           ∗∗ 0.39 mm2 is FIGLUT’s LUT core only; including the required FPE FP
+      dedicated Weight FIFO, bypassing the standard vertical               backend for AA-GEMM gives 1.03 mm2 total.
+      PE-to-PE weight path. This allows all rows to be fed with
+      unique weight data in parallel.
+In this mode, each row processes its unique weight stream                  Winogrande [58], and HellaSwag [77] to assess common-sense
+from its dedicated FIFO, and all PEs compute in parallel. This             and plausibility reasoning. Our implementation is based on
+structure perfectly maps the GEMV operation, eliminating the               PyTorch and the Hugging Face transformers library [68].
+PE utilization bottleneck. While this design adds the overhead             During evaluation, we simulate KV cache quantization within
+of M-1 sets of Weight FIFOs, it is a necessary trade-off for               each attention layer.
+optimizing GEMV.
+Hybrid PE. To enable this dynamic switching between                        B. Quantization Baselines
+dataflows, the PE microarchitecture itself is hybrid, as shown                We compare both KV cache-only and end-to-end quanti-
+in Fig. 9(a):                                                              zation methods. For KV cache-only quantization methods, we
+   • In WS mode (Prefill, Fig. 9(b)): The PE uses its local                select KIVI [46], KVQuant [29], and Oaken [37], which lower
+      register to store the binary weight. It receives an incoming         the bit widths of Keys and Values while keeping weights in
+      partial sum, adds the result of its own LUT lookup                   full precision. We also include recent KV cache quantization
+      (indexed by the local weight), and forwards the newly                methods available in modern inference software stacks, includ-
+      accumulated partial sum to the next PE.                              ing QServe [45] and NVIDIA’s NVFP4 KV cache quantiza-
+   • In OS-V mode (Decode, Fig. 9(c)): The PE bypasses its                 tion [2]. For the end-to-end quantization methods, we choose
+      local weight register and instead uses the weight streamed           Atom [80] and Tender [41], which also quantize weights and
+      from its row’s dedicated Weight FIFO. The partial sum                sometimes activations. For a fair comparison, we use a BCQ-
+      path is reconfigured to be output-stationary: the psum is            based weight quantization strategy for our method and, when
+      accumulated in a local register within the PE.                       applicable, apply the same weight configuration to baselines
+The WS/OS-V switch is controlled by a mode register in                     that do not originally quantize weights.
+each PE and the corresponding FIFO control logic. Changing                 C. Hardware Setup
+the mode takes one cycle to update these registers. This
+                                                                              We evaluate Omni-LUT and baselines using post-synthesis
+switch happens only once per query, at the boundary between
+                                                                           area and power estimation together with a calibrated latency
+prefill and decode. Therefore, its effect on total latency is
+                                                                           and energy model. All units are synthesized using Synopsys
+negligible. This hybrid datapath provides the flexibility to
+                                                                           Design Compiler targeting a 500 MHz clock frequency in
+adapt to both GEMM and GEMV workloads with minimal
+                                                                           TSMC 7-nm technology. The synthesis results are used to
+hardware overhead. The core implementation of the PE is
+                                                                           obtain area reports, and power is estimated using Synopsys
+informed by prior work [52] to balance compute and table
+                                                                           PrimeTime PX. To model diverse GEMM shapes, we calibrate
+access energy; each PE contains a LUT built from a group of
+                                                                           our simulator using gate-level simulation with Synopsys VCS
+4 activations, and the table is shared by 32 binary weights to
+                                                                           on kernels instantiated from real inference tensors. For each
+Read and Accumulate (RAC) simultaneously.
+                                                                           kernel, we obtain cycle counts and switching activity, which
+                      V. M ETHODOLOGY                                      are annotated to the power analysis tool to estimate per-
+                                                                           kernel energy, and the resulting measurements are used to
+A. Models and Datasets
+                                                                           parameterize our simulator. On-chip buffers are implemented
+   We evaluate our quantization algorithm on OPT-1.3B, 6.7B,               using SRAM macros in the same process, and off-chip DRAM
+13B [79], LLaMA2-7B, 13B [64], Mistral-7B [32], Mixtral-                   energy is estimated using DRAMPower [10] configured for an
+8x7B [33], LLaMA3-8B [25], and Qwen3 [71] models includ-                   LPDDR5 device [4] with 51.2 GB/s peak bandwidth across all
+ing Qwen3-8B, Qwen3-14B, and Qwen3-30B-A3B, covering                       baselines.
+MHA, GQA, and MoE architectures across edge-friendly and                      Throughout our simulation, we utilize FlashAttention [16],
+larger model scales. We report perplexity (PPL) and zero-shot              [17] algorithm to match realistic model serving implemen-
+reasoning accuracy. For calibration and PPL, we use WikiText-              tations: intermediate attention matrices are not materialized
+2 [49]: the training split for offline calibration and the test            to DRAM, and attention is computed in a tiled, streaming
+split for PPL. For zero-shot evaluation, we use PIQA [7],                  manner with a tile size of 256. We model kernel latency
+
+
+
+
+                                                                     329
+    TABLE II: Evaluation results of KV cache quantization on the WikiText-2, PIQA, Winogrande, and HellaSwag datasets.
+          Task                                                              WikiText-2                                                                PIQA                    Winogrande                 HellaSwag
+         Metric                                                            Perplexity (↓)                                                         Accuracy (%)                Accuracy (%)            Accuracy (%)
+         Model           OPT-1.3B     OPT-6.7B       OPT-13B          LLaMA2-7B        LLaMA2-13B        Mistral-7B      Mixtral-8x7B      OPT-6.7B      LLaMA2-7B     OPT-6.7B     LLaMA2-7B    OPT-6.7B    LLaMA2-7B
+
+     Baseline (FP16)      14.64           10.86           10.12            5.47              4.88              5.31             3.84         76.50           79.05       65.35         69.14       67.18        75.99
+       Atom-KV4           15.43           10.97           10.18            5.59              4.96              5.40             4.04         76.44           76.88       64.72         65.90       67.11        72.41
+     KVQuant-KV4          14.75           10.90           10.14            5.49              4.94              5.33             3.87         76.60           78.94       65.11         67.72       67.20        75.81
+       KIVI-KV4           14.66           10.88           10.16            5.49              4.90              5.34             3.84         76.55           78.94       65.27         69.06       67.21        75.99
+       Oaken-KV4          15.28           10.88           10.16            5.52              4.93              5.35             3.90         76.88           79.05       64.72         67.80       67.04        74.57
+      QServe-KV4          15.70           10.95           10.28            5.66              5.12              5.50             4.04         76.71           79.16       64.25         67.01       66.66        74.72
+      NVFP4-KV4           16.77           10.98           10.38            5.53              4.93              5.36             3.92         76.66           78.56       64.88         68.51       66.46        75.78
+   Omni-LUT-KV4-BCQ       14.74           10.86           10.33            5.70              5.17              5.44             4.06         76.28           79.00       64.96         70.17       66.35        75.23
+  Omni-LUT-KV4-BCUQ       14.81           10.91           10.17            5.51              4.91              5.34             3.88         76.71           78.51       64.56         68.11       66.87        75.99
+       Atom-KV3           16.87           11.19           10.48            6.43              5.54              5.89             5.24         76.17           76.39       64.01         61.48       66.46        68.96
+     KVQuant-KV3          15.55           11.12           11.01            5.58              5.28              5.42             3.98         76.39           78.56       65.19         69.14       66.68        75.52
+       Oaken-KV3          16.88           11.18           10.60            7.73              5.25              5.52             4.21         76.44           76.22       63.46         64.17       65.51        64.56
+      QServe-KV3          19.81           12.02           11.16            7.64              7.54              6.20             5.08         75.68           73.99       61.80         59.75       64.85        65.36
+   Omni-LUT-KV3-BCQ       15.22           11.02           12.37            6.11              5.61              5.70             4.33         76.33           78.78       64.09         69.61       64.64        73.67
+  Omni-LUT-KV3-BCUQ       15.45           11.12           10.36            5.68              5.06              5.48             4.08         76.12           77.97       64.64         67.17       66.09        74.36
+
+
+  TABLE III: Evaluation results of general LLM quantization on the WikiText-2, PIQA, Winogrande, and HellaSwag datasets.
+            Task                                                            WikiText-2                                                            PIQA                    Winogrande                  HellaSwag
+           Metric                                                          Perplexity (↓)                                                   Accuracy (%)                  Accuracy (%)               Accuracy (%)
+           Model             OPT-1.3B        OPT-6.7B             OPT-13B      LLaMA2-7B            LLaMA2-13B        Mistral-7B       OPT-6.7B      LLaMA2-7B       OPT-6.7B     LLaMA2-7B     OPT-6.7B    LLaMA2-7B
+
+       Baseline (FP16)            14.64           10.86            10.12           5.47                4.88              5.31           76.50            79.05        65.35          69.14       67.18          75.99
+      Tender-W8KVA8               14.84           10.96            10.15           5.76                5.09             >500            75.79            77.20        64.80          67.56       66.94          73.75
+      Tender-W4KVA4               25.39           14.16            13.30          123.10              101.30            >500            70.89            49.56        59.27          49.80       59.58          27.59
+      Atom-W4KVA4                 15.63           11.07            10.23           5.73                5.07             5.49            75.68            76.44        63.61          64.80       66.55          71.25
+     KVQuant-W4KV4                15.37           10.98            10.22           5.62                5.03             5.41            76.71            78.45        64.09          68.67       66.19          74.55
+       KIVI-W4KV4                 15.31           10.95            10.22           5.63                5.01             5.42            76.88            78.18        64.40          68.35       66.21          74.61
+       Oaken-W4KV4                15.49           10.96            10.24           5.70                5.06             5.44            77.04            77.91        63.93          66.77       65.83          72.91
+   Omni-LUT-W4KV4-BCQ             15.19           10.94            10.41           5.83                5.30             5.55            76.39            78.24        63.62          69.22       65.07          73.77
+  Omni-LUT-W4KV4-BCUQ             15.23           10.99            10.23           5.63                5.00             5.43            76.06            77.75        65.04          68.51       65.97          74.38
+
+
+
+
+TABLE IV: Evaluation results of KV cache quantization                                                                 D. GEMM Engine Baselines
+for LLaMA3 and Qwen3 models compared to a uniform
+quantization baseline.                                                                                                   We evaluate four GEMM hardware engines in our study:
+                                                                                                                      FPE, FIGLUT [52], Tender [41], and our proposed Omni-
+         Task                                        WikiText-2 (PPL↓)                                                LUT architecture. The FPE design serves as the floating-
+        Model             LLaMA3-8B           Qwen3-8B             Qwen3-14B         Qwen3-30B-A3B
+                                                                                                                      point baseline, representing a W4A16KV16 (INT4 weight,
+    Baseline (FP16)           6.14                 9.85               8.76                   8.81                     FP16 activation, FP16 KV cache) configuration. It dequan-
+    Uniform-KV4               6.38                >500                10.49                 14.12                     tizes the 4-bit weights to FP16 and performs conventional
+ Omni-LUT-KV4-BCUQ            6.26                9.91                8.82                   8.87
+    Uniform-KV3               7.90                >500                47.72                 304.91
+                                                                                                                      floating-point multiply–accumulate operations on a systolic
+ Omni-LUT-KV3-BCUQ            6.79                10.04               9.06                   9.14                     array. FIGLUT represents a state-of-the-art LUT-based GEMM
+                                                                                                                      accelerator, which we also configure for a W4A16KV16 setup.
+TABLE V: Comparison of different calibration datasets for                                                             FIGLUT can utilize LUT-based GEMM for AW operations
+Omni-LUT-KV4-BCUQ on zero-shot tasks with LLaMA2-7B.                                                                  but must fall back to a floating-point systolic array backend
+                                                                                                                      (identical to the FPE’s) for all AA-GEMM operations. Tender
+                  Task            PIQA            Winogrande                  HellaSwag
+                                                                                                                      serves as the pure-integer baseline, implementing a multi-scale
+              Baseline            79.05               69.14                       75.99                               systolic array. We configure Tender for a W8A8KV8 (INT8
+           WikiText-2             78.51               68.11                       75.99                               weight/activation/KV) setup. All GEMM operations (both AW
+            C4 (En)               78.18               68.51                       76.01                               and AA) are performed using 8-bit integer multipliers, and
+          The Pile (Val)          78.35               69.46                       75.9                                it employs a 1-bit intra-PE shifter for dynamic partial sum
+                                                                                                                      rescaling. As such, Tender serves as a representative pure-
+                                                                                                                      integer compute baseline, in contrast to our Omni-LUT de-
+using a roofline-style performance model that accounts for                                                            sign that operates with FP16 activations. We use the 8-bit
+both compute time and DRAM access time. All experiments                                                               configuration for Tender because its sub-4-bit setting leads
+target an edge-serving setting and use batch size = 1.                                                                to unacceptable model-quality loss. The impact on accuracy
+   We report results under two scopes. (i) Kernel-level results                                                       is reported and discussed in VI-E. Omni-LUT is our pro-
+focus on GEMM kernels and the associated KV cache memory                                                              posed architecture and quantization method, which is evaluated
+traffic, which are the primary targets of Omni-LUT. (ii)                                                              in two configurations: Omni-LUT-KV3 (W4A16KV3), and
+System-level results additionally include non-GEMM opera-                                                             Omni-LUT-KV4 (W4A16KV4). Both variants are in the same
+tors (e.g., Softmax, LayerNorm, and RoPE) executed on a                                                               hardware setup but utilize 4-bit weights, FP16 activations, and
+vector processing unit (VPU), enabling end-to-end metrics,                                                            3-, or 4-bit KV cache quantization, respectively. Omni-LUT-
+total inference latency and total inference energy.                                                                   KV3 naturally attains higher peak throughput for AA-GEMM
+
+
+
+
+                                                                                                               330
+                                                                                                                          Input tokens = 2048
+                                     (102 J)                         (191 J)                   (375 J)                   (767 J)                   (1642 J)                  (3759 J)
+                                 1.0
+                                      1.00 0.95      Output tokens = 1.00 0.99 Output tokens = 1.00 1.00 Output tokens = 1.00 1.00 Output tokens = 1.00 0.96 Output tokens = 1.00           Output tokens =
+                                                                 256                       512                      1024                      2048                      4096          0.90             8192
+                                 0.8                0.70                       0.70                      0.70                      0.71                      0.73                          0.76
+                                 0.6                      0.54 0.53                 0.51 0.50                 0.48 0.47                 0.46 0.45                 0.44 0.43
+ Normalized Energy Consumption
+
+
+
+                                                                                                                                                                                                 0.41 0.39
+                                 0.4
+                                 0.2
+                                 0.0
+                                                                                                                                  (a)
+                                                                                                                          Output tokens = 512
+                                     (168 J) 1.07                    (191 J)                         (238 J)                          (340 J)                        (573 J)                            (1155 J)
+                                 1.0
+                                      1.00            Input tokens = 1.00 0.99        Input tokens = 1.00              Input tokens = 1.00            Input tokens = 1.00                Input tokens = 1.00                 Input tokens =
+                                                                1024                            2048         0.88                4096                           8192                  0.86        16384                   0.91        32768
+                                 0.8                                                0.70                            0.74                      0.74 0.80
+                                                    0.66                                                                                                                       0.61
+                                 0.6                       0.52 0.51                       0.51 0.50                      0.50 0.48                      0.50 0.46                          0.51 0.46              0.51         0.54
+                                                                                                                                                                                                                                       0.47
+                                 0.4
+                                 0.2
+                                 0.0
+                                       E
+
+
+
+
+                                                Om UT
+                                                  -KVLUT
+
+                                                  -KVLUT
+
+
+                                                                       E
+
+
+
+
+                                                                                Om UT
+                                                                                  -KVLUT
+
+                                                                                  -KVLUT
+
+
+                                                                                                       E
+
+
+
+
+                                                                                                                Om UT
+
+                                                                                                                Om V4 T
+                                                                                                                  -KVLUT
+
+
+                                                                                                                                      E
+
+
+
+
+                                                                                                                                                  Om UT
+
+                                                                                                                                                  Om V4 T
+                                                                                                                                                    -KVLUT
+
+
+                                                                                                                                                                     E
+
+
+
+
+                                                                                                                                                                                     T
+
+                                                                                                                                                                                       Om V4 T
+                                                                                                                                                                                         -KVLUT
+
+
+                                                                                                                                                                                                        E
+
+
+
+
+                                                                                                                                                                                                                    Om UT
+                                                                                                                                                                                                                      -KVLUT
+
+                                                                                                                                                                                                                      -KVLUT
+                                              nt8
+
+
+
+
+                                                                              nt8
+
+
+
+
+                                                                                                              nt8
+
+
+
+
+                                                                                                                                              nt8
+
+
+
+
+                                                                                                                                                                            nt8
+
+
+
+
+                                                                                                                                                                                                                nt8
+                                                                                                                  -K U
+
+
+
+
+                                                                                                                                                    -K U
+
+
+
+
+                                                                                                                                                                                  LU
+
+                                                                                                                                                                                         -K LU
+                                   FP
+
+
+
+
+                                                                   FP
+
+
+
+
+                                                                                                   FP
+
+
+
+
+                                                                                                                                    FP
+
+
+
+
+                                                                                                                                                                   FP
+
+
+
+
+                                                                                                                                                                                                      FP
+                                                                                                                                    (b)
+                                                Om 4
+
+                                                       3
+
+
+
+
+                                                                                Om 4
+
+                                                                                       3
+
+
+
+
+                                                                                                                       3
+
+
+
+
+                                                                                                                                                         3
+
+
+
+
+                                                                                                                                                                                             3
+
+
+
+
+                                                                                                                                                                                                                    Om 4
+
+                                                                                                                                                                                                                           3
+                                                      L
+
+
+
+
+                                                                                      L
+
+
+
+
+                                                                                                                      L
+
+                                                                                                                     L
+
+
+
+
+                                                                                                                                                        L
+
+                                                                                                                                                       L
+
+
+
+
+                                                                                                                                                                                                                          L
+                                          r-i
+
+
+
+
+                                                                          r-i
+
+
+
+
+                                                                                                          r-i
+
+
+
+
+                                                                                                                                            r-i
+
+
+
+
+                                                                                                                                                                          r-i
+
+
+
+
+                                                                                                                                                                                                             r-i
+                                                 FIG
+
+                                                  ni-
+
+                                                  ni-
+
+
+
+
+                                                                                 FIG
+
+                                                                                  ni-
+
+                                                                                  ni-
+
+
+
+
+                                                                                                                 FIG
+
+                                                                                                                  ni-
+
+                                                                                                                  ni-
+
+
+
+
+                                                                                                                                                   FIG
+
+                                                                                                                                                    ni-
+
+                                                                                                                                                    ni-
+
+
+
+
+                                                                                                                                                                                FIG
+
+                                                                                                                                                                                         ni-
+
+                                                                                                                                                                                         ni-
+
+
+
+
+                                                                                                                                                                                                                     FIG
+
+                                                                                                                                                                                                                      ni-
+
+                                                                                                                                                                                                                      ni-
+                                        de
+
+
+
+
+                                                                        de
+
+
+
+
+                                                                                                        de
+
+
+
+
+                                                                                                                                          de
+
+
+
+
+                                                                                                                                                                        de
+
+
+
+
+                                                                                                                                                                                                           de
+                                                                                                                                                                                      Om
+                                          n
+
+
+
+
+                                                                          n
+
+
+
+
+                                                                                                          n
+
+
+
+
+                                                                                                                                          n
+
+
+
+
+                                                                                                                                                                        n
+
+
+
+
+                                                                                                                                                                                                            n
+                                       Te
+
+
+
+
+                                                                       Te
+
+
+
+
+                                                                                                       Te
+
+
+
+
+                                                                                                                                       Te
+
+
+
+
+                                                                                                                                                                     Te
+
+
+
+
+                                                                                                                                                                                                         Te
+                                                                                                                         DRAM          SRAM         Compute unit
+
+       Fig. 11: Normalized energy breakdown (DRAM, SRAM, Compute) on OPT-6.7B, comparing GEMM accelerators. (a) Fixed
+       input tokens (2048) and increasing output tokens (256-8K). (b) Fixed output tokens (512) and increasing input tokens (1K-32K).
+
+
+because the KV cache is quantized with fewer bits, reducing                                                                               Table IV shows that our method supports modern trans-
+the number of bit-planes processed by bit-serial datapath.                                                                             former architectures such as the LLaMA3 and Qwen3 se-
+   For fair comparison, we match the peak throughput across                                                                            ries while maintaining acceptable model inference accuracy.
+FPE, Tender, FIGLUT, and Omni-LUT-KV4. FPE and Tender                                                                                  In Table V, we analyze the effect of different calibra-
+use a 64×64 PE array, while FIGLUT and Omni-LUT use                                                                                    tion datasets—including WikiText-2, The Pile [23], and C4
+a 32×4 PE array. In FIGLUT and Omni-LUT, each PE                                                                                       [56]—on the zero-shot task. Because the calibration process
+constructs a lookup table from four activations and performs                                                                           primarily captures the KV cache distribution within each atten-
+a parallel lookup for 32 binary weights. The detailed config-                                                                          tion layer, the specific dataset choice has a negligible impact
+urations and hardware specifications for all evaluated engines                                                                         on performance, provided that the proposed sampling method
+are summarized in Table I. We report the additional peak                                                                               adequately represents the KV cache statistics. Although our
+throughput of Omni-LUT-KV3 separately when analyzing the                                                                               method requires model-specific calibration in advance, the
+bit-width trade-offs.                                                                                                                  overhead is minimal; for example, calibrating LLaMA2-13B
+                                                                                                                                       takes less than 10 minutes on an NVIDIA H200 GPU.
+                                                              VI. E VALUATION
+                                                                                                                                       B. GEMM Kernel Performance Evaluation
+A. Accuracy Evaluation                                                                                                                    We evaluate GEMM kernel in isolation to focus on compute
+   Table II presents a comparison of various KV cache quanti-                                                                          core efficiency and KV traffic reduction; non-GEMM opera-
+zation methods across multiple baseline LLMs and evaluation                                                                            tors are excluded in this section.
+metrics. From the results, we observe that our KV cache                                                                                Energy Breakdown. Fig. 11 compares the normalized energy
+quantization method achieves only a 0.17 average perplexity                                                                            consumption of Omni-LUT against the GEMM accelerators,
+increase at 4-bit and 0.75 at 3-bit when adopting BCQ, demon-                                                                          broken down into DRAM, SRAM, and compute energies on
+strating competitiveness with state-of-the-art approaches. In                                                                          the OPT-6.7B model. The absolute energy of the FPE baseline
+particular, our method adopts a high fractional-bit ratio of                                                                           is annotated above each subplot (in Joules (J)), allowing
+25%, resulting in an effective Key cache bit width of only                                                                             the normalized bars to be converted to absolute energy. Fig.
+4.25 bits, without adding any extra bits to the Value cache.                                                                           11(a) illustrates a fixed prefill workload, while the workload
+This is substantially more efficient compared to methods such                                                                          of the decode phase progressively increases, emphasizing
+as KIVI, KVQuant, and Oaken, which rely on sparsity-based                                                                              decode-centric performance. By contrast, Fig. 11(b) illustrates
+outlier handling and yield a higher average KV cache bit width                                                                         a workload with fixed output tokens, while the prefill workload
+of 4.8–5.0 bits. Furthermore, Table III shows that quantizing                                                                          progressively scales, emphasizing prefill-centric performance.
+both the model weights and the KV cache into low-bit formats,                                                                             When the workload of the decode phase progressively
+which enables full mpGEMM execution, can still maintain                                                                                increases (Fig. 11(a)), the energy consumption of the acceler-
+model accuracy that is competitive with other methods that                                                                             ators becomes increasingly dictated by GEMV efficiency and
+quantize weights, KV cache, or even activations. This demon-                                                                           memory traffic. Omni-LUT maintains the lowest total energy
+strates that our unified low-bit quantization pipeline achieves                                                                        across all output tokens cases. At 8192 output tokens, that
+favorable accuracy–efficiency trade-offs under practical infer-                                                                        is, when the decode workload is highest, Omni-LUT-KV4
+ence workloads.                                                                                                                        achieves a 59% energy reduction over FPE, 54% over Tender,
+
+
+
+
+                                                                                                                                 331
+                                                                    Input tokens = 128                                                                                      Input tokens = 128
+                                                 1.96 1.97                          1.91 1.91                                                                                                                                 1.98 1.99
+                    2                  1.56                                1.60                               1.61 1.88 1.89                     1.61 1.89 1.89                      1.62 1.88 1.88                    1.57
+                    1 1.00 0.89                              1.00 0.87                           1.00 0.86                          1.00 0.86                        1.00 0.86                          1.00 0.89
+Normalized TOPS/W
+
+
+
+                    0
+                                                                Input tokens = 1024                                                                                     Input tokens = 1024
+                                                 2.06 2.11                          1.94 1.97                          1.88 1.90                        1.89 1.90                                                             2.12 2.15
+                    2
+                                       1.43                                1.51                               1.55                               1.55                                1.58 1.85 1.86                    1.45
+                    1   1.00 0.99                            1.00 0.94                           1.00 0.91                          1.00 0.91                        1.00 0.90                          1.00 0.99
+
+                    0
+                                                                Input tokens = 81922.15                                                                                 Input tokens = 8192                                           2.49
+                                                 2.04 2.31                          2.02                               1.84 1.92                        1.82 1.91
+                                                                                                                                                                                                                              2.20
+                    2
+                               1.50                                                                                                                                                         1.71 1.76          1.61
+                        1.00           1.16                  1.00
+                                                                     1.34 1.24
+                                                                                                 1.00 1.24
+                                                                                                              1.31
+                                                                                                                                    1.00 1.27
+                                                                                                                                                 1.31
+                                                                                                                                                                     1.00    1.19 1.37                  1.00           1.15
+                    1
+
+                    0
+                                      OPT-1.3B                           OPT-6.7B                            OPT-30B                       LLaMA-3-8B                             Mixtral-8x7B                  Qwen3-30B-A3B
+                                                                    (a) OPT Models                                                                                    (b) GQA / MoE Models
+                                                                                           FPE       Tender-int8           FIGLUT        Omni-LUT-KV4          Omni-LUT-KV3
+
+               Fig. 12: Energy efficiency (TOPS/W) across (a) OPT scaling models and (b) GQA/MoE models, with 512 output tokens.
+
+
+and 46% over FIGLUT. This significant advantage is largely                                                                          TABLE VI: Absolute metrics (OPT-6.7B, input tokens=8192,
+due to optimizations in both memory and compute energy. On                                                                          output tokens=512)
+the memory side, our 3/4-bit KV cache quantization provides a                                                                                                                                              Omni-LUT            Omni-LUT
+                                                                                                                                        Design              FPE        Tender               FIGLUT
+substantial benefit compared with the 16-bit KV cache of FPE                                                                                                                                                 -KV4                -KV3
+and FIGLUT and the 8-bit KV cache of Tender. Concurrently,                                                                           Peak GEMM
+                                                                                                                                                             4.1            4.1                  4.1             4.1             4.1/5.46
+Omni-LUT’s compute energy advantage widens as the decode                                                                                TOPS
+
+workload grows. This widening is a direct result of our GEMV-                                                                        Peak GEMM
+                                                                                                                                                           1.75 W      0.46 W           1.5 W/1.75 W∗           1.65 W/1.83 W∗∗
+                                                                                                                                    Compute Power
+optimized systolic array, which maintains high PE utilization,
+while the standard 2D arrays of FPE, FIGLUT, and Tender                                                                             GEMM Compute
+                                                                                                                                                           163.3 J      55.8 J               93.4 J             64 J                 59.9 J
+                                                                                                                                       Energy
+execute GEMV inefficiently.
+                                                                                                                                     Avg. GEMM
+                                                                                                                                                           0.83 W      0.28 W                0.6 W             0.76 W            0.77 W
+   As the input token length T increases (Fig. 11(b)), energy                                                                       Compute Power
+increasingly reflects compute-intensive O(T 2 ) AA-GEMM                                                                                Effective
+                                                                                                                                                            0.76            0.75                 0.96           1.78                 1.93
+                                                                                                                                     GEMM TOPS
+and the growing KV cache traffic. Omni-LUT retains a consis-
+                                                                                                                                    ∗ FIGLUT: 1.5 W for AW-GEMM on the LUT core, 1.75 W for AA-GEMM
+tent DRAM-energy advantage across all context lengths, and
+achieves the lowest total energy in most settings up to 16384                                                                       on the FPE backend.
+                                                                                                                                    ∗∗ Omni-LUT: 1.65 W for prefill WS mode, 1.83 W for decode OS-V mode.
+input tokens. Specifically, at 8192 input tokens (a canonical
+long-context setting), Omni-LUT-KV4 reduces total energy by
+50%, 32%, and 38% compared to FPE, Tender, and FIGLUT,
+corresponding to absolute savings of 170 J, 109 J, and 129 J per                                                                    of KV heads and therefore lowers KV cache memory traffic.
+query, respectively. At the most extreme 32768-token input,                                                                         However, GQA does not reduce the amount of attention
+the workload becomes strongly prefill-dominated, and Tender-                                                                        computation itself, so efficient AA-GEMM execution is still
+int8 slightly surpasses Omni-LUT-KV4 in total energy, as                                                                            important. Mixtral-8×7B and Qwen3-30B-A3B further adopt
+Tender’s highly efficient INT8 compute path outweighs Omni-                                                                         Mixture-of-Experts (MoE), where each token is routed to only
+LUT-KV4’s remaining memory advantage in this extreme                                                                                a subset of experts instead of all feed-forward layers. MoE
+case. Notably, Omni-LUT-KV3 remains the lowest-energy                                                                               changes the feed-forward path, but does not reduce the AA-
+configuration even at 32768 tokens, indicating that further                                                                         GEMM in attention or KV cache accesses.
+reducing KV cache bit width restores the overall advantage                                                                             In short and medium-context tasks (128 and 1024 tokens),
+under extreme long-context prefill.                                                                                                 LUT-based methods, including Omni-LUT and FIGLUT,
+Energy Efficiency. Fig. 12 illustrates the overall en-                                                                              demonstrate clear superiority over FPE and Tender. Our Omni-
+ergy efficiency (TOPS/W) across (a) OPT scaling models                                                                              LUT achieves approximately 85-110% higher energy effi-
+(OPT-1.3B/6.7B/30B) and (b) modern architectures, includ-                                                                           ciency than the FPE baseline. The advantage over Tender is
+ing LLaMA3-8B, Mixtral-8x7B, and Qwen3-30B-A3B. We                                                                                  even more significant. The architectural trade-offs shift in the
+validate our method’s generality under three context-length                                                                         challenging long-context 8192 tokens regime. Here, FIGLUT’s
+settings with output tokens fixed to 512: short-context (128                                                                        efficiency falls below Tender’s in some cases, as FIGLUT
+tokens, common chat), medium-context (1024 tokens, longer                                                                           must fall back to its floating-point systolic array backend for
+instructions or RAG [42]), and long-context (8192 tokens, doc-                                                                      AA-GEMM. Crucially, when comparing configurations with
+ument summarization or code analysis). Compared to OPT’s                                                                            equivalent peak throughput (Omni-LUT-KV4 vs. FIGLUT),
+Multi-Head Attention (MHA), these three modern models use                                                                           our design outperforms FIGLUT by 1.25×–1.91× across
+Grouped-Query Attention (GQA), which reduces the number                                                                             different models.
+
+
+
+
+                                                                                                                            332
+                                                                  Input tokens = 128                              3.95 4.09
+                                                                                                                                                                     Input tokens = 1024                Input tokens = 4096           Input tokens = 16384
+                      4                        3.85 3.88                         3.85 3.88                                                                1.25 (116 s)                           (149 s)                          (340 s)
+                                 3.16                              3.16                             3.12
+
+
+
+
+                                                                                                                                      (a) Norm. Latency
+                                                                                                                                                                1.00 1.01                         1.00 1.02                        1.00 1.03
+                                                                                                                                                          1.00                                                                                     0.88
+                      2
+                          1.00          0.98               1.00           0.98               1.00          0.96                                           0.75                0.66                             0.73
+Normalized TOPS/mm2
+
+
+
+                                                                                                                                                                                                                                                          0.53 0.47
+                      0                                                                                                                                   0.50                       0.33 0.33                        0.39 0.37
+                                                               Input tokens = 1024
+                      4                        3.64 3.71                         3.64 3.73                        3.73 4.04                               0.25
+                                 3.15                              3.15                             3.09                                                  0.00
+                      2                                                                                                                                   1.25 (171 J) 1.06                      (258 J)                          (823 J)
+
+
+
+
+                                                                                                                                      (b) Norm. Energy
+                          1.00          0.95               1.00           0.94               1.00          0.86                                                 1.00                              1.00 0.89                        1.00
+                                                                                                                                                          1.00                                                                                     0.91
+                      0
+                                                                                                                                                                              0.67                             0.76                         0.73          0.66 0.62
+                      4
+                                                               Input tokens = 8192                                       3.60                             0.75
+                                                                                                                                                                                     0.52 0.52                        0.54 0.52
+                                 3.10          2.80 3.04           3.09          2.82 3.10          3.03          2.96                                    0.50
+                                                                                                                                                          0.25
+                      2
+                          1.00          0.78               1.00           0.77               1.00          0.68                                           0.00
+
+
+
+
+                                                                                                                                                              E
+                                                                                                                                                                     nt8
+
+                                                                                                                                                                         Om UT
+                                                                                                                                                                           -KVLUT
+
+                                                                                                                                                                           -KVLUT
+
+
+                                                                                                                                                                                                 E
+                                                                                                                                                                                                        nt8
+
+                                                                                                                                                                                                           Om UT
+                                                                                                                                                                                                             -KVLUT
+
+                                                                                                                                                                                                             -KVLUT
+
+
+                                                                                                                                                                                                                                  E
+                                                                                                                                                                                                                                         nt8
+
+                                                                                                                                                                                                                                             Om UT
+                                                                                                                                                                                                                                               -KVLUT
+
+                                                                                                                                                                                                                                               -KVLUT
+                                                                                                                                                            FP
+
+
+
+
+                                                                                                                                                                                             FP
+
+
+
+
+                                                                                                                                                                                                                              FP
+                      0
+
+
+
+
+                                                                                                                                                                         Om 4
+
+                                                                                                                                                                               3
+
+
+
+
+                                                                                                                                                                                                           Om 4
+
+                                                                                                                                                                                                                 3
+
+
+
+
+                                                                                                                                                                                                                                             Om 4
+
+                                                                                                                                                                                                                                                   3
+                                                                                                                                                                              L
+
+
+
+
+                                                                                                                                                                                                                L
+
+
+
+
+                                                                                                                                                                                                                                                  L
+                                                                                                                                                                   r-i
+
+
+
+
+                                                                                                                                                                                                     r-i
+
+
+
+
+                                                                                                                                                                                                                                      r-i
+                                                                                                                                                                          FIG
+
+                                                                                                                                                                           ni-
+
+                                                                                                                                                                           ni-
+
+
+
+
+                                                                                                                                                                                                            FIG
+
+                                                                                                                                                                                                             ni-
+
+                                                                                                                                                                                                             ni-
+
+
+
+
+                                                                                                                                                                                                                                              FIG
+
+                                                                                                                                                                                                                                               ni-
+
+                                                                                                                                                                                                                                               ni-
+                                     OPT-6.7B                        LLaMA-3-8B                     Qwen3-30B-A3B
+
+
+
+
+                                                                                                                                                                 de
+
+
+
+
+                                                                                                                                                                                                   de
+
+
+
+
+                                                                                                                                                                                                                                    de
+                                                                                                                                                                 n
+
+
+
+
+                                                                                                                                                                                                    n
+
+
+
+
+                                                                                                                                                                                                                                     n
+                                                                                                                                                              Te
+
+
+
+
+                                                                                                                                                                                                 Te
+
+
+
+
+                                                                                                                                                                                                                                  Te
+                                    FPE          Tender-int8         FIGLUT          Omni-LUT-KV4         Omni-LUT-KV3                                                                 Non-GEMM (VPU)             AW-GEMM             AA-GEMM
+
+                                                                                    2
+   Fig. 13: Area efficiency (TOPS/mm ) across representative                                                                            Fig. 14: End-to-end system (a) latency (b) energy evaluation
+   models and input tokens, with 512 output tokens.                                                                                     on OPT-6.7B with fixed output tokens of 512.
+
+
+                                                                                                                                        GEMM and requires an additional floating-point systolic
+      Table VI reports absolute GEMM engine metrics for a
+                                                                                                                                        array backend for AA-GEMM, which increases total area
+   representative long-context workload on OPT-6.7B. Under this
+                                                                                                                                        and leaves attention limited by the floating-point backend.
+   setting, Omni-LUT-KV4 delivers 1.78 TOPS effective GEMM
+                                                                                                                                        In contrast, Omni-LUT executes both AW-GEMM and AA-
+   throughput while reducing GEMM compute energy to 64 J,
+                                                                                                                                        GEMM on the same LUT hardware, so it maintains higher
+   compared to 0.96 TOPS and 93.4 J for FIGLUT. The baselines
+                                                                                                                                        area efficiency. Compared with Tender, the outcome depends
+   remain far below their peak throughput because decode GEMV
+                                                                                                                                        on the prefill/decode balance. Omni-LUT’s advantage over
+   underutilizes their conventional 2D systolic arrays. Omni-
+                                                                                                                                        Tender largely comes from higher decode utilization enabled
+   LUT reduces this utilization loss with its GEMV-optimized
+                                                                                                                                        by the GEMV-optimized OS-V dataflow. As the input context
+   decode dataflow. After compute utilization improves, memory
+                                                                                                                                        increases and the workload becomes more prefill-dominated,
+   bandwidth becomes the next bottleneck; even so, Omni-LUT
+                                                                                                                                        the relative contribution of decode decreases. As a result,
+   still achieves 1.85× higher effective GEMM throughput than
+                                                                                                                                        Omni-LUT remains above Tender in the 128 and 1024 settings,
+   FIGLUT. These results reflect the combined benefits of sub-
+                                                                                                                                        but Tender exceeds Omni-LUT in 8192 cases.
+   4-bit KV quantization and our hybrid-stationary LUT-based
+   systolic array.                                                                                                                      C. System-level Evaluation
+      Omni-LUT-KV3 can further improve energy efficiency in                                                                                To assess end-to-end impact under more realistic serving
+   long-context tasks by reducing both KV cache traffic and                                                                             scenarios, we extend our evaluation beyond GEMM kernels.
+   the compute cost of AA-GEMM. Our LUT-based GEMM                                                                                      We include non-GEMM operators executed on a common
+   datapath uses bit-slicing, where the compute cost of each ma-                                                                        vector processing unit (VPU) that is identical across all
+   trix multiplication is proportional to the number of bit-planes                                                                      designs. Fig. 14 reports end-to-end inference (a) latency and
+   processed from the quantized operand. With 3-bit Key/Value,                                                                          (b) energy for OPT-6.7B with 512 output tokens, with input
+   Omni-LUT-KV3 processes three bit-planes for QK T and for                                                                             context length from 1024 to 16384. Each bar is normalized
+   Attn × V , compared to four bit-planes in Omni-LUT-KV4.                                                                              to FPE and decomposed into three components: Non-GEMM
+   This reduces the AA-GEMM work in attention by 25% relative                                                                           (VPU), AW-GEMM, and AA-GEMM.
+   to KV4, while also shrinking KV memory traffic, which is                                                                                At shorter contexts (1024 and 4096), AW-GEMM dom-
+   critical under the memory pressure of long contexts.                                                                                 inates both latency and energy. In this regime, LUT-based
+   Area Efficiency. Fig. 13 presents the area efficiency, mea-                                                                          computations reduce the AW-GEMM cost, and Omni-LUT
+   sured in normalized TOPS/mm2 , for all accelerators, across                                                                          further reduces latency relative to FIGLUT due to its hybrid-
+   representative MHA, GQA and MoE models, with 512 output                                                                              stationary design and GEMV-optimized decode path, which
+   tokens. Tender provides an important reference because its                                                                           reduces inefficiency when executing GEMV-shaped kernels.
+   pure-integer MAC array has a strong area advantage: Tender                                                                           As the context length increases to 16384, the AA-GEMM
+   occupies only 0.20 mm2 , whereas Omni-LUT occupies 0.53                                                                              portion becomes a larger fraction in both latency and energy.
+   mm2 (Table I). Even with this gap, Omni-LUT still achieves                                                                           This reduces FIGLUT’s advantage because it executes AA-
+   comparable or higher area efficiency in several evaluated                                                                            GEMM on its floating-point systolic array backend, while
+   settings, demonstrating that a LUT-based engine with FP16                                                                            Tender’s low-cost INT8 MAC improves energy but provides
+   activations can approach the area efficiency of a pure integer                                                                       limited latency benefit. In contrast, Omni-LUT executes AA-
+   design. Compared with the floating-point baseline FPE, the                                                                           GEMM on the LUT datapath and reduces KV traffic via
+   gains are much larger. Omni-LUT-KV4 improves TOPS/mm2                                                                                3/4-bit KV quantization, leading to the lowest end-to-end
+   by 2.8×–3.9× over FPE. The gains over FIGLUT are also                                                                                latency and energy at long context lengths. Finally, according
+   substantial. FIGLUT uses its LUT datapath only for AW-                                                                               to Amdahl’s law [3], as GEMM kernels are accelerated, the
+
+
+
+
+                                                                                                                                333
+TABLE VII: Omni-LUT compute-core area and energy break-
+                                                                                                            10.5                                   Tender-int4
+down (OPT-6.7B, input tokens=8192, output tokens=512).                                                                                            (PPL=123.1)
+        Module              Area (mm2 )   Area share   Energy (J)   Energy share                            10.0                       Omni-LUT-KV2
+
+
+
+
+                                                                                               Perplexity (PPL)
+     LUT PE Array
+  LUT Generation Unit
+                               0.459
+                               0.017
+                                           86.34%
+                                            3.11%
+                                                         57.68
+                                                          3.43
+                                                                      90.09%
+                                                                       5.36%
+                                                                                                                  9.5
+Binary-coding Quant Unit       0.014        2.63%         0.16         0.25%                                      6.0
+         FIFOs
+      Control Logic
+                               0.030
+                               0.013
+                                            5.55%
+                                            2.37%
+                                                          2.48
+                                                          0.27
+                                                                       3.87%
+                                                                       0.43%
+                                                                                                                                               Omni-LUT-KV3
+                                                                                                                              Tender-int8 Omni-LUT-KV4
+                                                                                                                  5.5
+         Total                 0.532        100%         64.02         100%                                                                    FP16 baseline (PPL=5.47)
+                                                                                                                  5.0
+                                                                                                                        1.0      1.1     1.2    1.3     1.4    1.5
+Non-GEMM fraction increases, but Omni-LUT’s combined                                                                                   Normalized TOPS/W
+AW/AA improvements remain large enough to preserve a clear                               Fig. 15: Accuracy–efficiency trade-off (LLaMA2-7B, input
+system-level advantage.                                                                  tokens=8192, output tokens=256).
+D. Hardware Overheads
+   Table VII summarizes the area and energy breakdown of                                 to efficiently store inlier and outlier values. Our Omni-LUT
+Omni-LUT’s compute core. The PE array dominates both                                     approach also focuses on low-bit KV cache quantization.
+area (86.34%) and energy (90.09%). The LUT generation unit
+(LGU) accounts for 3.11% of area and 5.36% of energy. The                                Mixed-precision LLM Accelerator. As quantization tech-
+binary-coding quantization unit (BQU) contributes only 2.63%                             niques proliferate, hardware support becomes increasingly
+of area and 0.25% of energy. Together with control logic, the                            critical, inspiring a range of customized accelerators [11],
+online quantization and control overhead is 5% of area and                               [26], [27], [36], [43], [47], [55], [57], [75], [76]. Mixed-
+below 1% of energy, indicating that the added hardware cost                              precision accelerator designs aim to eliminate the dequanti-
+is small compared to the compute core.                                                   zation overhead inherent in mpGEMM [31], [40], [50], [52].
+                                                                                         FIGLUT [52] proposes a LUT-based GEMM accelerator that
+E. Bit-Width Trade-off                                                                   precomputes activation–weight products and stores them in
+   Fig. 15 shows the accuracy–efficiency trade-off on                                    lookup tables to accelerate low-bit LLM inference. The LUT
+LLaMA2-7B, using PPL and normalized TOPS/W. The                                          Tensor Core [50] further introduces simplified bit-serial LUT
+Omni-LUT points sweep only the KV cache bit width                                        units and elongated LUT tiling to maximize table reuse and
+(KV4/KV3/KV2) while keeping the rest of the computation                                  sustain high mpGEMM efficiency across diverse bit-width
+configuration unchanged; reducing KV bit width improves                                  combinations, demonstrating the applicability and potential of
+TOPS/W by lowering KV traffic and reducing the bit-plane                                 LUTs in mixed-precision accelerators.
+work of AA-GEMM. KV4 and KV3 improve TOPS/W with
+a small PPL increase over the FP16 baseline. In contrast,                                                                        VIII. C ONCLUSION
+KV2 results in a significant quality drop (PPL=9.96) and                                    In this paper, we present Omni-LUT, a LUT-based GEMM
+is not considered a deployable operating point. Tender-int8                              accelerator that supports both low-bit AW-GEMM in LLM
+and Tender-int4 represent global precision points (W/K/V/A                               linear layers and low-bit AA-GEMM in attention. Omni-
+are INT8 or INT4, respectively); while Tender-int4 achieves                              LUT combines hardware-aware KV cache quantization, scale-
+the highest TOPS/W, it incurs catastrophic accuracy loss                                 aware LUT generation, and a phase-adaptive WS/OS-V LUT-
+(PPL=123.1) and therefore is not treated as a baseline. Based                            based systolic array, enabling LUT-based execution over the
+on this trade-off, we use KV4 as the default configuration and                           KV cache. Across diverse long-context workloads, Omni-
+KV3 as an optional efficiency point.                                                     LUT improves energy efficiency by 1.25×–1.91× over the
+                                                                                         state-of-the-art LUT-based GEMM accelerator FIGLUT under
+                           VII. R ELATED W ORK
+                                                                                         an equal peak-throughput hardware setup while maintaining
+LLM Quantization. As LLM sizes and context lengths con-                                  model quality close to prior KV cache quantization methods.
+tinue to grow, quantization has become a primary technique for
+reducing memory usage and compute cost during inference. A                                                                     IX. ACKNOWLEDGMENT
+large body of prior work focuses on weight-only quantization
+[5], [18], [19], [22], [38], [39], [44], [61], [73]. Other methods                         This work is supported by grants from Google and the
+quantize both weights and activations [41], [69], [72], [74],                            National Science and Technology Council in Taiwan (114-
+[80]. Tender [41] further proposes a decomposed quantization                             2628-E-A49-017-MY3).
+technique together with a customized hardware accelerator that
+                                                                                                                                   R EFERENCES
+supports INT4/INT8 AW-GEMM. Several works specifically
+target KV cache quantization, including KVQuant [29], Oaken                              [1] J. Achiam, S. Adler, S. Agarwal, L. Ahmad, I. Akkaya, F. L. Aleman,
+[37], and KIVI [46]. Oaken [37] introduces an offline–online                                 D. Almeida, J. Altenschmidt, S. Altman, S. Anadkat et al., “Gpt-4
+                                                                                             technical report,” arXiv preprint arXiv:2303.08774, 2023.
+quantization scheme and employs a dense-and-sparse encoding
+
+
+
+
+                                                                                   334
+ [2] E. Alvarez, W. Chen, and H. Mao, “Optimizing inference                             [22] E. Frantar, S. Ashkboos, T. Hoefler, and D. Alistarh, “Gptq: Accurate
+     for long context and large batch sizes with NVFP4 KV                                    post-training quantization for generative pre-trained transformers,” in
+     cache,” NVIDIA Developer Blog, 2025. [Online]. Avail-                                   International Conference on Learning Representations (ICLR), 2023.
+     able: https://developer.nvidia.com/blog/optimizing-inference-for-long-             [23] L. Gao, S. Biderman, S. Black, L. Golding, T. Hoppe, C. Foster,
+     context-and-large-batch-sizes-with-nvfp4-kv-cache/                                      J. Phang, H. He, A. Thite, N. Nabeshima, S. Presser, and C. Leahy,
+ [3] G. M. Amdahl, “Validity of the single processor approach to achieving                   “The pile: An 800gb dataset of diverse text for language modeling,”
+     large scale computing capabilities,” in Proceedings of the April 18-20,                 2020. [Online]. Available: https://arxiv.org/abs/2101.00027
+     1967, Spring Joint Computer Conference, ser. AFIPS ’67 (Spring).                   [24] A. Gholami, S. Kim, Z. Dong, Z. Yao, M. W. Mahoney, and K. Keutzer,
+     New York, NY, USA: Association for Computing Machinery, 1967, p.                        “A survey of quantization methods for efficient neural network infer-
+     483–485. [Online]. Available: https://doi.org/10.1145/1465482.1465560                   ence,” in Low-power computer vision. Chapman and Hall/CRC, 2022,
+ [4] J. S. S. T. Association, “Low power double data rate 5 (lpddr5), jesd209-               pp. 291–326.
+     5,” 2019.                                                                          [25] A. Grattafiori, A. Dubey, A. Jauhri, A. Pandey, A. Kadian, A. Al-Dahle,
+ [5] H. Badri and A. Shaji, “Half-quadratic quantization of large                            A. Letman, A. Mathur, A. Schelten, A. Vaughan et al., “The llama 3
+     machine learning models,” November 2023. [Online]. Available:                           herd of models,” arXiv preprint arXiv:2407.21783, 2024.
+     https://mobiusml.github.io/hqq blog/                                               [26] C. Guo, J. Tang, W. Hu, J. Leng, C. Zhang, F. Yang, Y. Liu, M. Guo,
+ [6] Y. Bai, Y.-X. Wang, and E. Liberty, “Proxquant: Quantized neural                        and Y. Zhu, “Olive: Accelerating large language models via hardware-
+     networks via proximal operators,” arXiv preprint arXiv:1810.00861,                      friendly outlier-victim pair quantization,” in Proceedings of the 50th
+     2018.                                                                                   Annual International Symposium on Computer Architecture (ISCA),
+ [7] Y. Bisk, R. Zellers, J. Gao, Y. Choi et al., “Piqa: Reasoning about                     2023, pp. 1–15.
+     physical commonsense in natural language,” in Proceedings of the AAAI              [27] C. Guo, C. Zhang, J. Leng, Z. Liu, F. Yang, Y. Liu, M. Guo, and
+     conference on artificial intelligence, vol. 34, no. 05, 2020, pp. 7432–                 Y. Zhu, “Ant: Exploiting adaptive numerical data type for low-bit deep
+     7439.                                                                                   neural network quantization,” in 2022 55th IEEE/ACM International
+ [8] Y. Bondarenko, M. Nagel, and T. Blankevoort, “Quantizable trans-                        Symposium on Microarchitecture (MICRO), 2022, pp. 1414–1433.
+     formers: Removing outliers by helping attention heads do nothing,”                 [28] H. Guo, W. Brandon, R. Cholakov, J. Ragan-Kelley, E. Xing, and
+     Advances in Neural Information Processing Systems (NeurIPS), vol. 36,                   Y. Kim, “Fast matrix multiplications for lookup table-quantized llms,”
+     pp. 75 067–75 096, 2023.                                                                in Findings of the Association for Computational Linguistics: EMNLP
+ [9] T. Brown, B. Mann, N. Ryder, M. Subbiah, J. D. Kaplan, P. Dhariwal,                     2024, 2024, pp. 12 419–12 433.
+     A. Neelakantan, P. Shyam, G. Sastry, A. Askell et al., “Language mod-              [29] C. Hooper, S. Kim, H. Mohammadzadeh, M. W. Mahoney, Y. S. Shao,
+     els are few-shot learners,” Advances in neural information processing                   K. Keutzer, and A. Gholami, “Kvquant: Towards 10 million context
+     systems (NeurIPS), vol. 33, pp. 1877–1901, 2020.                                        length llm inference with kv cache quantization,” Advances in Neural
+[10] K. Chandrasekar, C. Weis, Y. Li, S. Goossens, M. Jung, O. Naji,                         Information Processing Systems (NeurIPS), vol. 37, pp. 1270–1303,
+     B. Akesson, N. Wehn, and K. Goossens, “DRAMPower: Open-source                           2024.
+     DRAM Power & Energy Estimation Tool,” http://www.drampower.info.                   [30] W. Huang, Y. Liu, H. Qin, Y. Li, S. Zhang, X. Liu, M. Magno, and
+[11] S.-E. Chang, Y. Li, M. Sun, R. Shi, H. K.-H. So, X. Qian, Y. Wang, and                  X. Qi, “Billm: Pushing the limit of post-training quantization for llms,”
+     X. Lin, “Mix and match: A novel fpga-centric deep neural network                        arXiv preprint arXiv:2402.04291, 2024.
+     quantization framework,” in 2021 IEEE International Symposium on                   [31] J. Jang, Y. Kim, J. Lee, and J.-J. Kim, “Figna: Integer unit-based
+     High-Performance Computer Architecture (HPCA). IEEE, 2021, pp.                          accelerator design for fp-int gemm preserving numerical accuracy,” in
+     208–220.                                                                                2024 IEEE International Symposium on High-Performance Computer
+[12] J. Chee, Y. Cai, V. Kuleshov, and C. M. De Sa, “Quip: 2-bit quantization                Architecture (HPCA), 2024, pp. 760–773.
+     of large language models with guarantees,” Advances in Neural Infor-               [32] A. Q. Jiang, A. Sablayrolles, A. Mensch, C. Bamford, D. S. Chaplot,
+     mation Processing Systems (NeurIPS), vol. 36, pp. 4396–4429, 2023.                      D. de las Casas, F. Bressand, G. Lengyel, G. Lample, L. Saulnier,
+[13] Y. Chen, S. Qian, H. Tang, X. Lai, Z. Liu, S. Han, and J. Jia, “Longlora:               L. R. Lavaud, M.-A. Lachaux, P. Stock, T. L. Scao, T. Lavril, T. Wang,
+     Efficient fine-tuning of long-context large language models,” arXiv                     T. Lacroix, and W. E. Sayed, “Mistral 7b,” 2023. [Online]. Available:
+     preprint arXiv:2309.12307, 2023.                                                        https://arxiv.org/abs/2310.06825
+[14] A. Chowdhery, S. Narang, J. Devlin, M. Bosma, G. Mishra, A. Roberts,               [33] A. Q. Jiang, A. Sablayrolles, A. Roux, A. Mensch, B. Savary,
+     P. Barham, H. W. Chung, C. Sutton, S. Gehrmann et al., “Palm: Scal-                     C. Bamford, D. S. Chaplot, D. de las Casas, E. B. Hanna, F. Bressand,
+     ing language modeling with pathways,” Journal of Machine Learning                       G. Lengyel, G. Bour, G. Lample, L. R. Lavaud, L. Saulnier, M.-A.
+     Research, vol. 24, no. 240, pp. 1–113, 2023.                                            Lachaux, P. Stock, S. Subramanian, S. Yang, S. Antoniak, T. L. Scao,
+[15] I. Chung, B. Kim, Y. Choi, S. J. Kwon, Y. Jeon, B. Park, S. Kim, and                    T. Gervet, T. Lavril, T. Wang, T. Lacroix, and W. E. Sayed, “Mixtral
+     D. Lee, “Extremely low bit transformer quantization for on-device neural                of experts,” 2024. [Online]. Available: https://arxiv.org/abs/2401.04088
+     machine translation,” in Findings of the Association for Computational             [34] N. Jouppi, G. Kurian, S. Li, P. Ma, R. Nagarajan, L. Nai, N. Patil,
+     Linguistics: EMNLP 2020, T. Cohn, Y. He, and Y. Liu, Eds. Online:                       S. Subramanian, A. Swing, B. Towles et al., “Tpu v4: An optically
+     Association for Computational Linguistics, Nov. 2020, pp. 4812–4826.                    reconfigurable supercomputer for machine learning with hardware sup-
+     [Online]. Available: https://aclanthology.org/2020.findings-emnlp.433/                  port for embeddings,” in Proceedings of the 50th annual international
+[16] T. Dao, “FlashAttention-2: Faster attention with better parallelism and                 symposium on computer architecture (ISCA), 2023, pp. 1–14.
+     work partitioning,” in International Conference on Learning Represen-              [35] N. P. Jouppi, C. Young, N. Patil, D. Patterson, G. Agrawal, R. Bajwa,
+     tations (ICLR), 2024.                                                                   S. Bates, S. Bhatia, N. Boden, A. Borchers et al., “In-datacenter
+[17] T. Dao, D. Y. Fu, S. Ermon, A. Rudra, and C. Ré, “FlashAttention: Fast                 performance analysis of a tensor processing unit,” in Proceedings of the
+     and memory-efficient exact attention with IO-awareness,” in Advances                    44th annual international symposium on computer architecture (ISCA),
+     in Neural Information Processing Systems (NeurIPS), 2022.                               2017, pp. 1–12.
+[18] T. Dettmers, M. Lewis, Y. Belkada, and L. Zettlemoyer, “Gpt3. int8 ():             [36] B. Keller, R. Venkatesan, S. Dai, S. G. Tell, B. Zimmer, W. J. Dally,
+     8-bit matrix multiplication for transformers at scale,” Advances in neural              C. T. Gray, and B. Khailany, “A 17–95.6 tops/w deep learning inference
+     information processing systems (NeurIPS), vol. 35, pp. 30 318–30 332,                   accelerator with per-vector scaled 4-bit quantization for transformers in
+     2022.                                                                                   5nm,” in 2022 IEEE Symposium on VLSI Technology and Circuits (VLSI
+[19] T. Dettmers, A. Pagnoni, A. Holtzman, and L. Zettlemoyer, “Qlora:                       Technology and Circuits). IEEE, 2022, pp. 16–17.
+     Efficient finetuning of quantized llms,” Advances in neural information            [37] M. Kim, S. Hong, R. Ko, S. Choi, H. Lee, J. Kim, J.-Y. Kim, and
+     processing systems (NeurIPS), vol. 36, pp. 10 088–10 115, 2023.                         J. Park, “Oaken: Fast and efficient llm serving with online-offline hybrid
+[20] T. Dettmers, R. Svirschevski, V. Egiazarian, D. Kuznedelev, E. Frantar,                 kv cache quantization,” in Proceedings of the International Symposium
+     S. Ashkboos, A. Borzunov, T. Hoefler, and D. Alistarh, “Spqr: A sparse-                 on Computer Architecture (ISCA), 2025, pp. 482–497.
+     quantized representation for near-lossless llm weight compression,”                [38] S. Kim, C. Hooper, A. Gholami, Z. Dong, X. Li, S. Shen, M. W.
+     arXiv preprint arXiv:2306.03078, 2023.                                                  Mahoney, and K. Keutzer, “Squeezellm: Dense-and-sparse quantization,”
+[21] Y. Ding, L. L. Zhang, C. Zhang, Y. Xu, N. Shang, J. Xu, F. Yang, and                    arXiv preprint arXiv:2306.07629, 2023.
+     M. Yang, “Longrope: Extending llm context window beyond 2 million                  [39] C. Lee, J. Jin, T. Kim, H. Kim, and E. Park, “Owq: Outlier-aware
+     tokens,” arXiv preprint arXiv:2402.13753, 2024.                                         weight quantization for efficient fine-tuning and inference of large
+
+
+
+
+                                                                                  335
+     language models,” in Proceedings of the AAAI Conference on Artificial               [59] Y. Su, Y. Zhou, Q. Qiu, J. Li, Q. Xia, P. Li, X. Duan, Z. Wang, and
+     Intelligence, vol. 38, no. 12, 2024, pp. 13 355–13 364.                                  M. Zhang, “Accurate kv cache quantization with outlier tokens tracing,”
+[40] J. Lee, C. Kim, S. Kang, D. Shin, S. Kim, and H.-J. Yoo, “Unpu:                          arXiv preprint arXiv:2505.10938, 2025.
+     An energy-efficient deep neural network accelerator with fully variable             [60] Z. Su, H. Wei, Z. Chen, W. Shen, L. Li, H. Yu, and K. Yuan,
+     weight bit precision,” IEEE Journal of Solid-State Circuits (JSSC),                      “Rotatekv: accurate and robust 2-bit kv cache quantization for llms via
+     vol. 54, no. 1, pp. 173–185, 2018.                                                       outlier-aware adaptive rotations,” in Proceedings of the Thirty-Fourth
+[41] J. Lee, W. Lee, and J. Sim, “Tender: Accelerating large language models                  International Joint Conference on Artificial Intelligence, ser. IJCAI ’25,
+     via tensor decomposition and runtime requantization,” in Proceedings of                  2025. [Online]. Available: https://doi.org/10.24963/ijcai.2025/690
+     the International Symposium on Computer Architecture (ISCA), 2024,                  [61] H. Tang, Y. Sun, D. Wu, K. Liu, J. Zhu, and Z. Kang, “Easyquant:
+     pp. 1048–1062.                                                                           An efficient data-free quantization algorithm for llms,” in Proceedings
+[42] P. Lewis, E. Perez, A. Piktus, F. Petroni, V. Karpukhin, N. Goyal,                       of the 2023 Conference on Empirical Methods in Natural Language
+     H. Küttler, M. Lewis, W.-t. Yih, T. Rocktäschel et al., “Retrieval-                    Processing, 2023, pp. 9119–9128.
+     augmented generation for knowledge-intensive nlp tasks,” Advances in                [62] G. Team, R. Anil, S. Borgeaud, J.-B. Alayrac, J. Yu, R. Soricut,
+     neural information processing systems (NeurIPS), vol. 33, pp. 9459–                      J. Schalkwyk, A. M. Dai, A. Hauth, K. Millican et al., “Gemini: a family
+     9474, 2020.                                                                              of highly capable multimodal models,” arXiv preprint arXiv:2312.11805,
+[43] W. Li, A. Hu, N. Xu, and G. He, “Quantization and hardware architecture                  2023.
+     co-design for matrix-vector multiplications of large language models,”              [63] H. Touvron, T. Lavril, G. Izacard, X. Martinet, M.-A. Lachaux,
+     IEEE Transactions on Circuits and Systems I: Regular Papers, vol. 71,                    T. Lacroix, B. Rozière, N. Goyal, E. Hambro, F. Azhar et al.,
+     no. 6, pp. 2858–2871, 2024.                                                              “Llama: Open and efficient foundation language models,” arXiv preprint
+[44] J. Lin, J. Tang, H. Tang, S. Yang, W.-M. Chen, W.-C. Wang, G. Xiao,                      arXiv:2302.13971, 2023.
+     X. Dang, C. Gan, and S. Han, “Awq: Activation-aware weight quanti-                  [64] H. Touvron, L. Martin, K. Stone, P. Albert, A. Almahairi, Y. Babaei,
+     zation for on-device llm compression and acceleration,” Proceedings of                   N. Bashlykov, S. Batra, P. Bhargava, S. Bhosale, D. Bikel, L. Blecher,
+     machine learning and systems, vol. 6, pp. 87–100, 2024.                                  C. C. Ferrer, M. Chen, G. Cucurull, D. Esiobu, J. Fernandes, J. Fu,
+[45] Y. Lin, H. Tang, S. Yang, Z. Zhang, G. Xiao, C. Gan, and S. Han,                         W. Fu, B. Fuller, C. Gao, V. Goswami, N. Goyal, A. Hartshorn,
+     “Qserve: W4a8kv4 quantization and system co-design for efficient llm                     S. Hosseini, R. Hou, H. Inan, M. Kardas, V. Kerkez, M. Khabsa,
+     serving,” arXiv preprint arXiv:2405.04532, 2024.                                         I. Kloumann, A. Korenev, P. S. Koura, M.-A. Lachaux, T. Lavril,
+[46] Z. Liu, J. Yuan, H. Jin, S. Zhong, Z. Xu, V. Braverman, B. Chen, and                     J. Lee, D. Liskovich, Y. Lu, Y. Mao, X. Martinet, T. Mihaylov,
+     X. Hu, “Kivi: A tuning-free asymmetric 2bit quantization for kv cache,”                  P. Mishra, I. Molybog, Y. Nie, A. Poulton, J. Reizenstein, R. Rungta,
+     arXiv preprint arXiv:2402.02750, 2024.                                                   K. Saladi, A. Schelten, R. Silva, E. M. Smith, R. Subramanian,
+[47] Y.-C. Lo and R.-S. Liu, “Bucket getter: A bucket-based processing                        X. E. Tan, B. Tang, R. Taylor, A. Williams, J. X. Kuan, P. Xu,
+     engine for low-bit block floating point (bfp) dnns,” in Proceedings of the               Z. Yan, I. Zarov, Y. Zhang, A. Fan, M. Kambadur, S. Narang,
+     56th Annual IEEE/ACM International Symposium on Microarchitecture                        A. Rodriguez, R. Stojnic, S. Edunov, and T. Scialom, “Llama 2: Open
+     (MICRO), 2023, pp. 1002–1015.                                                            foundation and fine-tuned chat models,” 2023. [Online]. Available:
+[48] S. Ma, H. Wang, L. Ma, L. Wang, W. Wang, S. Huang, L. Dong,                              https://arxiv.org/abs/2307.09288
+     R. Wang, J. Xue, and F. Wei, “The era of 1-bit llms: All large language             [65] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez,
+     models are in 1.58 bits,” arXiv preprint arXiv:2402.17764, vol. 1, no. 4,                Ł. Kaiser, and I. Polosukhin, “Attention is all you need,” Advances in
+     2024.                                                                                    neural information processing systems (NeurIPS), vol. 30, 2017.
+[49] S. Merity, C. Xiong, J. Bradbury, and R. Socher, “Pointer sentinel                  [66] H. Wang, S. Ma, L. Dong, S. Huang, H. Wang, L. Ma, F. Yang, R. Wang,
+     mixture models,” arXiv preprint arXiv:1609.07843, 2016.                                  Y. Wu, and F. Wei, “Bitnet: Scaling 1-bit transformers for large language
+[50] Z. Mo, L. Wang, J. Wei, Z. Zeng, S. Cao, L. Ma, N. Jing, T. Cao,                         models,” arXiv preprint arXiv:2310.11453, 2023.
+     J. Xue, F. Yang et al., “Lut tensor core: A software-hardware co-design             [67] J. Wei, S. Cao, T. Cao, L. Ma, L. Wang, Y. Zhang, and M. Yang, “T-mac:
+     for lut-based low-bit llm inference,” in Proceedings of the International                Cpu renaissance via table lookup for low-bit llm deployment on edge,”
+     Symposium on Computer Architecture (ISCA), 2025, pp. 514–528.                            in Proceedings of the Twentieth European Conference on Computer
+[51] E. Park, D. Kim, and S. Yoo, “Energy-efficient neural network acceler-                   Systems, 2025, pp. 278–292.
+     ator based on outlier-aware low-precision computation,” in Proceedings              [68] T. Wolf, L. Debut, V. Sanh, J. Chaumond, C. Delangue, A. Moi,
+     of the International Symposium on Computer Architecture (ISCA), 2018,                    P. Cistac, T. Rault, R. Louf, M. Funtowicz, J. Davison, S. Shleifer,
+     pp. 688–698.                                                                             P. von Platen, C. Ma, Y. Jernite, J. Plu, C. Xu, T. L. Scao, S. Gugger,
+[52] G. Park, H. Kwon, J. Kim, J. Bae, B. Park, D. Lee, and Y. Lee,                           M. Drame, Q. Lhoest, and A. M. Rush, “Transformers: State-of-
+     “Figlut: An energy-efficient accelerator design for fp-int gemm using                    the-art natural language processing,” in Proceedings of the 2020
+     look-up tables,” in Proceedings of the International Symposium on High-                  Conference on Empirical Methods in Natural Language Processing:
+     Performance Computer Architecture (HPCA), 2025, pp. 1098–1111.                           System Demonstrations. Online: Association for Computational
+[53] G. Park, B. Park, M. Kim, S. Lee, J. Kim, B. Kwon, S. J. Kwon, B. Kim,                   Linguistics, Oct. 2020, pp. 38–45. [Online]. Available: https:
+     Y. Lee, and D. Lee, “Lut-gemm: Quantized matrix multiplication based                     //www.aclweb.org/anthology/2020.emnlp-demos.6
+     on luts for efficient inference in large-scale generative language models,”         [69] G. Xiao, J. Lin, M. Seznec, H. Wu, J. Demouth, and S. Han,
+     in International Conference on Learning Representations (ICLR), 2024.                    “Smoothquant: Accurate and efficient post-training quantization for large
+[54] B. Peng, J. Quesnelle, H. Fan, and E. Shippole, “Yarn: Efficient                         language models,” in International conference on machine learning
+     context window extension of large language models,” arXiv preprint                       (ICML), 2023, pp. 38 087–38 099.
+     arXiv:2309.00071, 2023.                                                             [70] C. Xu, J. Yao, Z. Lin, W. Ou, Y. Cao, Z. Wang, and H. Zha, “Alternating
+[55] Y. Qin, Y. Wang, D. Deng, Z. Zhao, X. Yang, L. Liu, S. Wei, Y. Hu,                       multi-bit quantization for recurrent neural networks,” arXiv preprint
+     and S. Yin, “Fact: Ffn-attention co-optimized transformer architecture                   arXiv:1802.00150, 2018.
+     with eager correlation prediction,” in Proceedings of the 50th Annual               [71] A. Yang, A. Li, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Gao,
+     International Symposium on Computer Architecture (ISCA), 2023, pp.                       C. Huang, C. Lv, C. Zheng, D. Liu, F. Zhou, F. Huang, F. Hu, H. Ge,
+     1–14.                                                                                    H. Wei, H. Lin, J. Tang, J. Yang, J. Tu, J. Zhang, J. Yang, J. Yang,
+[56] C. Raffel, N. Shazeer, A. Roberts, K. Lee, S. Narang, M. Matena,                         J. Zhou, J. Zhou, J. Lin, K. Dang, K. Bao, K. Yang, L. Yu, L. Deng,
+     Y. Zhou, W. Li, and P. J. Liu, “Exploring the limits of transfer learning                M. Li, M. Xue, M. Li, P. Zhang, P. Wang, Q. Zhu, R. Men, R. Gao,
+     with a unified text-to-text transformer,” arXiv e-prints, 2019.                          S. Liu, S. Luo, T. Li, T. Tang, W. Yin, X. Ren, X. Wang, X. Zhang,
+[57] S. Ryu, H. Kim, W. Yi, E. Kim, Y. Kim, T. Kim, and J.-J. Kim,                            X. Ren, Y. Fan, Y. Su, Y. Zhang, Y. Zhang, Y. Wan, Y. Liu, Z. Wang,
+     “Bitblade: Energy-efficient variable bit-precision hardware accelerator                  Z. Cui, Z. Zhang, Z. Zhou, and Z. Qiu, “Qwen3 technical report,” arXiv
+     for quantized neural networks,” IEEE Journal of Solid-State Circuits                     preprint arXiv:2505.09388, 2025.
+     (JSSC), vol. 57, no. 6, pp. 1924–1935, 2022.                                        [72] Z. Yao, R. Yazdani Aminabadi, M. Zhang, X. Wu, C. Li, and Y. He,
+[58] K. Sakaguchi, R. L. Bras, C. Bhagavatula, and Y. Choi, “Winogrande:                      “Zeroquant: Efficient and affordable post-training quantization for large-
+     An adversarial winograd schema challenge at scale,” Communications                       scale transformers,” Advances in neural information processing systems
+     of the ACM, vol. 64, no. 9, pp. 99–106, 2021.                                            (NeurIPS), vol. 35, pp. 27 168–27 183, 2022.
+
+
+
+
+                                                                                   336
+[73] H. You, Y. Guo, Y. Fu, W. Zhou, H. Shi, X. Zhang, S. Kundu, A. Yaz-
+     danbakhsh, and Y. C. Lin, “Shiftaddllm: Accelerating pretrained llms via
+     post-training multiplication-less reparameterization,” Advances in Neural
+     Information Processing Systems (NeurIPS), vol. 37, pp. 24 822–24 848,
+     2024.
+[74] Z. Yuan, L. Niu, J. Liu, W. Liu, X. Wang, Y. Shang, G. Sun, Q. Wu,
+     J. Wu, and B. Wu, “Rptq: Reorder-based post-training quantization for
+     large language models,” arXiv preprint arXiv:2304.01089, 2023.
+[75] A. H. Zadeh, I. Edo, O. M. Awad, and A. Moshovos, “Gobo: Quan-
+     tizing attention-based nlp models for low latency and energy efficient
+     inference,” in 2020 53rd Annual IEEE/ACM International Symposium
+     on Microarchitecture (MICRO), 2020, pp. 811–824.
+[76] A. H. Zadeh, M. Mahmoud, A. Abdelhadi, and A. Moshovos, “Mokey:
+     Enabling narrow fixed-point inference for out-of-the-box floating-point
+     transformer models,” in Proceedings of the 49th Annual International
+     Symposium on Computer Architecture (ISCA), 2022, pp. 888–901.
+[77] R. Zellers, A. Holtzman, Y. Bisk, A. Farhadi, and Y. Choi, “Hel-
+     laswag: Can a machine really finish your sentence?” arXiv preprint
+     arXiv:1905.07830, 2019.
+[78] P. Zhang, Z. Liu, S. Xiao, N. Shao, Q. Ye, and Z. Dou, “Long context
+     compression with activation beacon,” arXiv preprint arXiv:2401.03462,
+     2024.
+[79] S. Zhang, S. Roller, N. Goyal, M. Artetxe, M. Chen, S. Chen,
+     C. Dewan, M. Diab, X. Li, X. V. Lin, T. Mihaylov, M. Ott,
+     S. Shleifer, K. Shuster, D. Simig, P. S. Koura, A. Sridhar, T. Wang, and
+     L. Zettlemoyer, “Opt: Open pre-trained transformer language models,”
+     2022. [Online]. Available: https://arxiv.org/abs/2205.01068
+[80] Y. Zhao, C.-Y. Lin, K. Zhu, Z. Ye, L. Chen, S. Zheng, L. Ceze,
+     A. Krishnamurthy, T. Chen, and B. Kasikci, “Atom: Low-bit quantization
+     for efficient and accurate llm serving,” Proceedings of Machine Learning
+     and Systems (MLSys), vol. 6, pp. 196–209, 2024.
+
+
+
+
+                                                                                 337
+

@@ -1,0 +1,77 @@
+                           TABLE I                                                                                       TABLE II
+C OMPARISON OF REPRESENTATIVE LUT- BASED ACCELERATOR DESIGNS .                                                     S UMMARY OF NOTATIONS .
+
+ Architecture   Codebook Size        Strategy      Replication / Bandwidth Cost                Symbol     Description                                     Value
+ GOBO [73]      8 × 16 bits (FP16)   Duplication   768 × (8 × 16 bits) Registers
+ LUT TC [44]    8 × 8 bits (INT8)    Duplication   2 × 64 × (8 × 8 bits) Registers
+                                                                                               M          Input (output) height, i.e., number of tokens   1
+ LUT-DLA [34]   16× 16 bits (BF16)   Duplication   256 × (16 ×16 bits) Registers               N          Weight (output) width, i.e., output channel     4096+
+ FIGLUT [48]    8 × 16 bits (FP16)   Broadcast     16× 32 × (8 × 16 bits) Bandwidth            K          Input width or weight height for reduction      4096+
+                                                                                               d          Vector dimension used in VQ                     8
+                                                                                               n          Bit-width of each vector index                  8
+between original weights and quantized representations is                                      2n         Number of entries per codebook                  256
+                                                                                               V = K      Height of compressed weight index matrix        512+
+no longer expressible in arithmetic form, decoding requires                                    v
+                                                                                                    d
+                                                                                                          Tile height for grouped computation             32
+a 1-to-1 lookup from codebooks. Such irregular and unco-                                       C          Number of codebooks per layer                   2–4
+alesced memory access patterns lead to frequent memory                                         q = C×n
+                                                                                                     d
+                                                                                                          Effective quantization bit-width (average)      2–4
+                                                                                               I          Weight index (WI) matrix                        [0, 2n )V ×N
+bank conflicts, making the decoding process both expensive                                     B          Weight codebook (WC) containing 2n centroids    Rd×2
+                                                                                                                                                                n
+
+and difficult to parallelize, as illustrated in Fig. 1 (b). This                               O          Output codebook (OC)                            RV ×2
+                                                                                                                                                                 n
+
+
+limitation has prevented non-analytic quantization from being
+widely adopted in large-scale inference systems.                                             and mainly serve as model compression techniques, often
+   Vector Quantization (VQ). Vector Quantization (VQ) ex-                                    slower than FP16 inference. VQ-LLM [41] is the first GPU-
+tends non-analytic quantization from scalar (1D) K-means to                                  based framework to address codebook conflicts; however, due
+higher-dimensional clustering (multi-D K-means). By encod-                                   to GPU hardware constraints, it only mitigates conflicts by
+ing multiple elements jointly (e.g., 4D or 8D vectors), VQ                                   profiling codebook access frequencies to classify hot and cold
+captures local structural correlations in weights and substan-                               entries. This heuristic approach alleviates but does not elimi-
+tially reduces quantization loss. As shown in Fig. 2 (c), VQ                                 nate memory contention, leaving the fundamental inefficiency
+achieves lower reconstruction error than analytic quantization                               of VQ unresolved.
+even with an average of only 1 bit per element, reaching state-                                 As a result, despite its superior compression and accuracy,
+of-the-art (SOTA) accuracy-compression trade-offs.                                           vector quantization remains limited by its poor hardware effi-
+   Nevertheless, VQ introduces substantial challenges during                                 ciency and irregular access patterns. In this study, we propose
+decoding. Because each vector code corresponds to multiple                                   EVA, which overcomes both computational inefficiency and
+weight elements, the effective codebook size increases, which                                memory conflicts through a unified, architecture-aware VQ
+in turn raises memory bandwidth demands and exacerbates ac-                                  design.
+cess irregularity. This “1-to-many” lookup mechanism makes
+VQ particularly sensitive to memory access conflicts, posing                                                      III. OVERVIEW OF EVA
+a fundamental barrier to its efficient deployment on current                                    This section presents the computation flow and architectural
+accelerators.                                                                                overview of EVA, as illustrated in Fig. 3. We first define the key
+C. Codebook-based Lookup: Memory Inefficiency                                                variables and symbols used throughout this study, summarized
+                                                                                             in Tbl. II.
+   Supporting efficient codebook-based non-analytic quanti-
+zation has long been a major research objective in both                                      A. Vector Quantization
+architecture and system communities.                                                           GEMV. As illustrated in Fig. 3 (a) 1 , the LLM decoding
+   Architectural perspective. From a hardware perspective,                                   phase performs a sequence of matrix–vector multiplications
+prior studies mainly focus on optimizing the lookup ta-                                      (GEMV). For each generated token, the computation is ex-
+ble (LUT) design to reduce memory conflicts. Representa-                                     pressed as
+tive works include GOBO [73], FIGLUT [48], LUT Tensor                                                               y = xW,
+Core [44], and LUT-DLA [34]. As summarized in Tbl. I, these
+approaches typically rely on either duplicating or broadcasting                              where x ∈ R1×K is the token activation vector and W ∈
+the codebook across processing elements (PEs) to mitigate                                    RK×N represents the model weights. During autoregressive
+bank conflicts. However, both strategies incur substantial hard-                             generation, x updates token by token, requiring multiple small
+ware and bandwidth overhead. For instance, FIGLUT broad-                                     GEMV operations executed sequentially. Each operation reads
+casts 8 × 16-bit data to a full PE column of 32 lanes, resulting                             the full weight matrix from off-chip memory but performs lim-
+in a total bandwidth requirement of 16 × 32 × (8 × 16 bits),                                 ited arithmetic, making the process inherently memory-bound.
+while LUT-DLA requires 256×(16×16 bits) registers to store                                   This low arithmetic intensity causes severe underutilization of
+replicated codebook entries. Such design costs significantly                                 compute resources on modern accelerators. To alleviate this
+constrain scalability and limit the effective codebook size to                               bottleneck, quantization is commonly applied to reduce the
+at most 16 entries.                                                                          storage and bandwidth requirements of W.
+   Software and system perspective. From the algorithmic                                        Vector Quantization. As shown in Fig. 3 (a) 2 , Vec-
+and system side, prior VQ frameworks primarily focus on im-                                  tor Quantization (VQ) compresses the weight matrix W by
+proving accuracy while adopting naive software implementa-                                   grouping d consecutive weights along the K dimension into
+tions. AQLM [15] and QuiP [58] are implemented in PyTorch                                    d-dimensional vectors. Each group of d weights forms a small
+
+
+
+
+                                                                                      1354
+

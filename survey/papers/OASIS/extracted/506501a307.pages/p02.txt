@@ -1,0 +1,103 @@
+ing GEMMs, which is illustrated in Fig. 1(c). This negates                  II. BACKGROUNDS AND M OTIVATIONS
+the computational advantages of quantization and yields poor     A. LLM Quantization
+computational efﬁciency.
+                                                                    LLMs typically utilize FP16 format for weights and ac-
+   To resolve the dilemma between high-efﬁciency but low-
+                                                                 tivations during inference [1], [10]. Quantization, which re-
+accuracy INT-WAQ and high-accuracy but low-efﬁciency NU-
+                                                                 duces the numerical precision of weights and activations,
+WAQ (Fig. 1), we propose a LUT-based method that enables
+                                                                 has emerged as a promising technique to optimize LLM
+efﬁcient GEMMs between non-uniformly quantized weights
+                                                                 inference efﬁciency [11], [16], [19], [21], [29]. WOQ methods
+and activations without requiring dequantization. Prior LUT-
+                                                                 effectively reduce model memory footprint by quantizing the
+based GEMM methods were developed to optimize GEMM
+                                                                 weights [11], [29], but fail to leverage emerging efﬁcient low-
+computations with WOQ [37], [42], [43]. They rely on large
+                                                                 precision compute units (e.g., GPUs’ INT4 Tensor Cores [41])
+inner-product LUTs that must be regenerated for dynamic
+                                                                 since the activations remain in FP16 format. In contrast, WAQ
+activations, leading to excessive LUT size and limited par-
+                                                                 methods quantize both weights and activations, enabling low-
+allelism. On the other hand, we observe that WAQ fundamen-
+                                                                 precision computation for faster inference [3], [33]. Therefore,
+tally unlocks three key opportunities to achieve a far more
+                                                                 recent studies have increasingly focused on developing WAQ
+efﬁcient LUT-based GEMM design: (1) In learned-codebook
+                                                                 methods to further enhance LLM inference efﬁciency [3], [28],
+WAQ, both weight and activation centroids are learned ofﬂine,
+                                                                 [33], [50], [62].
+allowing the entire LUT to be pre-computed before inference
+                                                                    Conventional WAQ methods quantize both weights and
+and eliminating on-the-ﬂy LUT generation. (2) Because both
+                                                                 activations into integer representations, which face signiﬁcant
+operands are quantized, the space of possible multiplication
+                                                                 accuracy degradation in low-precision quantization conﬁgu-
+outcomes is greatly reduced, enabling us to store Cartesian
+                                                                 rations [3], [33], [57], [62]. Compared to integer quantiza-
+Product entries instead of full inner products, which substan-
+                                                                 tion, which maps ﬂoating-point numbers to equally spaced
+tially shrinks LUT size. (3) The Cartesian Product LUT is
+                                                                 integer levels, non-uniform quantization employs unequally
+independent of reduction length, enabling larger compute gran-
+                                                                 spaced centroids that better align with the actual distributions
+ularity and signiﬁcantly higher parallelism during GEMMs.
+                                                                 of weights and activations, thereby reducing quantization
+   To further retain model accuracy in WAQ, it is important
+                                                                 noise [2], [34], [54], [60]. To achieve higher accuracy, recent
+to carefully handle the activation outliers. This is because
+                                                                 studies have leveraged non-uniform quantization methods to
+activation outliers exhibit both higher quantity and magnitude
+                                                                 achieve low-precision LLMs [21], [31], [42].
+compared to weight outliers, resulting in high quantization
+                                                                    Non-uniform quantization includes low-precision ﬂoating-
+noises [3], [29], [58]. Therefore, we propose an outlier-aware
+                                                                 point formats (e.g., MXFP4 [54], NVFP4 [2]) and learned-
+mechanism that identiﬁes activation outliers during inference
+                                                                 codebook methods [34], [60]. The learned-codebook methods,
+and compensates for their errors without incurring additional
+                                                                 which optimize centroids via training, generally achieve higher
+runtime overhead.
+                                                                 accuracy [19], [21]. These methods represent data as integer
+   Incorporating the aforementioned optimizations, we pro-
+                                                                 index matrices that reference a ﬂoating-point codebook. For
+pose OASIS: an Outlier-Aware LUT-Based GEMM Scheme
+                                                                 example, K-Means quantization [34] can be written as:
+with Dual-Side Quantization for LLM Inference Acceleration.
+We compare the end-to-end LLM inference performance of                   x̃i = Cidxi ,     idxi = arg min xi − Ck 2 ,       (1)
+                                                                                                        k
+OASIS with state-of-the-art (SOTA) quantization algorithms
+                                                                 where xi is the original data point, x̃i is its quantized value,
+and accelerators. For the algorithmic performance, on average,
+                                                                 Ck is the centroid of the k th cluster, and idxi is the integer
+OASIS achieves an accuracy degradation of only 1.94%
+                                                                 index corresponding to x̃i that selects the nearest centroid.
+compared to the FP16 baseline. This accuracy degradation is
+                                                                 To represent a matrix of size M × N with n-bit K-Means
+6.34% lower than Atom [62]. For the hardware performance,
+                                                                 quantization, an n-bit integer index matrix idx of size M × N
+OASIS achieves average speedups of 3.00× and energy
+                                                                 and an FP centroid codebook C of size 2n are required.
+efﬁciency improvements of 1.44× over FIGLUT [42]. The
+                                                                    Although learned-codebook schemes reduce quantization
+main contributions of this work include:
+                                                                 error, they incur substantial runtime cost at inference be-
+• We propose WAQ LUT-GEMM, a LUT-based GEMM
+                                                                 cause current accelerators do not natively support such non-
+   method enabling efﬁcient computation between non-             uniform data representations [8], [40]. Performing GEMMs
+   uniformly quantized weights and activations without de-       with index-coded data therefore requires per-element code-
+   quantization. It uses pre-computed Cartesian Product LUTs     book lookups and dequantization into FP16 values, followed
+   to signiﬁcantly reduce LUT size and improve parallelism.      by FP16 GEMMs, which adds signiﬁcant overhead [19], [21].
+• We introduce an outlier-aware quantization scheme with
+                                                                 Therefore, unleashing the performance beneﬁts of learned-
+   look-ahead computation and error compensation to efﬁ-         codebook quantization motivates the design of hardware that
+   ciently handle activation outliers during inference.          directly supports their non-uniform data representations.
+• We propose the architecture design of the OASIS acceler-
+   ator, which efﬁciently supports WAQ LUT-GEMM.                 B. LUT-Based GEMM Schemes
+• We develop Orizuru, a lightweight top-k engine for identi-        LUT-based computation has been demonstrated to be an
+   fying activation outliers in real-time data streams.          effective approach for performing efﬁcient GEMMs without
+
+
+                                                             308
+

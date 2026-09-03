@@ -1,0 +1,63 @@
+               K                                   N                     (Figure 7a), the entire feature vector required for normalization
+                                                                         fits within a single thread block. In this regime, BlockNorm
+                                                                         behaves identically to standard normalization layers, as all
+      B                   @               =                     (a)
+                                                                         statistics are computed locally. Additional operations such
+                                                                         as activation and (de)quantization can also be fused together
+                                                                         before the final output is written to HBM.
+                                       Cross-SM normalization            Case 2: Small batch, large output dimension. When N is
+                                                                         large, however, a single thread block can no longer hold an
+                                                                         entire output row in shared memory. Computing RMS statistics
+                          @               =                     (b)      now requires cross-block synchronization (Figure 7b), which
+                                                                         negates most of the performance gains of fusion. One possible
+                                                                         mitigation is to reduce the tile size along the batch dimension,
+                                       Single tile on output dim         but this incurs SM wave quantization effects [1] and lowers
+                                                                         the L2 cache hit rate for the W matrix, yielding negligible
+                                                                         end-to-end speedup (Figure 7c).
+                          @               =                     (c)      Tradeoff and design choice. We further explored semi-
+                                                                         fused approaches where GEMM outputs partial statistics for
+                                                                         later normalization, or tiling assignments aligned with the
+                                       In-block normalization            normalization axis at the SM level. While these approaches
+                                                                         offer limited gains, they require extensive manual tuning for
+                                                                         each new shape, which reduces generality. To achieve robust
+                          @               =                     (d)      performance across diverse tensor shapes, LoKA deliberately
+                                                                         relaxes full mathematical equivalence in favor of efficiency,
+                                                                         leading to the final BlockNorm formulation (Figure 7d).
+                   Active block     Normalization Block                     Concretely, BlockNorm normalizes over fixed-size blocks
+                                                                         (e.g., 256 elements) rather than the full output dimension.
+                        Fig. 7. BlockNorm design                         During both training and inference, the same block size is
+                                                                         used, and normalization statistics are computed independently
+padding [44], bias tensors smaller than the world size can incur         per block to ensure train-test consistency.
+significant overheads.                                                   Striking a Better Numerical and Performance Tradeoff
+   2) Block-wise Normalization: Our objective is to fuse nor-            with Model Co-design While the actual computation differs
+malization directly into the GEMM epilogue to minimize HBM               between BlockNorm and standard normalization practices, we
+I/O. While similar to epilogue fusion [65], our application is in        argue that it does not break RMSNorm: it is mathematically
+a different context. By performing normalization immediately             equivalent to an unparameterized Grouped RMSNorm [71].
+after GEMM completion while the output tiles still reside in on-         Global RMSNorm couples all channels to a single statistic,
+chip memory (L1/L2 caches or registers), we avoid costly global          meaning one outlier suppresses all features. BlockNorm de-
+memory traffic. However, conventional normalization layers               couples feature subspaces, preventing catastrophic cancellation
+operate along the feature dimension, which often misaligns               (which can prove important [39], [72]) and increasing the
+with the physical data layout of GEMM outputs.                           model’s representational capacity via more independent degrees
+   To address this, we proposes BlockNorm, a normalization               of freedom. Because block size is strictly consistent between
+approach inspired by GroupNorm [71] which is originally                  training and inference, the model natively adapts to this
+designed to apply normalization within individual channels of            grouped topology without requiring global, hardware-inefficient
+a feature map. In our version of BlockNorm, instead of com-              synchronization. Empirically, BlockNorm improves stability
+puting statistics across the full output dimension or individual         over baselines (Figure 13), and convergence is insensitive
+feature, it applies root-mean-square normalization [77] across           to block size provided it is sufficiently large (e.g. 256) and
+predefined blocks along the feature dimension, which happens             identical across train/test phases. This approach also aligns
+within each computational block of the GEMM kernel:                      closely with emerging Microscaling (MX) hardware standards,
+                                                                        which utilize block-shared scaling to preserve dynamic range
+   RMSNorm (W x + b).view(−1, BlockN) .view(B, N ).                      without the overhead of global synchronization [63]. The
+                                                                         idea is also supported by prior work in the machine learning
+We adopt RMSNorm over LayerNorm because it only normal-                  community. For example, pRMSNorm was proposed alongside
+izes by the L2-norm of activations, avoiding mean subtraction            RMSNorm [77] which assumes the identical distribution of
+and thus reducing catastrophic cancellation errors under low-            the neurons and estimates RMS using as little as 6.25% of
+precision execution.                                                     them. GroupNorm also found that normalizing over groups
+Case 1: Large batch, small output dimension. When the                    of output neurons remains effective for training stability and
+batch size B is large and the output dimension N is small                model quality. To demonstrate this, we compare training of
+
+
+
+
+                                                                      1374
+

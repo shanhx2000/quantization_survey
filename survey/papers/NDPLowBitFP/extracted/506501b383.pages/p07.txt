@@ -1,0 +1,81 @@
+                              IDLE Window
+                                                               PU   Compute Dequant. Compute
+                                                                                                           Algorithm 1: Dequant Instruction Reorder
+       PU Compute Dequant.                          Compute
+
+                                                              DRAM RD R1               RD R1
+                                                                                                            Input : Sliced INST list I; uncovered dequant list D; max
+ DRAM RD R1                PRE R1, ACT R2           RD R2
+                                                                (b) Case 2: Introduce Extra Lat.
+                                                                                                                     partial buffer size Bmax
+                (a) Case 1: Free Slot
+                                                                                                            Output: Optimized INST list after reordering
+          Dequant       Free Slot     Other Inst.
+                                                                                                          1 // Phase 1: Pre-scan to identify potential slots
+ (c)                                 IDLE Window
+          Group=128                                                                                       2 S ← Dict // Valid slot positions, idle window
+         (Ideal Case)                                                                                     3 // Phase 2: Move dequant instructions forward
+(d)                                  IDLE Window              90% of Dequants                             4 foreach (posdequant , instdequant ) in reverse(D) do
+                        Utilize
+         Group=16        25%                                                                              5     extra buf ← Bmax − #P artialSum(instdequant );
+                                                                Hard to Align                             6     pos tmp ← posdequant ; candidate ← None;
+          Increase                   IDLE Window
+           Partial      100%
+                                                                                                          7     while pos tmp < |I| − 1 do
+          Buf. Size                                                                                       8         if pos tmp ∈ S.keys and S[pos tmp] > 0 then
+                                                                Inst. Reorder
+                                                                                                          9             candidate ← pos tmp;
+            Ours
+                                                                                                          10        instnext ← I[pos tmp + 1];
+                                                                                                          11        // Calculate burden based on instruction type
+                Fig. 7. Instruction Reordering-based Dequant. Hiding                                      12        if instnext .type = Compute then
+                                                                                                          13             burden ← #P artialSum(instnext );
+B. Key Idea of Dequantization Hiding                                                                      14        else if instnext .type = ReadData then
+   The intuitive idea is to aggregate these fine-grained de-                                              15            burden ← 0;
+quantization operations by buffering more partial results in                                              16        else if instnext .type ∈
+the SRAM and dequantizing them together. In principle, this                                                          {ReadScale , Dequant, W riteBack} then
+would allow a combined dequantization to fully occupy the                                                 17            burden ← Bmax + 1 // Blocking
+idle window at a free slot. However, enforcing strict alignment                                           18        extra buf ← extra buf − burden;
+between combined dequantization and free slots is difficult, as                                           19        if extra buf < 0 then
+                                                                                                          20            return; // Cannot move further
+shown in Fig. 7(c). The reason is the mismatch between the
+occurrence periods of idle windows and combined dequanti-                                                 21        pos tmp ← pos tmp + 1;
+zation. The idle window period is determined by the DRAM                                                  22    if candidate ̸= None then
+layout of the itBlock, i.e., how much data is fetched and                                                 23         Move(instdequant , candidate);
+                                                                                                          24         Update S[candidate]; CheckValid();
+processed before a DRAM row is completed and a row change
+occurs. In contrast, the dequantization period is determined by
+when the partial results fill the buffer space. Relying on exact
+alignment would also miss many optimization opportunities.
+   Instead, we propose a more flexible approach that automati-                                            ing additional partial results in SRAM. To ensure the partial
+cally aligns the dequantization with idle windows, independent                                            results fit within the buffer, we track the remaining partial-
+of the specific data layout and loop scheduling. The key idea                                             buffer capacity as we move a dequantization instruction. When
+is to precisely “move” the fine-grained dequantization instruc-                                           it moves past a compute operation, we subtract the amount of
+tions into free slots by instruction reordering, and combine                                              partial result produced by that operation from the remaining
+multiple dequantization instructions at the same free slot to                                             capacity. Movement stops when capacity is exhausted.
+fully utilize the idle window, as illustrated in Fig. 7(c). It                                               Rule 3: Constraint of available idle window. We will also
+ensures full utilization of the idle window while preserving                                              track the dequantization instructions already hidden in each
+flexibility by triggering dequantization based on hiding op-                                              free slot. A free slot will turn invalid when the idle window
+portunities instead of buffer limitation.                                                                 is fully utilized by these dequantizations.
+
+C. Dequantization Instruction Reordering Rules                                                            D. Dequantization Instruction Reordering Procedure
+   When reordering dequantization instructions, several con-                                                 For simplicity and to limit the overhead of instruction
+straints must be satisfied.                                                                               reordering, we restrict each reordering process to a single
+   Rule 1: Constraint of data dependencies. Since each de-                                                iteration over the weight matrix and apply Alg. 1 to the
+quantization operation depends on the partial result produced                                             corresponding sliced instruction list. As shown in the algo-
+earlier, it cannot be moved backward to a free slot that                                                  rithm, before reordering any dequantization instructions, we
+appears before its original position. Therefore, dequantization                                           first scan for all candidate free slots created by DRAM row
+instructions can only be moved forward. In addition, dequanti-                                            changes and DRAM reads, and record the number of idle
+zation instruction cannot be moved past a later dequantization                                            cycles available in each slot (line 2). To maximize utilization
+instruction. And if a dequantization is moved past a DRAM                                                 of these slots, we process dequantization instructions in reverse
+read triggered by scale buffer refill, the required scales for the                                        order (line 4). For each dequantization, we attempt to place
+dequantization would be discarded before being used. So this                                              it at the latest candidate slot it can reach without exceeding
+behavior is also prohibited.                                                                              the extra buffer capacity reserved for partial QGroup sums
+   Rule 2: Constraint of buffer size of partial result. Moving                                            (extra buf ), as indicated in line 5-6. This prevents a later
+dequantization across computation instructions requires stor-                                             dequantization from occupying a slot that could better serve an
+
+
+
+
+                                                                                                   1389
+

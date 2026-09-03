@@ -1,0 +1,1428 @@
+                      2026 ACM/IEEE 53rd Annual International Symposium on Computer Architecture (ISCA)
+
+
+
+
+                      Bringing Near Data Processing into the
+                            Low-Bit Floating-Point Era
+      Tongxin Xie13 , Mingyu Gao1 , Zehao Wang1 , Zhihao Jia6† , Yuechen Xi7† , Bing Li4 , Mo Guang5 , Jiale Yan5 ,
+          Kaiwen Long5 , Xingcheng Zhang3 , Huazhong Yang1 , Yuan Xie2 , Zhenhua Zhu12∗ , and Yu Wang1
+      1
+          Tsinghua University, 2 HKUST, 3 Shanghai AI Laboratory, 4 Institute of Microelectronics, Chinese Academy of Sciences,
+                                       5
+                                         Li Auto, 6 Imperial College London, 7 Nankai University
+
+
+       Abstract—Near data processing (NDP) based on DRAM has                   distributing them near different memory units to exploit the
+    emerged to be a promising solution to the “memory wall”                    high internal bandwidth [2], [3], [8], [12], [13], [16]–[18],
+    problem of machine learning models. From the algorithmic                   [22], [23], [25], [28], [29], [31], [33], [34], [36], [37], [46],
+    perspective, group-wise low-bit floating-point (FP) quantization
+    has become an important trend for both efficient training and              [48], [51], [53], [54], [62], [64], [67]. Since general matrix
+    inference. Integrating low-bit FP quantization into NDP also               multiplication (GEMM), including matrix-matrix (MM) and
+    notably shrinks the memory footprint of large models, alleviating          matrix-vector multiplication (MVM), dominates the compute
+    the memory-capacity constraints of NDP architectures.                      and memory footprint of ML workloads, NDP architectures
+       However, existing NDP compilers struggle to support efficient           primarily focus on processing GEMM operators. Other non-
+    low-bit FP computation on NDP. First, different quantization
+    configurations exhibit different preferences for NDP compilation           linear operations (e.g., softmax) are handled via lookup tables,
+    strategies. Second, the fine-grained grouping leads to frequent            functional approximation, or offloaded to the host [33].
+    switching between quantized value access and group scale access               In addition to leveraging NDP hardware features to reduce
+    during computation, increasing the DRAM row-buffer miss rate.              memory access overhead, quantization serves as an effective
+    Third, fine-grained grouping triggers frequent high-precision              method on the algorithmic side to reduce data volume, which
+    dequantization operations, causing significant latency overhead.
+       To address these challenges, this paper proposes FlexQ-NDP,
+                                                                               compresses high-precision GEMM into low-bit formats [19],
+    an NDP compiler tailored for general low-bit FP computation.               [20], [39], [44], [59]. To mitigate the accuracy loss intro-
+    Firstly, we develop an open-source simulation framework1 to                duced by quantization especially for the error-sensitive LLMs,
+    model the low-bit FP computation overhead on NDP. Secondly,                group-wise low-bit floating-point (FP) has gained significant
+    we design a scale-value interleaved FP layout, effectively re-             attention [1], [7], [9], [14], [32], [41], [47], [50], [60], [65],
+    ducing DRAM row-changing overhead. Thirdly, we propose a
+    dequantization-hiding technique based on instruction reordering
+                                                                               [66]. The high precision of low-bit FP is guaranteed by two
+    to reduce the DRAM idle time induced by frequent dequanti-                 facts: (1) FP data format uses “exponent + mantissa” to
+    zation operations. Finally, we develop a lightweight compilation-          provide finer quantization resolution over a wider dynamic
+    space pruning and search strategy to enable efficient low-bit FP           range than integers with the same bit-width; and (2) group-
+    computation on NDP. Extensive experiments show that FlexQ-                 wise quantization, where high-precision data are divided
+    NDP achieves up to 3.29× speedup over existing compilation
+    strategies on various low-bit FP quantization configurations.
+                                                                               into different quantization groups (QGroups). Each QGroup
+       Index Terms—Near Data Processing, Floating-Point Quantiza-              is associated with its own scaling factor (abbreviated as scale)
+    tion, Compilation Optimization                                             to project the original data into the representable range of
+                                                                               the low-bit FP format. As a result, low-bit FP quantization
+                            I. I NTRODUCTION                                   can better handle outliers under fine-grained grouping (e.g.,
+                                                                               16 elements / QGroup [66]). With the combination of these
+       Machine learning (ML) algorithms like convolutional neu-
+                                                                               two characteristics, FP4 quantization has demonstrated 3∼4×
+    ral networks (CNNs) [21], [58] and large language models
+                                                                               speedups and ∼4× memory size reduction over high-precision
+    (LLMs) [6], [45], [55], [56] have shown remarkable ability
+                                                                               (FP16) LLMs on GPUs, while maintaining comparable accu-
+    across various fields, such as computer vision [15] and natural
+                                                                               racy for both training and inference [7], [66].
+    language processing [10]. Despite the superior performance,
+                                                                                  Due to their superior performance, low-bit FP is also being
+    the amount of compute and model size of these algorithms
+                                                                               actively explored in industry. Key players like DeepSeek [41]
+    are increasing exponentially [5], [61]. As a result, data access
+                                                                               and NVIDIA [1], [9], [11] have already begun optimizing
+    has become a critical bottleneck that limits the overall system
+                                                                               infrastructure and hardware for low-bit FP formats. In addition,
+    performance of traditional von Neumann architectures [43].
+                                                                               enabling low-bit FP quantization can substantially alleviate the
+       DRAM-based Near Data Processing (NDP) architectures                     memory-capacity pressure of the DRAM-based NDP architec-
+    have been proposed as a promising solution to this problem                 ture imposed by LLMs. As a result, we believe that bringing
+    by placing processing units (PUs) inside main memory and                   NDP architectures into the low-bit FP era is highly valuable.
+      † Work done during internship at Tsinghua University.                       However, although low-bit FP has already been imple-
+      ∗ Corresponding Author: zhuzhenhua@mail.tsinghua.edu.cn                  mented on GPU/CPU, existing compilers cannot be reused for
+      1 Available at https://github.com/ISCA26-FlexQ-NDP-ae/flexq ndp          deploying this technique on NDP architectures. The reasons
+
+
+979-8-3315-5065-3/26/$31.00 ©2026 IEEE                                  1383
+DOI 10.1109/ISCA66397.2026.00104
+are twofold: (1) Different to GPU/CPU, processing units (PUs)             compiler tailored for low-bit FP computation. The contribu-
+and memory units are tightly coupled in NDP architectures.                tions of this work include:
+Consequently, NDP performance depends not only on how                        • We develop a cycle-accurate simulation framework to
+workloads are mapped to different PUs, but also on the data                    model group-wise low-bit FP computation on NDP archi-
+layout in DRAM, e.g., different layouts may cause different                    tectures, which comprehensively analyzes the group-wise
+DRAM row-buffer miss rates [63]. (2) Dedicated NDP com-                        scaling and dequantization overheads.
+pilers [30], [42], [49], [63] have been developed to optimize                • We design a scale-value interleaved FP layout to map a
+INT operator partition and data layout in DRAM. However,                       quantized matrix to DRAM, which adapts to different
+introducing low-bit FP quantization with fine-grained grouping                 group sizes and matrix tiling strategies. The proposed
+into NDP systems faces several new challenges, which cannot                    FP data layout effectively reduces DRAM row-changing
+be handled by existing NDP compilers.                                          overhead by 2×.
+   First, the configurations of low-bit FP quantization (QCon-               • We propose a dequantization-hiding technique based on
+figs) vary in terms of group granularity, value/scale precision,               instruction reordering to reduce the DRAM idle time
+weight-only or weight-activation quantization, etc., and these                 induced by frequent dequantization operations. It can
+differences are overlooked by existing NDP compilers. How-                     automatically identify the opportunity to overlap the
+ever, different QConfigs exhibit distinct preferences for NDP                  dequantization latency with existing value access and
+compilation strategies. For example, compared with weight-                     DRAM row-changing delay.
+activation quantization, in weight-only quantization, weights                • We systematically analyze the compatibility between
+need to be dequantized before multiply-accumulate (MAC)                        NDP compilation strategies and QConfig to derive NDP-
+operation, which prioritizes allocating buffer to weights to                   oriented FP compilation guidelines. Building on these
+avoid redundant dequantization. Therefore, the NDP compiler                    guidelines, we develop a lightweight compilation-space
+for low-bit FP necessitates exploration of the compilation                     pruning and search strategy to enable efficient low-bit
+space to identify the optimal strategy for a given QConfig. The                FP computation on NDP.
+compilation space is the Cartesian product of design choices              Experiments show that FlexQ-NDP achieves up to 3.29×
+for matrix-operator partitioning, data-mapping strategies, loop           operator-level and 2.73× end-to-end speedup over existing
+traversal orders, and PU/buffer allocation, which is enormous             NDP compilation strategies across various low-bit FP formats.
+and requires an efficient exploration strategy.
+                                                                                                 II. BACKGROUND
+   Second, the presence of fine-grained group scales in low-bit
+FP computation introduces additional complexity and chal-                 A. Group-Wise Low-bit FP Quantization
+lenge to NDP dataflow scheduling. Considering the limited                    Quantization is a fundamental ML compression technique
+KB-level buffer capacity in NDP, a key optimization objective             to reduce memory footprint and computation costs while
+of NDP dataflow is maximizing the SRAM buffer hit rate and                maintaining acceptable accuracy. Recent work on quantization-
+reducing DRAM row-changing overhead. However, with fine-                  based training and inference has shifted from integer-only to
+grained grouping, the amount of scale becomes non-negligible              group-wise low-bit FP formats, such as microscaling family
+compared to quantized value. Both value and scale need to                 (MXFP4/6/8) [32], [47] and NVIDIA’s NVFP4 [1], [9]. The
+share the limited on-chip SRAM, causing reduced buffer hit                low-bit FP values retain the “sign + exponent + mantissa”
+rates. Besides, the fine-grained grouping also leads to frequent          structure while relying on higher-precision group scales to
+switching between value access and scale access during com-               recover effective dynamic range and preserve model accuracy
+putation, introducing extra DRAM row-changing overhead.                   at ultra-low precision.
+Our experiment shows the presence of scales increases the                    The low-bit FP quantization process starts from partitioning
+latency by ∼ 1.34×.                                                       the high-precision (e.g., FP16) tensors/matrices into fine-
+   Third, the group-wise quantization scheme introduces fine-             grained groups (e.g., 16×1 vectors or 16×16 tiles [9], [66]). For
+grained dequantization operations, which are performed in                 each group, a scale sg is chosen based on the local statistics
+high precision and therefore incur significant latency and                and the representable range of the target low-bit FP format.
+DRAM idle time on NDP architectures. Prior studies have                   Then the values are normalized by sg and rounded to the
+shown that smaller group sizes improve quantization accuracy;             nearest representable low-bit FP value. Targeting ML models,
+however, they also increase computational overhead, since                 low-bit FP is applied to weights and optionally activations
+each group requires an independent dequantization process.                for each operator. Weight-only quantization refers to only
+For example, in NVFP4-based matrix multiplication, partial                quantizing model weights to low precision [4], [40]. It avoids
+results must be multiplied by both the activation scales and              dynamically quantizing activations but requires dequantizing
+weight scales after processing every 16 FP4 elements. Because             weights back to higher precision before computation. In con-
+these scales are stored in higher precision (FP8) and the                 trast, weight-activation quantization quantizes both weights
+accumulation result of 16 FP4 multiplication should be stored             and activations to low-bit formats, delivering greater efficiency
+in higher precision, the dequantization process alone accounts            at the cost of runtime quantization process [41], [65].
+for approximately 35% of the total execution latency.                        We adopt a generic view of low-bit FP that can represent
+   Facing these challenges, we designed FlexQ-NDP, an NDP                 different QConfigs: each QConfig is characterized by its group
+
+
+
+
+                                                                   1384
+        Orig. Op                For 1 PU                    After Tiling                After Mapping                                  W/A       DRAM Bank                                         OP Type     Inst. Field
+                                                                                                                   HW.                 Matrix                                    Scales           ReadToBuf    A/B; data/scale
+ for m in (M)                   for m in (M0)               for m in (M0)          for m in (M0):                                                               W
+ for n in (N)                   for n in (N0)               for k0 in (K0/K1)      for k0 in (K0/K1):         HW ISA                                                             Values           Compute      DRAMAddr, buffer src/dst
+                                                            RD Buf.(m,k0)          RD Buf.(DramAddr)                                   Values                                                     Dequant      buffer src/dst
+ for k in (K)                   for k in (K0)
+                                                            for n in (N0)          for n in (N0):                  Sim.                Scales                   A                Partial Result   HostAccess   (RD/WR) DRAM(row,col,len)
+ O[m,n]+=A[m,k]*W[k,n]          MAC(m,n,k)
+                                                            for k1 in (K1)         for k1 in (K1):
+                                                            MAC(m,n,k)             MAC(DramAddr)
+                                                                                                                                          (a) DRAM Mapping             (b) Buffer Allocation              (e) Instruction Type
+                                                                                                            INST Gen.
+                                                                                                                                      A Values    W Values                  Scales          Scales      W Values                 A Values
+
+       Op Info            1. Op Partition                         2. Loop-Tiling               3. DRAM Mapping
+                                                                                                                                       FP4 Mode (MAC)        FP32 Mode (MAC)                   FP8 Mode (MUL)          FP16 Mode (MAC)
+        GEMM                                   N0            Divided A          Divided W            0 →2 → 4 → 6
+       (M,K,N)                                               K1                                       DRAM Array                          Partial Sum.              Final Sum.                    Dequanted W               Final Sum.
+                            W         K0 Divided                              K1 0 2 4 6         0                    1
+                                             W               0/2/. 1/3/.                                                                  Compute             Result Dequant                   Weight Dequant              Compute
+   M      A                                                  Buf.Size                            2                    3
+                                                                                 1 3 5 7                                                  (c) Weight-Activation DataFlow                              (d) Weight-Only DataFlow
+          K                                BK0 BK1           8 Buffer Fetch                               Open 2 Row
+                         Ch1 Ch2           …
+
+                                                             2 Buffer Fetch                               Open 1 Row                             Fig. 3. Baseline Low-bit FP GEMM Compilation Flow
+   K     W               Ch3 Ch4                              0/2/. 1/3/.        0 2 4 6         0                    2
+
+          N               Channels         Banks                                 1 3 5 7         4                    6               [33] architecture to enable group-wise scaling and dequanti-
+                                                                                                                                      zation. This allows further quantification and analysis of the
+                 Fig. 1. Basic Compilation Flow of NDP Architectures                                                                  overhead introduced by such formats in Sec. IV.
+                                                                                                                                         Fig. 2(a) illustrates the overall system organization. Similar
+   Host           NDP Chips                FP32 Datapath FP16 Datapath FP16 Datapath FP4 Datapath
+                                                              Format Decoder                                                          to the Hynix-AiM architecture, the NDP system consists of
+                  Channel 0
+   PCIe           Channel 1
+                                      8b    2*5b       4*4b            8*2b       24b       2*11b 4*4b       8*2b                     32 GDDR6 chips, each containing two memory channels. The
+   (a) System Overview          x32     8-bit       5-bit     4-bit  2-bit          12-bit 12-bit 6-bit 6-bit                         host communicates with the NDP system through PCIe. Each
+                                        ADD         ADD       ADD x2 ADD x4         MUL MUL MUL x4 MUL x4
+       DRAM Bank 0 (BK 0)                           Exponent Adder
+                                                                                                                                      channel contains 16 DRAM banks. As illustrated in Fig. 2(b),
+                  32B(256b)                                                                   Shift & ADD
+
+                           ×20
+                                            Normalization & Rounding                         Mantissa Multiplier                      a multi-precision PU is attached to each bank and reused
+                                                                                                                          x8
+                     …     SRAM
+                           Buffer                     64 x FP8 Adder                                  MUL (without                    for both low-precision value computation and high-precision
+    BK I/O                                                                                             adder tree)
+          256b     256b
+    Multi-Precision PU
+                                                      32 x BF16 Adder                                                                 dequantization. In addition, a 5Kb SRAM buffer is placed
+                                        Adder         16 x FP32 Adder              MAC (with          Precision
+ BK 1 BK 2 BK 3 … BK 15                 Tree                ……                     adder tree)       Conversion     output            near each bank, organized as 20 individual 32B buffers. Each
+(b) NDP Channel Architecture                                         (c) Multi-Precision PU                                           32B buffer can be configured to store values, scales, or partial
+                    Fig. 2. Low-bit FP-oriented NDP Architecture                                                                      sums.
+                                                                                                                                         For different FP formats, the total operand width that can
+size, scale format, value format, and weight-only/weight-                                                                             be processed in parallel by each PU is fixed at 256b, matching
+activation quantization.                                                                                                              the GDDR6 read/write bit width. As shown in Fig. 2(c), the
+                                                                                                                                      decoding and exponent processing of each format are handled
+B. Baseline NDP Compilation Flow
+                                                                                                                                      individually, while the mantissa computation reuses the same
+   Fig. 1 illustrates existing NDP compilation flow, which                                                                            multiplier array. The adder tree is further optimized by using
+contains operator partition, loop tiling, DRAM mapping, and                                                                           different precisions at different levels. The detailed design and
+instruction generation [42], [63]. Because PU and memory                                                                              implementation of the PU are described in Sec. IX-A. Besides
+units are tightly coupled in NDP, data access, compute, and                                                                           MAC operations, the PU also supports MUL operations for
+communication performance all strongly depend on data lay-                                                                            dequantization without accumulation in weight-only cases.
+out. First of all, the operator partition divides the weight matrix
+into multiple blocks. When each block is mapped to a specific                                                                         B. Baseline Low-bit FP Compilation Flow
+memory unit (e.g., a DRAM bank), it also determines the
+PU that will process the block. Then, loop tiling optimizes                                                                              To execute fine-grained grouped FP-based GEMM on the
+the traversal order to maximize the data reuse in SRAM                                                                                NDP architecture, the existing NDP compilation flow needs
+buffer. After that, DRAM mapping procedure assigns the                                                                                to be extended to deal with fine-grained group scales and the
+specific row/column address for each block (i.e., optimizes                                                                           extra dequantization operations.
+the data layout). The optimization objective here is to reduce                                                                           1) Scales Partitioning: After value partitioning, scales are
+DRAM row-buffer miss. When PU needs to access data in                                                                                 partitioned accordingly to ensure that the scale associated with
+another DRAM row (i.e., row-changing), a precharge DRAM                                                                               each value is located in the same DRAM bank.
+command is required to close the current open row and charge                                                                             2) Scales Mapping: As shown in Fig. 3(a), the scales
+the bitline, which is more expensive than repeatedly accessing                                                                        of different groups are stored densely in DRAM bank, and
+the same row. Finally, NDP compiler generates the instructions                                                                        separated from the value, following the strategy in [30] and
+to enable performance simulation (offline) and control NDP                                                                            traditional GPU systems (e.g., scales are stored in a contiguous
+hardware (online). The instructions will be further split into a                                                                      memory layout in Triton [57]).
+series of DRAM commands and PU commands.                                                                                                 3) Buffer Allocation: Different from integer GEMM com-
+                                                                                                                                      putation, where buffers are typically dedicated to values and
+        III. L OW- BIT FP- ORIENTED NDP A RCHITECTURE                                                                                 results, low-bit FP introduces additional data such as scales
+                                                                                                                                      and intra-group partial sums. As a result, the limited on-
+A. Architecture Overview
+                                                                                                                                      chip buffers must be carefully allocated for different purposes.
+   Since current mainstream NDP architectures do not support                                                                          In our design, this allocation is determined at compile time
+fine-grained grouped FP formats, we extend the Hynix AiM                                                                              through either search-based strategies or heuristic rules.
+
+
+
+
+                                                                                                                               1385
+   4) Dataflow: The modified dataflow mainly consists of                    Quantization Method                 Weight-Activation                Buffer Size (bit)    1280      2560        3840      5120
+                                                                           Precision (Data, Scale)             (4, 8), (8, 16), (8, 32)          # Row Change        11.56x     4.17x      2.42x      2.47x
+three steps. Taking weight–activation quantization as an ex-                    QGroup (n,k)          (1, 16), (1, 32), (64, 64), (128, 128)        + Latency        392.98%   85.50%      37.96%    34.04%
+
+ample, the execution process is illustrated in Fig. 3(c). First,                Q0   Q1    Q2   Q3
+                                                                                                     (a) QConfig
+                                                                                                     Q4   Q5    Q6    Q7   Q8   Q9 Q10 Q11
+                                                                                                                                                            (c) Overhead of Scale Accesses
+                                                                                                                                                              Weight-Activation Quant. Lat.
+the scales of both operands, together with the values of the               S0 1.00 0.77 0.43 0.62 0.77 0.67 0.36 0.61 0.76 0.66 0.36 0.61
+                                                                           S1 0.98 1.00 0.88 0.80 0.95 0.87 0.75 0.79 0.91 0.82 0.75 0.79
+                                                                                                                                                      Basic      Data Buffer     Scale Buffer       Dequant
+                                                                                                                                                  Lat.
+stationary operand, are written into the SRAM buffer. Second,              S2 0.47 0.53 1.00 0.49 0.38 0.48 0.36 0.47 0.82 0.33 0.29 0.38
+                                                                                                                                                         40%
+                                                                           S3 0.92 0.91 0.63 1.00 0.92 0.49 0.62 0.67 0.92 0.88 0.31 0.67
+the values of the other operand are streamed from DRAM                     S4 0.98 0.96 0.54 0.77 1.00 0.89 0.50 0.81 0.97 0.86 0.50 0.81
+                                                                           S5 0.88 0.94 0.62 0.50 0.95 1.00 0.31 0.50 0.60 0.99 0.31 0.50
+and multiplied with the buffered values in the PUs; DRAM                   S6 0.88 0.84 0.99 0.57 0.86 0.89 1.00 0.67 0.85 0.81 1.00 0.67
+                                                                                                                                               Input                                                    Weight
+                                                                                                                                                  Lat.
+reads and PU computation are pipelined. Third, once a DRAM                 S7 0.91 0.90 0.64 1.00 0.92 0.49 0.63 1.00 0.93 0.88 0.31 1.00
+                                                                           S8 0.97 0.94 0.54 0.77 0.98 0.89 0.50 0.81 1.00 0.86 0.50 0.81
+                                                                                                                                                         28%    Weight-Only Quant. Lat.
+
+chunk has been fully consumed, the accumulated partial results             S9 0.88 0.94 0.62 0.49 0.95 0.99 0.31 0.50 0.91 1.00 0.31 0.50
+                                                                           S10 0.88 0.84 0.99 0.57 0.86 0.89 1.00 0.67 0.85 0.81 1.00 0.67
+are dequantized by the PU using scales in the buffer, and the              S11 0.91 0.90 0.64 1.00 0.92 0.49 0.63 1.00 0.93 0.88 0.31 1.00
+                                                                                Strategy
+                                                                                                                                               Input
+                                                                                                                                                                      Partition Strategy
+                                                                                                                                                                                                        Weight
+
+dequantized results are written back to the buffer or DRAM.                          (b) Performance of Exchanged Strategies                    (d) Dequant Overhead in W-A and W-Only Quantization
+
+   For weight-only quantization, since the PU requires                                                               Fig. 4. Motivation Experiment
+operands with the same precision, weights should be de-
+quantized to match the precision of the activations before                 single strategy is simultaneously optimal for all low-bit FP
+computation. It should also be noted that, due to the limited              formats. Therefore, for a given QConfig, we need to efficiently
+NDP buffer capacity, the buffer is typically not organized                 explore the compilation space to obtain the optimal NDP
+as a ping-pong structure. As a result, the dequantization                  performance.
+phase cannot be overlapped with DRAM reads of scales, and
+PU resources occupied by dequantization cannot be used to                  B. Necessity for Innovative NDP Compilation Strategies
+perform GEMM computation in parallel.                                         Even with the best matching compilation strategy found
+                                                                           in Sec. IV-A, we notice that simply selecting from existing
+C. Simulation Support
+                                                                           strategies is still insufficient. Two low-bit FP-induced critical
+   We extend the open-source NDP simulator UniNDP [63]                     challenges still exist and require further optimization.
+to quantify the overhead introduced by scale accesses and                     The first challenge is the increasing number of row
+dequantization operations, and to enable further compila-                  changes brought by scale access. On one hand, the limited
+tion optimizations. Firstly, to represent the aforementioned               SRAM buffer should also reserve capacity for storing scales,
+dataflow, we design a higher-level IR wrapper over the original            reducing the available buffer space for values. As a result, the
+UniNDP instruction format to carry quantization metadata                   number of value buffer refills increases, and fetching scales
+and enable future optimizations (e.g., dequantization hiding),             requires switching between the value region and the scale
+as shown in Fig. 3(e). Secondly, on the simulator side, we                 region in DRAM, further increasing DRAM row-changing
+modify UniNDP to support the conversion of these instructions              overhead. Fig. 4(c) shows, under different buffer sizes, the in-
+to commands for DRAM bank, the corresponding PU, and                       crease in DRAM row-changing and the corresponding latency
+buffers, which can be simulated in a cycle-accurate way.                   overhead of low-bit FP compared to coarse-grained quantized
+Finally, on the compiler side, we model the behavior of scale              INT with the same bit-width. Results show that processing
+buffers and partial-sum buffers, enabling the compiler to insert           group-wise low-bit FP on NDP increases DRAM row changes
+the corresponding instructions into the operator kernel.                   by 2.4∼11.6× and raises overall latency by 1.34∼4×.
+               IV. M OTIVATION E XPERIMENT                                    The second challenge is the overhead of dequantization.
+                                                                           The low-bit FP values need to be dequantized by multiplying
+A. Necessity for Compilation Space Exploration                             them with scales to reconstruct higher-precision data for subse-
+   To reveal the preference of different QConfigs on NDP                   quent accumulation. In NDP architectures, the dequantization
+compilation strategies, we apply different QConfigs on a                   is executed by reusing PU’s MAC units, but the high-precision
+weight-activation quantized MVM operator with the matrix                   multiplications introduce substantial DRAM idle and latency
+size of 5120×5120. The QConfigs contain different value/scale              overhead. This overhead also shows different complexities in
+precisions and QGroup sizes, as shown in Fig. 4(a). For these              weight-only and weight-activation quantization, as illustrated
+QConfigs, the compilation space is constructed by including                in Fig. 4(d). In the former one, the complexity of dequan-
+operator partition, loop tiling and traversal order, data map-             tization is related to the size of weight data, as a result,
+ping, and buffer allocation. We then exhaustively search for the           choosing an operator partition method that can avoid weight
+optimal compilation strategy to deploy each QConfig on the                 duplication, and a loop permutation method that can maximize
+NDP architecture. We denote the optimal compilation strategy               weight reuse, can effectively reduce the overhead. However,
+for QConfig Qi as Si . Fig. 4(b) shows the performance of                  for weight-activation quantization, the complexity of dequant
+pairwise combinations of different QConfigs (e.g., {Qi }) and              is only related to the computation bundle size (i.e., the number
+compilation strategies (e.g., {Si }). For simplicity, the perfor-          of dot-products prior to dequantization), which cannot be
+mance of each column in Fig. 4(b) is normalized to that of the             optimized through partitioning or loop optimization. Thus, we
+best compilation strategy (higher is better). The experimental             must explore other dequantization optimization techniques to
+results show that for each QConfig, the performance gap across             reduce the dequant overhead of weight-activation quantiza-
+different compilation strategies can be up to 70%, and no                  tion, which can account for up to 40% of the total latency.
+
+
+
+
+                                                                    1386
+                                                                                                                                        Read W Scale       DRAM           K Inner Loop Case 1
+   NDP Step      Partition     Loop Tiling   DRAM Mapping     Codegen          Inst.   Cmd.           W Value      W Scale      W*A       To Buffer      Row Change
+                        Motivation &          SF Interleave   Reorder                                                                                                    itBlock = 8 QGroup
+  Innovation         Design Guideline           (Sec.VI)      (Sec.VII)       Sim.     HW
+                                                                                                             3 Extra Row-Change                No Extra Row-Change
+                                                                          OPs partition
+  Compilation                                                                                        R0
+                                                                          buffer allocation                                                                              K Inner Loop Case 2
+    Space                                                                 loop permutation           R1
+    (Sec.VIII)                                                            DRAM mapping               R2                                                                   itBlock =
+                 Cost Model           Pruning     Design Space
+                                                                    Strategy Encoding                                                                                     8 QGroup
+                                                                                                     R3
+                           Fig. 5. FlexQ-NDP Overview                                                              DRAM Array                      DRAM Array                      Exceed
+                                                                                                                             (a) Problem and Key Idea
+                        V. FlexQ-NDP OVERVIEW                                                               GK
+                                                                                                      1                 Gran = 1 Col         Scale Buf ≥ 2 Col itBlock    itBlock =
+   The overview of our compilation framework FlexQ-NDP is                                                          GN                          x2                         6 QGroup
+
+shown in Fig. 5, which is built based on existing compilation                                         1 * QGroup                4 * QGroup             8 * QGroup
+flow of NDP introduced in Sec. II-B. For operator partition                                                      (b) Definition of Interleaving Block (itBlock)          (c) Adjust to Loop Tiling
+
+and loop tiling, we maximize reuse of the existing INT-                                                                       Fig. 6. Value-Scale Interleaved Layout
+oriented NDP compiler and extend it to support low-bit FP.
+Specifically, data partitioning considers the impact of fine-                                        DRAM, aligning the interleave pattern with periodical access
+grained grouping, and loop tiling is aware of DRAM data                                              rhythm. The interleaving design reduces DRAM row changing
+layout and SRAM buffer allocation for scales. Sec. VIII-A                                            and the associated access overhead.
+further elaborates how these considerations guide the explo-
+ration of the compilation space. For the DRAM mapping                                                B. Definition and Construction of Interleaving Blocks
+part, we introduce a scale-value interleaved layout to reduce                                           In FlexQ-NDP, we pack the scales of multiple QGroups
+the cost of row-changing brought by scale access, which is                                           into one contiguous scale region, and similarly construct the
+detailed in Sec. VI. The proposed layout method can also                                             value region for these QGroups. We then place the scale region
+adapt to different QConfigs and the previously mentioned                                             and its corresponding value region contiguously in DRAM,
+partition and tiling strategies. For the code generation, Sec. VII                                   forming an interleaving block (itBlock). The interleaving
+introduces a dequantization-hiding technique, which can adjust                                       block serves two purposes. On one hand, when QGroup is
+the order of dequantization and computation instructions for                                         small, the scales of a single QGroup cannot fully occupy
+better instruction-level compute-memory overlap.                                                     a DRAM column (i.e., the minimum DRAM access granu-
+   For a specified input, choosing a suitable compilation strat-                                     larity2 ). Concatenating the scales of multiple QGroups into
+egy from this framework is crucial for better performance.                                           one region improves DRAM column utilization. On the other
+As a result, FlexQ-NDP develops a design-space exploration                                           hand, storing scales and values contiguously in DRAM reduces
+method (detailed in section VIII), including (1) an encoding                                         the number of DRAM row changes when the access pattern
+method to construct the design space, (2) a pruning method                                           alternates between scales and values.
+to reduce the size of the design space, and (3) an analytical                                           After defining the interleaving block, the key question is
+cost model which is less precise but quicker than performance                                        how many & which QGroups should be packed into a single
+simulation, to help accelerate the exploration of design space.                                      itBlock for a given QConfig and loop schedule. To answer
+                                                                                                     this question, for a GEMM (W (M,K) × A(K,N ) → O(M,N ) ),
+ VI. S CALE -VALUE I NTERLEAVED FP L AYOUT FOR NDP
+                                                                                                     we construct the itBlock for W in three steps.
+A. Problem Example and Key Idea                                                                         Step 1: Determining the interleaving ratio, the ratio of value
+   To analyze the root cause of increased row-changing, we                                           and scale region in itBlock. The size of QGroup and the
+use a quantized weight matrix as an example. As shown in                                             precision of data and scale is different for different QConfigs.
+the left part of Fig. 6(a), the values and scales of weight are                                      As a result, this ratio should also adjust to flexibly apply to
+stored separately in existing NDP and GPU solutions [30],                                            different QConfigs.
+[57]. During computation, fine-grained grouping necessitates                                                            Size(V alueRegion)   P rec.(V alue)GM GK
+frequently alternating DRAM accesses between scales and                                                   Ratio =                          =                     ,                              (1)
+                                                                                                                        Size(ScaleRegion)        P rec.(Scale)
+values, which reduces SRAM buffer hit rate considering the
+limited NDP buffer capacity. Refilling the buffer requires                                           where P rec.() is the precision of value/scale, GM /GK rep-
+changing to a new DRAM row and change back to the original                                           resent the group sizes of W along the M/K dimensions,
+DRAM row. Experiments show that for the additional latency                                           respectively. Besides, values in the same QGroup are required
+overhead related to scales, 75% of it is caused by DRAM row                                          to be assigned to the same itBlock, otherwise the scale for
+changing and only 25% is about scale access.                                                         this QGroup needs to be duplicated to another itBlock.
+   To address this bottleneck, our key idea is to exploit the                                           Step 2: Determine the interleaving stride, the size of an
+scale-value access pattern induced by QConfig and GEMM                                               itBlock. Given different buffer sizes, the refill frequency of
+loop schedules. For a given QConfig and loop traversal order                                         scale buffer will also be different. As a result, we should
+and iteration count, we analyze the period and granularity of                                        support adjusting the stride of interleaving to different refill
+alternating accesses between scales and values. We then adap-
+                                                                                                       2 This should also consider Burst Length. We omit it solely for brevity.
+tively place scales and values in a tightly interleaved layout in
+
+
+
+
+                                                                                              1387
+frequency. We choose a DRAM column as the minimal gran-                  stored in ColS DRAM columns QGroup by QGroup. Values
+ularity for the scale region in an itBlock. This can avoid over          will be stored in the original order of inner loop to minimize
+fine-grained mixing of scale and value. Assuming that the scale          row change, and the logical DRAM column id is:
+region contains ColS DRAM columns, ColS is constrained by
+                                                                                           idK
+                                                                                                                                 
+the allocated scale buffer size, which can be explored in the                id                                       #QGroupK ∗ GK
+                                                                          Collocal =         InBlock
+                                                                                                       +idM
+                                                                                                          InBlock ×
+compilation space. Then, the number of QGroups in the data                                 #V al/Col                    #V al/Col     (8)
+                                                                             id           id                      V alue+Scale
+region of an itBlock should be:                                           Collogical = Collocal + iditBlock × #ColitBlock
+                                ColS × len
+                 #QGroup =                   ,              (2)          Finally, we can convert the logical DRAM column id into the
+                               P rec.(Scale)
+                                                                         physical DRAM column and row id:
+where len is the bitwidth of one DRAM column. As shown
+in the case in Fig. 6(b), if one DRAM column can store                           DRAM-Rowid = ⌊Collogical
+                                                                                                  id
+                                                                                                          / #ColDRAM row ⌋,
+                                                                                                                                         (9)
+four scales, there will be eight QGroups in the itBlock when                     DRAM-Colid = Collogical
+                                                                                                 id
+                                                                                                         % #ColDRAM row .
+assigning two DRAM columns to scale buffer.
+   Step 3: Determine which QGroups should be mapped to the               Furthermore, to avoid runtime re-layout of the intermediate
+same itBlock. As shown in Fig. 6(c), assuming the compiler               results between operators, we prioritize applying this technique
+performs loop tiling on the K dimension with the tiled loop              to the quantized weight matrix, which can be scheduled offline.
+size of KT ile , our mapping should ensure that the data in the
+tiled inner loop is stored together in DRAM to reduce row                        VII. D EQUANTIZATION -H IDING T ECHNIQUE
+change overhead. As a result, we will select the QGroups for
+an itBlock following the iteration order of inner loop. For the          A. Discovering the Opportunity for Dequant Optimization
+Case-1 in Fig. 6(c), each itBlock contains eight QGroups.                   As discussed in Sec. IV-A, weight-activation FP quantiza-
+If the tiled inner loop size equals to four QGroups, we will             tion FlexQ-NDP’s dequantization-hiding technique is inspired
+map 2×4 QGroups along the (M, K) dimension of the weight                 by an interesting phenomenon:
+matrix into a single itBlock. To be general, this number can
+be calculated as:                                                         Interesting observation: In the motivation experiments,
+                                                                          when the QGroup size increases to 128, the dequantization
+                 #QGroupK = ⌈KT ile /GK ⌉.                  (3)
+                                                                          contributes zero additional latency.
+   However, if the tiled loop size changes and makes
+                                                                         A closer examination of these zero-overhead dequantization
+#QGroupK become three in Case-2 in Fig. 6(c), the last two
+                                                                         instructions reveals that they all occur between accesses to
+QGroups cannot fully cover the inner loop in the K dimension.
+                                                                         two different DRAM rows. For example, after the PU finishes
+As a result, extra access to data region in other itBlocks will
+                                                                         processing the weight data in the DRAM row-1 and before
+be triggered when the inner loop iterates over the boundary. In
+                                                                         it begins processing the next row, the DRAM must precharge
+this case, we will reduce the number of QGroups in itBlock
+                                                                         row-1 and activate row-2, as shown in Fig. 7(a). During this
+to six. Although this may lead to under-utilization in some
+                                                                         time window, the PU remains idle for a relatively long interval
+DRAM columns storing scales, it avoids reloading much larger
+                                                                         (i.e., tRP + tRCD = 48 cycles based on DRAMSim3 timing
+QGroup. To be general, the actual number of QGroups in an
+                                                                         parameters [38]). Since a dequantization operation here costs
+itBlock, and the corresponding DRAM column number are:
+                                                                         only 8 cycles (i.e., 2 · tCCDL ) and requires no DRAM access,
+   #QGroup′ = #QGroupK × ⌊#QGroup/#QGroupK ⌋,               (4)          it can execute within this idle window and therefore incurs no
+           V alue
+                      
+                                    #QGroup′
+                                              
+                                                                         extra latency. Similar opportunities arise when a row-change is
+      #ColitBlock  = ColS × Ratio ×             ,           (5)          triggered by a buffer refill. We refer to the instruction positions
+                                    #QGroup
+                                                                         where a dequantization operation can be executed within a PU
+                                 #QGroup′
+                                         
+                Scale
+          #ColitBlock   = ColS ×            .               (6)          idle window without adding latency as free slots.
+                                 #QGroup
+                                                                            We then revisit the case with smaller QGroup sizes, where
+C. Mapping itBlocks to DRAM                                              dequantization occurs more frequently, and leads to critical
+   After mapping multiple QGroups into one itBlock, the next             latency. Two observations emerge: (1) only about 10% of
+step is to assign the physical DRAM address for itBlocks.                dequantization instructions naturally fall into free slots; (2)
+Firstly, we split the entire matrix into multiple itBlocks and           the latency of a dequantization operation is determined by the
+calculate the itBlock id (iditBlock ) and the value id within            number of partial results it processes, which is constrained by
+each itBlock (idInBlock ). For example, in the K dimension:              the buffer size allocated to partial results. These observations
+            idK
+                                                                         indicate that the total PU idle time can be exploited to hide de-
+              itBlock (k) = ⌊k/(#QGroupK × GK )⌋
+                                                            (7)          quantization latency, allowing dequantization to overlap with
+            idK
+              InBlock (k) = k%(#QGroupK × GK )
+                                                                         DRAM row changing or access. However, the dequantization
+Then, the scale region will be mapped in DRAM before the                 latency is tightly coupled to the buffer size reserved for partial
+value region so that scales can be buffered before usage. Once           results. Without careful design, we may fail to fully utilize the
+the value and scale in an itBlock are determined, scales are             available idle window, leading to suboptimal overlap.
+
+
+
+
+                                                                  1388
+                              IDLE Window
+                                                               PU   Compute Dequant. Compute
+                                                                                                           Algorithm 1: Dequant Instruction Reorder
+       PU Compute Dequant.                          Compute
+
+                                                              DRAM RD R1               RD R1
+                                                                                                            Input : Sliced INST list I; uncovered dequant list D; max
+ DRAM RD R1                PRE R1, ACT R2           RD R2
+                                                                (b) Case 2: Introduce Extra Lat.
+                                                                                                                     partial buffer size Bmax
+                (a) Case 1: Free Slot
+                                                                                                            Output: Optimized INST list after reordering
+          Dequant       Free Slot     Other Inst.
+                                                                                                          1 // Phase 1: Pre-scan to identify potential slots
+ (c)                                 IDLE Window
+          Group=128                                                                                       2 S ← Dict // Valid slot positions, idle window
+         (Ideal Case)                                                                                     3 // Phase 2: Move dequant instructions forward
+(d)                                  IDLE Window              90% of Dequants                             4 foreach (posdequant , instdequant ) in reverse(D) do
+                        Utilize
+         Group=16        25%                                                                              5     extra buf ← Bmax − #P artialSum(instdequant );
+                                                                Hard to Align                             6     pos tmp ← posdequant ; candidate ← None;
+          Increase                   IDLE Window
+           Partial      100%
+                                                                                                          7     while pos tmp < |I| − 1 do
+          Buf. Size                                                                                       8         if pos tmp ∈ S.keys and S[pos tmp] > 0 then
+                                                                Inst. Reorder
+                                                                                                          9             candidate ← pos tmp;
+            Ours
+                                                                                                          10        instnext ← I[pos tmp + 1];
+                                                                                                          11        // Calculate burden based on instruction type
+                Fig. 7. Instruction Reordering-based Dequant. Hiding                                      12        if instnext .type = Compute then
+                                                                                                          13             burden ← #P artialSum(instnext );
+B. Key Idea of Dequantization Hiding                                                                      14        else if instnext .type = ReadData then
+   The intuitive idea is to aggregate these fine-grained de-                                              15            burden ← 0;
+quantization operations by buffering more partial results in                                              16        else if instnext .type ∈
+the SRAM and dequantizing them together. In principle, this                                                          {ReadScale , Dequant, W riteBack} then
+would allow a combined dequantization to fully occupy the                                                 17            burden ← Bmax + 1 // Blocking
+idle window at a free slot. However, enforcing strict alignment                                           18        extra buf ← extra buf − burden;
+between combined dequantization and free slots is difficult, as                                           19        if extra buf < 0 then
+                                                                                                          20            return; // Cannot move further
+shown in Fig. 7(c). The reason is the mismatch between the
+occurrence periods of idle windows and combined dequanti-                                                 21        pos tmp ← pos tmp + 1;
+zation. The idle window period is determined by the DRAM                                                  22    if candidate ̸= None then
+layout of the itBlock, i.e., how much data is fetched and                                                 23         Move(instdequant , candidate);
+                                                                                                          24         Update S[candidate]; CheckValid();
+processed before a DRAM row is completed and a row change
+occurs. In contrast, the dequantization period is determined by
+when the partial results fill the buffer space. Relying on exact
+alignment would also miss many optimization opportunities.
+   Instead, we propose a more flexible approach that automati-                                            ing additional partial results in SRAM. To ensure the partial
+cally aligns the dequantization with idle windows, independent                                            results fit within the buffer, we track the remaining partial-
+of the specific data layout and loop scheduling. The key idea                                             buffer capacity as we move a dequantization instruction. When
+is to precisely “move” the fine-grained dequantization instruc-                                           it moves past a compute operation, we subtract the amount of
+tions into free slots by instruction reordering, and combine                                              partial result produced by that operation from the remaining
+multiple dequantization instructions at the same free slot to                                             capacity. Movement stops when capacity is exhausted.
+fully utilize the idle window, as illustrated in Fig. 7(c). It                                               Rule 3: Constraint of available idle window. We will also
+ensures full utilization of the idle window while preserving                                              track the dequantization instructions already hidden in each
+flexibility by triggering dequantization based on hiding op-                                              free slot. A free slot will turn invalid when the idle window
+portunities instead of buffer limitation.                                                                 is fully utilized by these dequantizations.
+
+C. Dequantization Instruction Reordering Rules                                                            D. Dequantization Instruction Reordering Procedure
+   When reordering dequantization instructions, several con-                                                 For simplicity and to limit the overhead of instruction
+straints must be satisfied.                                                                               reordering, we restrict each reordering process to a single
+   Rule 1: Constraint of data dependencies. Since each de-                                                iteration over the weight matrix and apply Alg. 1 to the
+quantization operation depends on the partial result produced                                             corresponding sliced instruction list. As shown in the algo-
+earlier, it cannot be moved backward to a free slot that                                                  rithm, before reordering any dequantization instructions, we
+appears before its original position. Therefore, dequantization                                           first scan for all candidate free slots created by DRAM row
+instructions can only be moved forward. In addition, dequanti-                                            changes and DRAM reads, and record the number of idle
+zation instruction cannot be moved past a later dequantization                                            cycles available in each slot (line 2). To maximize utilization
+instruction. And if a dequantization is moved past a DRAM                                                 of these slots, we process dequantization instructions in reverse
+read triggered by scale buffer refill, the required scales for the                                        order (line 4). For each dequantization, we attempt to place
+dequantization would be discarded before being used. So this                                              it at the latest candidate slot it can reach without exceeding
+behavior is also prohibited.                                                                              the extra buffer capacity reserved for partial QGroup sums
+   Rule 2: Constraint of buffer size of partial result. Moving                                            (extra buf ), as indicated in line 5-6. This prevents a later
+dequantization across computation instructions requires stor-                                             dequantization from occupying a slot that could better serve an
+
+
+
+
+                                                                                                   1389
+earlier one, thereby preserving more movement flexibility for              B. Compilation Space Encoding Method
+preceding dequant operations. When moving a dequantization                    FlexQ-NDP constructs and encodes the compilation space
+across other instructions, we apply the principles discussed               for low-bit FP in the following aspects.
+in the previous section. These constraints either consume the                 Operator Partition: We follow the definition in prior
+remaining extra buf (line 13/15) or may prevent further                    work [63] to specify how each dimension of the oper-
+movement entirely (line 17&20). Once a valid slot is found,                ator is partitioned across hardware levels: P artition =
+the dequantization is relocated accordingly (line 23). We then             {P artM,K,N
+                                                                                  Ch,Ra,De,Bk }, which represents the partition number
+update the remaining idle cycles of that slot and mark it invalid          of the M/N/K dimensions at the Channel/Rank/Device/Bank
+if its idle window has been fully consumed (line 24).                      hierarchy levels and is constrained by hardware parallelism. It
+   It should be noted that, in weight-only quantization, the               should be noted that the term ”device” refers to the DRAM
+dequantization will provide the dequantized weight value                   modules within a rank that share the command and address
+for computation. As a result, moving dequantization over a                 bus while maintaining independent data buses. This concept
+computation will require storing the weight value used in the              is seldom used in the GDDR family. However, we include it
+computation, the amount of which is much more than the                     here for the compatibility with other memory types.
+partial sum. The available moving range is much smaller under                 Buffer       allocation: We use a four element
+the same partial buffer, as a result, we only implement this               quadruple to describe the size of allocated buffer:
+technique in weight-activation cases.                                      (V al Buf, ScaleA Buf, ScaleW Buf, Dequant Buf ).
+                                                                           We fix the buffer size for final result to the bitwidth
+         VIII. C OMPILATION S PACE E XPLORATION                            of a DRAM column (e.g., 32B), according to previous
+A. Guidelines for Compilation Strategy Selection                           practice in [63]. The sum of these buffers is limited by the
+                                                                           total available buffer size T otal Buf , and the granularity of
+   As discussed in Sec. IV-A, FlexQ-NDP formulates low-bit                 allocation is also set to 32B. For the weight-only quantization,
+FP computation on NDP as a compilation space exploration                   ScaleA Buf is set to zero, and Dequant Buf is parsed as
+problem. Given the complexity of the compilation space,                    the buffer size to store the dequantized weight data.
+we first analyze the compatibility between NDP compilation                    Loop Permutation: Here we take the loop tiling on the K
+strategies and different QConfigs, and summarize two practical             dimension as an example. The granularity of the inner loop (K
+guidelines to enable compilation-space pruning and efficient               inner) is set to the number of values that can be accommodated
+search.                                                                    in a DRAM column:
+   Guideline-1: Operator partition should consider the size of                             KT ile = T ileCol × #V alue/Col             (10)
+QGroup. When partitioning a quantized matrix across PUs,
+additional padding may be introduced because the matrix is                 Based on the tiling scheme, we allow swapping the order
+organized into QGroups under the group-wise quantization                   of M dimension and N dimension, and form two candi-
+scheme. For example, when a 704-wide matrix dimension is                   date loop orders: {Order1=M→K Outer→N→K Inner} and
+partitioned across 32 PUs, each PU can evenly process 22                   {Order2=N→K Outer→M→K Inner}. To maximize data
+elements. However, if the QGroup size is misaligned with                   reuse, we will store weight in the value buffer for Order1,
+this partitioning (e.g., 64), a single QGroup spans three PUs,             and reserve input in the value buffer for Order2. To ensure no
+and the last PU must process elements belonging to two                     buffer miss will be triggered during the inner loop, we restrict
+QGroups with different scales. As a result, this PU is forced              the choice of K T ile by K T ile ≤ Data Buf .
+to perform dequantization while other PUs are still executing                DRAM Mapping: As stated in Sec. VI, the column num-
+MAC, leading to divergent instruction streams across PUs and               ber of scale region ColS can vary under the restriction of
+incurring non-uniform control overhead.                                    ScaleW Buf . Each ColS corresponds to an optimal layout.
+   Guideline-2: Buffer Size Allocation. Since scales also need             C. Compilation Space Pruning
+to be fetched from DRAM and stored in buffer during com-                      1) Pruning with Conflict of Operator Partition and
+putation, how to divide the SRAM buffer between values and                 QGroup: Based on the guideline, some QGroup sizes may
+scales becomes a critical problem. For example, for QConfigs               introduce extra padding during partitioning. We use the re-
+with larger QGroups (e.g., group size 128), more buffer space              duction dimension K as an example. We first determine how
+tends to be allocated to values, as the number of scales                   many full QGroups each PU can process:
+is relatively small. Conversely, for smaller QGroups (e.g.,
+group size 16), a larger portion of the buffer is allocated to                 #P artK = P artK         K         K         K
+                                                                                              Ch × P artRa × P artDe × P artBk ,       (11)
+scales. Furthermore, the proposed scale-value interleaved FP                         #QGroupComplete
+                                                                                            PU       = ⌊ ⌈K/GK ⌉ / P artK ⌋,           (12)
+layout and dequantization-hiding technique are also tightly                            #QGroup  Remain
+                                                                                                         = ⌈K/GK ⌉ % P art . K
+                                                                                                                                       (13)
+coupled to the buffer allocation. For example, constructing
+an itBlock requires determining the number of QGroups                         Further distributing the remaining elements across PUs may
+due to the scale-buffer capacity (Equ. 2), and dequantization              lead to padding. We determine how many PUs should jointly
+instruction reordering is constrained by the available buffer              share a QGroup first, and resulting padding accordingly:
+                                                                                         Remain
+size (extra buf in Alg. 1).                                                           P UQGroup = ⌊P artK /#QGroupRemain ⌋,            (14)
+
+
+
+
+                                                                    1390
+                                                                                                       TABLE I
+            #ElementRemain
+                    PU
+                                     Remain
+                           = ⌈GK /P UQGroup ⌉.               (15)
+                                                                                    S UPPORTED DATA F ORMAT IN D OT-P RODUCT U NIT
+Then the padding can be calculated as:                                             Data Format          fp4      fp8     fp16      fp32
+                                                                                      Ex My            E2M1     E4M3    E5M10     E8M23
+ #ElementP U = #ElementRemain
+                       PU    +GK×#QGroupComplete
+                                        PU       ,           (16)                  Mantissa Bits         2        4       11        24
+                                                                              #Values/DRAM Column       64       32       16         8
+           P adding = #ElementP U − ⌈K/P artK ⌉.             (17)
+                                                                                                       TABLE II
+                                                                              T RADE -O FFS BETWEEN FP32 P ERFORMANCE AND PU OVERHEAD
+A partition strategy will be pruned if the padding exceeds 50%
+of original partitioned size.                                                    FP32 Cycle / Other Format       1        2        4
+                                                                                      PU Area(mm2 )           0.0185   0.0167   0.0152
+   2) Pruning for Loop Tiling and DRAM Mapping: Given a                               PU Power(mW)             8.72     7.21     6.04
+T ileCol , we can calculate the corresponding number of scales
+in the K inner loop. As mentioned in Sec. VI-B, the DRAM
+                                                                             The second stage derives the final performance estimation
+columns corresponding to the scale region within an itBlock
+                                                                           by applying analytical formulas to these aggregated metrics:
+may differ from the theoretical number, as shown in Equ. 6.
+Therefore, we compute the DRAM column utilization based on                    Lat = tCCDL ∗ N umcol + LatRowChange ∗ N umrow
+                                                                                                                                          (18)
+the loop tiling size and the number of actually used columns,                     + LatDequant ∗ (1 − RatioOverlap )
+and set a utilization threshold to prune compilation strategies
+with lower utilization.                                                    where N umcol represents the total number of accessed DRAM
+                                                                           columns, including accessing weight value for dot-product,
+D. Cost Model-based Design Space Exploration (DSE)                         fetching input to the value and scale buffers, and maintaining
+                                                                           the partial sum result. N umrow and LatRowChange represents
+    With the pruning technique, we can reduce the size of
+                                                                           the counted number of row changes and the extra latency of a
+compilation space by 4 ∼ 5×. For each strategy in the pruned
+                                                                           row change, and LatRowChange can be calculated from tim-
+space, we use the cost model to predict the optimal ones,
+                                                                           ing parameters. LatDequant and RatioOverlap represents the
+avoiding costly cycle-accurate simulation. For the DSE of a
+                                                                           dequantization time and the ratio of dequantization operations
+MVM operator, we can limit the search time from three hours
+                                                                           that overlap with column access and row change.
+to one minute for a batched MVM operator. And we can finish
+the DSE for LLaMA2-7B within 10 minutes, considering the                                IX. E VALUATION M ETHODOLOGY
+operator structure of different transformer blocks is same.                A. Multi-precision PU Implementation
+    The cost model consists of two stages. The first stage
+performs coarse-grained metric estimation based on the                        Table I summarizes the FP formats supported by each
+compilation strategy. While the value dot-product latency can              PU, including effective mantissa precision and the number
+be derived analytically, we leverage parameters such as loop               of values that fit into a single DRAM column. To reduce
+tiling sizes, value and scale buffer capacities, and DRAM row              hardware overhead, the PU datapath is designed to reuse
+size to count key events, including buffer misses, dequantiza-             resources across multiple precisions, as shown in Fig. 2(c).
+tion operations, and DRAM row changes. Furthermore, we can                    Dot-product PU. Each PU consists of a set of FP multipli-
+also count dequantization operations that overlap with buffer              ers followed by an FP adder tree. For the multiplier array, ex-
+miss and row changes. However, precisely characterizing                    isting multi-precision FP units [24] reuse mantissa multipliers
+DRAM row changes presents a key challenge. We observe                      by composing small multiplier blocks. In our design, mantissa
+that DRAM row changes consist of (i) natural row changes                   multiplication for FP32 originally requires a 24-bit multiplier.
+incurred while streaming weight data for computation, and (ii)             We decompose it into four 12-bit multipliers to enable higher
+row changes triggered by misses in the value or scale buffer.              parallelism at lower precisions. Similarly, 12-bit multiplier can
+For (i), as weights are mapped following the loop iteration                be further decomposed into four 6-bit multipliers. However,
+order, data are accessed column by column sequentially during              the datapath shows that only a small portion of the multipliers
+traversal. The natural row change is considered after accessing            are utilized for FP4 and FP8 operations. As a result, we
+the last column in each row. For (ii), we notice that buffer miss          trade-off between the resource overhead and the computational
+contributes to different extra row change numbers. Assuming                power for FP32, as shown in Table II.
+we cache the activation in the buffer and read the weight from                For characterizing the area and power overhead of different
+DRAM for computation, if an activation buffer miss occurs,                 PU designs, we synthesize the modules using Synopsys DC
+two extra row changes are required: one to read the activation             Compiler at 14 nm, aligned with the 1y-nm DRAM process
+and another to return to the previous weight row. However,                 used in GDDR6-AiM [33]. To complete one MAC within
+if the activation buffer miss coincides with a natural weight              bank access interval (tCCDL × tCK ), the PU frequency is
+row change, only one extra row change is incurred. One extra               set to 0.4 GHz, following GDDR6 timing parameters in
+row change also happens when two buffer refills (e.g., for data            DRAMSim3 [38]. The single-cycle FP32 design provides ac-
+and scale buffers) happen at the same moment. Based on this                ceptable overhead and avoids excessively slow dequantization,
+observation, we can obtain a more accurate estimation of the               so we adopt this design point in our implementation. However,
+total row-change overhead.                                                 our proposed compilation and dequant-hiding techniques are
+
+
+
+
+                                                                    1391
+                          TABLE III                                                                         TABLE V
+    Q UANTIZATION M ETHODS , P RECISIONS , AND G ROUP C ONFIGS                                    NDP A RCHITECTURE PARAMETERS
+
+ Quant. Method          W-A Quant.                W-Only Quant.                    DRAM Parameter Value         PU Parameter      Value
+ Precision          W4A4S8, W8A8S16           W4A16S8, W8A16S16                    # GDDR6 Chip        32       FP4 Throughput    51.2 GFLOPs
+                                                                                   # Channel / Chip    2        FP8 Throughput    25.6 GFLOPs
+ Q1–Q6 (GN , GK )   (1,16), (1,32), (16,16), (32,32), (64,64), (128,128)           # Bank / Channel    16       FP16 Throughput   12.8 GFLOPs
+                                                                                   # PU / Channel      16       FP32 Throughput   6.4 GFLOPs
+                        TABLE IV                                                   Data Rate / pin     12 Gbps  Frequency         0.4 GHz
+LLM W ORKLOAD C ONFIGURATIONS (T HE M, K, N DIMENSION NAMING                       Total External BW.  1.5 TB/s SRAM Buffer Size  20×32 Bytes
+         FOLLOWS THE SAME CONVENTION AS IN F IG . 1)                               Total Capacity      32 GB    Total PU Num.     1024
+                                                                                   Timing Parameters (from DRAMSim3 [38]): tCK = 0.66ns,
+LLaMA 7B  M      K    N LLaMA 13B   M      K    N
+                                                                                   tRCD = 24, tRP = 24, tCCDL = 4, BL = 16, tCL = 24
+MVM/MM1 1/4096 4096 4096 MVM/MM1 1/4096 5120 5120
+MVM/MM2 1/4096 4096 11008 MVM/MM2 1/4096 5120 13824
+MVM/MM3 1/4096 11008 4096 MVM/MM3 1/4096 13824 5120                                  2) Quantization Configs: We evaluate a diverse set
+LLaMA 34B M      K    N LLaMA 34B   M      K    N                                 of QConfigs, including QGroups ranging from (1,16) to
+MVM/MM1 1/4096 6656 6656 MVM/MM3 1/4096 6656 832                                  (128,128) (denoted as Q1 ∼ Q6), different quantization types
+MVM/MM2 1/4096 6656 20480 MVM/MM4 1/4096 20480 6656                               including weight-activation (W-A) and weight-only (W-Only),
+                                                                                  and various precision pairs for quantized values and scaling
+applicable to all design points with little additional latency,
+                                                                                  factors (e.g., W4S8, W8S16). These configurations cover
+and we also report results under slower FP32 configurations.
+                                                                                  several trending low-bit FP formats such as DeepSeek-FP8,
+   Adder tree optimization. Using full FP32 adders for all
+                                                                                  MXFP4, and NVFP4, and also allow us to assess the potential
+levels of the reduction tree is unnecessary. We observe that: (1)
+                                                                                  of alternative FP formats for NDP architectures.
+The first-level adders are only activated during FP4 operations.
+                                                                                     3) NDP Architecture Setup: The NDP architecture used for
+(2) The second-level adders are only activated for FP4 and FP8
+                                                                                  evaluation is modified from Hynix AiM [33], as described in
+operations. Thus, we reduce the precision of the early adder
+                                                                                  Sec. III-A. Detailed parameters of the NDP architecture and
+stages to match the required dynamic range. Specifically, first-
+                                                                                  the multi-precision PU are listed in Tab. V. The detailed timing
+level adders use FP8 precision, and second-level adders use
+                                                                                  and power parameters used for GDDR6 are also derived from
+BF16 precision, both of which can fully preserve the accuracy
+                                                                                  DRAMSim3. We also evaluate the sensitivity of FlexQ-NDP
+of FP4 and FP8 products. Higher levels of the tree use FP32
+                                                                                  by switching to different total buffer capacities and PU imple-
+adders to maintain overall accumulation accuracy.
+                                                                                  mentations (in particular, variations in FP32 throughput).
+B. Online Activation Quantization Implementation                                     4) Performance & Energy Simulation: We simulate NDP
+   When using weight-activation quantization, any intermedi-                      performance using modified UniNDP [63], as described in
+ate result that serves as the input to a low-bit operator must                    Sec. III-C. The energy consumption is calculated from the
+be quantized at runtime. To support this, whenever the output                     trace collected from simulation and power parameters, follow-
+buffer becomes full, we transfer the intermediate results back                    ing the equations in DRAMSim3 [38].
+to the host (same as original GDDR6-AiM dataflow).                                   5) Baseline Compilation Strategy: The baseline compila-
+   During computation, the host incrementally aggregates these                    tion strategy for low-bit FP GEMM is as follows: (a) For
+intermediate values and tracks the maximum magnitude of                           partition, the operator is divided along its output-channel
+each QGroup of next operator, which is then used to derive the                    across different PUs, which follows the partition strategy used
+scales. When preparing the input for the next operator, the host                  in AiM [33]; (b) Data mapping and dataflow are described
+distributes the unquantized intermediate results together with                    in Sec. III-B; (c) Buffer allocation is determined by matching
+their corresponding scales to all DRAM banks. PUs can then                        the ratio of scale-buffer capacity to data-buffer capacity with
+exploit the high internal memory bandwidth to perform the                         the ratio of scales to values; (d) Loop tile size is chosen to
+actual value quantization efficiently. The overhead of runtime                    match the size of scale and data buffer, and loop order is set
+quantization is also considered in the experiment for end-to-                     to Order1, and the input will be stored to value buffer during
+end LLM inference in Fig. 10.                                                     computation. For un-quantized (FP16) GEMM in Sec. X-C, we
+                                                                                  reuse the partition and data mapping strategy from the baseline
+C. Experiment Setup                                                               compilation strategy designed for low-bit FP GEMM.
+   1) Workloads: We use MVM and MM operators extracted
+                                                                                                   X. E XPERIMENT R ESULTS
+from LLMs (LLaMA2-7B/13B/34B [56]) for evaluation, as
+shown in Tab. IV. For end-to-end evaluation, we consider                          A. GEMM Operator
+attention computation and nonlinear operators in the original                        1) Speedups: We first evaluate quantized MVM and MM
+precision. In the prefill stage, the input length is set to the                   operators, as shown in Fig. 8. For each quantization config-
+maximum sequence length of LLaMA-2 (i.e., 4096). In the                           uration, we apply the full FlexQ-NDP optimization pipeline,
+decoding stage, we perform token-level analysis, with the                         including scale-value interleaved data layout, dequant-hiding
+attention latency measured at the 32nd generated token. We                        technique, and the DSE-based strategy search. We estimate
+further construct batched (B1-B64) version of these MVM to                        the theoretical performance upper bound by assuming that the
+evaluate batched LLM decoding.                                                    PU is fully utilized without idle cycles. This corresponds to
+
+
+
+
+                                                                           1392
+                                                                          Baseline Latency            FlexQ-NDP Latency          Theoretical Upper Bound
+                3
+                         Q1 ~ Q6                                            W-A / Workload=llama2-7B / Precision=W4A4S8 / QGroup=Various                                           Q1,Q2
+              2.5
+                2
+                                                                                                                                                                                                          SpeedUp
+              1.5                                                                                                                                                                                        (Geomean)
+                1                                                                                                                                                                                          =1.57x
+              0.5
+                         MVM1_B1        MVM1_B4         MVM1_B16    MVM1_B64        MVM2_B1     MVM2 _B4     MVM2_B16     MVM2_B64     MVM3_B1    MVM3_B4      MVM3_B16    MVM3_B64 MM1 MM2 MM3
+
+                3
+              2.5        Q1 ~ Q6                                            W-A / Workload=llama2-7B / Precision=W8A8S16 / QGroup=Various                                              Q1,Q2
+                2                                                                                                                                                                                         SpeedUp
+              1.5                                                                                                                                                                                        (Geomean)
+                1                                                                                                                                                                                          =1.72x
+              0.5
+                         MVM1_B1        MVM1_B4         MVM1_B16    MVM1_B64        MVM2_B1     MVM2 _B4     MVM2_B16     MVM2_B64     MVM3_B1      MVM3_B4    MVM3_B16    MVM3_B64 MM1 MM2 MM3
+             3.5
+                              B1~B64                                        W-A / Workload=Various / Precision=W4A4S8 / QGroup=Q1                                                 7B    13B        34B
+             2.5                                                                                                                                                                                          SpeedUp
+                                                                                                                                                                                                         (Geomean)
+             1.5
+               1                                                                                                                                                                                           =1.98x
+             0.5
+                             7B_MVM1       7B_MVM2           7B_MVM3       13B_MVM1           13B_MVM2       13B_MVM3       34B_MVM1     34B_MVM2      34B_MVM3        34B_MVM4          MM
+
+            3.5
+                                                                         W-Only / Workload=llama2-7B / Precision=W4A16S8 / QGroup=Various                                          Q1,Q2
+            2.5                                                                                                                                                                                           SpeedUp
+                         Q1 ~ Q6                                                                                                                                                                         (Geomean)
+            1.5                                                                                                                                                                                            =1.55x
+                  1
+            0.5
+                         MVM1_B1        MVM1_B4         MVM1_B16    MVM1_B64        MVM2_B1     MVM2 _B4     MVM2_B16     MVM2_B64     MVM3_B1    MVM3_B4      MVM3_B16    MVM3_B64 MM1 MM2 MM3
+
+          4.5
+                                                                         W-Only / Workload=llama2-7B / Precision=W8A16S16 / QGroup=Various                                         Q1,Q2
+          3.5                                                                                                                                                                                             SpeedUp
+          2.5            Q1 ~ Q6                                                                                                                                                                         (Geomean)
+          1.5                                                                                                                                                                                              =1.76x
+            1
+          0.5
+                         MVM1_B1        MVM1_B4         MVM1_B16    MVM1_B64        MVM2_B1     MVM2 _B4     MVM2_B16     MVM2_B64     MVM3_B1    MVM3_B4      MVM3_B16   MVM3_B64 MM1 MM2 MM3
+
+           4.5
+                                                                         W-Only / Workload=Various / Precision=W4A16S8 /         QGroup=Q1                                                         34B
+           3.5                                                                                                                                                                    7B    13B               SpeedUp
+                              B1~B64
+           2.5                                                                                                                                                                                           (Geomean)
+           1.5                                                                                                                                                                                             =1.69x
+              1
+           0.5
+                             7B_MVM1           7B_MVM2        7B_MVM3       13B_MVM1          13B_MVM2       13B_MVM3       34B_MVM1     34B_MVM2      34B_MVM3        34B_MVM4          MM
+
+                                       Fig. 8. MM and MVM Performance Comparison between Baseline and FlexQ-NDP (normalized to theoretical upper bound)
+
+                                             TABLE VI                                                                                                  TABLE VII
+                       E NERGY C ONSUMPTION ACROSS W ORKLOADS (U NIT: 10−3 J )                                                   L ATENCY C OMPARISON BETWEEN GPU & NDP (U NIT: 10−6 S )
+
+                                   LLaMA-7B                   LLaMA-13B                   LLaMA-34B                         Input Size (M)        1        2       4        8     16          32         64   4096
+MVM                              1        2         3         1     2        3        1        2         3     4            GPU Latency 16.38 16.38 16.40 16.38 16.38 16.40 16.40 102.0
+                                                                                                                            NDP Latency 1.637 3.500 6.708 13.16 26.32 52.60 105.2 6730
+Baseline 0.24 0.58 0.65 0.36 0.89 1.00 0.63 0.12 1.62 2.02
+Ours     0.18 0.48 0.51 0.28 0.76 0.79 0.47 0.07 1.47 1.45
+                                                                                                                               3) Comparison between quantization precisions and QCon-
+                  14000
+                                                         Baseline       FlexQ-NDP
+                                                                                                                            figs: In Fig. 9, we compare the performance of 7B MVM1
+                  12000
+                                                                                                                            across different quantization precisions under all six QConfigs.
+Latency (Cycle)
+
+
+
+
+                  10000
+                      8000                                                                                                  First, for W–A quantization, improving quantization precision
+                      6000           Q1 - Q6
+                      4000
+                                                                                                                            directly increases the arithmetic complexity. As a result, the
+                      2000                                                                                                  optimized latency of 8-bit quantization is on average 1.6×
+                        0
+                                 W4A4S8 (W-A)           W8A8S16 (W-A)     W4A16S16 (W-Only)      W8A16S16 (W-Only)
+                                                                                                                            higher than that of 4-bit quantization across different Qconfigs.
+                         Fig. 9. Latency Comparison between Quantization Precisions                                         In contrast, for W-Only quantization, the computation preci-
+                                                                                                                            sion always follows the activation precision (FP16). Increas-
+the latency lower bound shown in the figure. Fig. 8 shows                                                                   ing weight precision only affects the weight dequantization
+the speedups of FlexQ-NDP across both weight-activation and                                                                 overhead. Under different qconfigs, the average latency only
+weight-only quantization, evaluated under different quantiza-                                                               increases by 1.3×. Comparing the two quantization schemes,
+tion groups and LLM workloads. Across all cases, FlexQ-                                                                     weight-only quantization consistently exhibits significantly
+NDP consistently improves performance over the baseline and                                                                 higher latency due to its substantially larger compute cost.
+reaches a maximum speedup of 3.29×. We observe two gen-                                                                        4) Comparison with GPU execution: We test GEMM op-
+eral trends: (1) for finer-grained quantization groups, weight-                                                             erator with increasing input size (7B MVM 1 with different
+activation configurations benefit more from FlexQ-NDP ’s                                                                    batch sizes and 7B MM 1) on RTX5090 GPU with CUT-
+optimizations and achieve higher speedups; (2) for larger batch                                                             LASS [52] library, and compare it to NDP latency optimized
+sizes, weight-only configurations obtain larger gains.                                                                      by FlexQ-NDP. Results in Tab. VII indicates that for GEMM
+   2) Energy Consumption: We evaluated the energy con-                                                                      with small input dimensions, NDP shows advantages, and
+sumption of different MVM operators, as shown in Tab. VI.                                                                   when M ≥ 16, GPU performance becomes superior. For
+Running a single LLaMA2 MVM operator on NDP consumes                                                                        prefill-stage MM, GPU performs clearly better.
+energy on the order of several to tens of millijoules, depending
+on the model scale. Across all workloads, our optimization                                                                  B. CNN Operators
+consistently reduces energy consumption by approximately                                                                     We extended evaluation to convolutional (CONV) layers in
+1.31× on average, with a peak reduction of up to 1.78×.                                                                     CNN models [15], [21]. We apply im2col transformation to
+
+
+
+
+                                                                                                                     1393
+                                     TABLE VIII                                                                                          TABLE IX
+                       S PEEDUP OF CONV L AYERS IN CNN M ODELS                                                S PEEDUP CONTRIBUTIONS OF E ACH O PTIMIZATION PASS (C UMULATIVE )
+
+            CNN CONV.            AlexNet 3 AlexNet 8 ResNet18 3 ResNet18 4                                          Techniques            Layout      Dequant-Hiding   DSE
+
+            Kernel Size               5               3              3                   3                          Avg. of M V M         ×1.36           ×1.18        ×1.17
+            In/Out Channel         64/192         384/256        256/256             512/512                        Avg. of M V M B2      ×1.35           ×1.17        ×1.19
+            Speedup                1.09×           1.72×          1.40×               2.62×                         Avg. of M V M B4      ×1.35           ×1.17        ×1.24
+
+                                                                                                                                           TABLE X
+                                                                                                               E VALUATION OF C OST-M ODEL -G UIDED DSE: O PTIMALITY S TATISTICS
+                Computing        DRAM Rewirte        Computing         Runtime          Computing
+                  (FP16)           (FP16)              (W-A)          Quantization       (W-Only)                                ACROSS Q UANTIZATION T YPES
+                                                          1
+Norm Lat.
+
+
+
+
+            2        7B - Decode - BS=1                           34B - Decode - BS=1                             Quant.Type     Optimality Avg.(%)      Range (%)     P90(%)
+            1                                            0.5                                                        W-A                95.97            84.96–100.00    90.52
+                                                                  Ours      Ours                                   W-Only              99.66            98.12–100.00    99.22
+                     Ours      Ours     Ours      Ours                                Ours      Ours
+            0                                             0
+                    Q1        Q2       Q1        Q2              Q1       Q2         Q1        Q2
+Norm Lat.
+
+
+
+
+                      7B - Decode - BS=16                         34B - Decode - BS=16
+            1
+                                                           1                                                  against the baseline strategy, respectively. FlexQ-NDP can also
+                    Ours       Ours       Ours    Ours            Ours     Ours       Ours      Ours
+                                                                                                              approach the theoretical lower bound (i.e., ignoring weight
+            0                                              0
+                   Q1         Q2         Q1      Q2              Q1       Q2       Q1          Q2             rewrites) for large-batch decoding and prefill.
+Norm Lat.
+
+
+
+
+                            7B - Prefill                                 34B - Prefill
+            1                                             1                                                   D. Ablation Study
+                    Ours       Ours     Ours      Ours            Ours     Ours       Ours      Ours
+            0
+                   Q1         Q2       Q1        Q2
+                                                          0
+                                                                 Q1       Q2         Q1        Q2
+                                                                                                                 Tab. IX summarizes the individual contributions of the three
+Fig. 10. End-to-end Latency Compared to Baseline (norm. to FP16 model)                                        major components of FlexQ-NDP, evaluated by cumulatively
+                                                                                                              applying the interleaved data layout, the dequantization-hiding
+convert CONV kernels to MVMs. Per-channel quantization is                                                     technique, and the DSE-guided compilation strategy to the
+applied to both the input and output channel of CONV weight,                                                  MVM operator with different batch sizes. We also observe an
+and the channel of input data. As shown in Tab. VIII, FlexQ-                                                  average reduction on the DRAM row-changing overhead by
+NDP provides 1.49× CONV layer speedup on average.                                                             ∼ 2×, which is the source of speedup of layout.
+C. End-to-End LLM Workload                                                                                    E. Cost Modeling Validation
+   We evaluate the end-to-end performance on LLaMA2-7/34B                                                        To assess the effectiveness of our cost modeling, we conduct
+against FP16-based computation and baseline low-bit FP com-                                                   a brute-force search to obtain the globally optimal strategy
+pilation strategy. Fig. 10 reports the results for W4A4S8                                                     for each operator and compare it with the best configuration
+W-A quantization (Q1) and weight-only quantization (Q2),                                                      selected using our cost-model-guided DSE. Table X summa-
+evaluated on both 7B/34B decoding and prefill. All latencies                                                  rizes the optimality statistics, where optimality denotes the
+are normalized to the FP16 model. The FP16-based LLaMA2-                                                      ratio between the latency achieved by DSE and the brute-force
+34B incurs substantial DRAM-rewrite overhead because the                                                      optimum. For W-A quantization, the DSE achieves an average
+GDDR6-AiM (32 GB capacity) cannot hold the full FP16                                                          optimality of 95.97%, with values ranging from 84.96% to
+parameters of LLaMA2-34B. Consequently, FP16 execution                                                        100% and a P90 optimality of 90.52%. This is due to the
+requires rewriting weights into DRAM, and we account for this                                                 difficulty in precise modeling of the dequant-hiding process.
+overhead in the FP16 results. Under this constraint, directly ap-                                             For W-Only quantization, our model achieves markedly higher
+plying W4A4S8 quantization with QGroup = (1,32) using the                                                     fidelity, achieving an average optimality of 99.66%, with
+baseline compilation strategy reduces the DRAM requirement                                                    values ranging from 98.12% to 100% and a P90 optimality
+for LLaMA2-34B parameters to within the system capacity. As                                                   of 99.22%. These results demonstrate that the cost model’s
+a result, it eliminates weight rewriting and achieves a 7.17×                                                 ability in providing reliable guidance for DSE.
+speedup in the decode stage (batch size = 1).
+   For W-A quantization, FlexQ-NDP reduces both the opera-                                                    F. Various Hardware Configurations
+tor computing latency and the runtime-quantization overhead.                                                     1) Buffer Size: We take LLaMA 7B MVM2 (W4A4S8,
+This yields up to 2.36× and 2.73× speedups over the quan-                                                     Q1) as a case study to analyze the sensitivity of different
+tized baseline in the prefill and decoding phases, respectively.                                              strategies to the PU buffer capacity. The baseline strategy used
+Compared to the FP16 model, FlexQ-NDP achieves up to 15×                                                      in this study differs from the main experiments. For each PU
+speedup in decoding, with 7.17× speedup from quantization                                                     buffer size, we exhaustively search for the optimal buffer allo-
+and 2.09× speedup from FlexQ-NDP’s compilation optimiza-                                                      cation under that capacity to serve as the baseline. As a result,
+tions. For the prefill stage, FlexQ-NDP provides up to a 2.47×                                                the measured speedups are slightly lower than those reported
+speedup compared to FP16 model (1.20× from quantization                                                       in Sec.X-A. As shown in Fig. 11(a), the baseline latency rises
+and 2.05× from FlexQ-NDP’s compilation optimizations).                                                        sharply when the buffer size is small and requires more than
+For W-Only quantization, as the computation precision is                                                      20×32 B buffer to reach performance close to the optimal
+unchanged and extra dequantization is required, the base-                                                     region. In contrast, the proposed optimizations, including the
+line strategies often perform worse than FP16. FlexQ-NDP                                                      interleaving data layout and its combination with dequantiza-
+achieves 1.49× and 1.92× speedup for prefill and decoding                                                     tion reordering, are much less sensitive to buffer capacity. Both
+
+
+
+
+                                                                                                       1394
+                      Baseline     Layout       Layout+Reorder             8                                                                     FP16*FP16 PU + Baseline    FP16*FP4 PU + Baseline     FP16*FP4 PU + FlexQ-NDP
+
+
+
+
+                                                                                                                    Normalized Latency
+                                                                                                                                           1
+                                                                           7                                                             0.8
+Latency Cycle
+
+
+
+                11400                                                      6
+
+
+
+
+                                                                 Speedup
+                                                                                                                                         0.6
+                                                                           5                                                             0.4
+                                                  Near Optimal             4                                                             0.2
+                  8400
+                                                                           3                                                               0
+                                                                           2 1.38x                                                             MVM1     MVM2      MVM3   MVM1   MVM2     MVM3   MVM1     MVM2    MVM3    MVM4
+                 Theor.
+                 5400                                                      1                                                                          LLaMA2-7B             LLaMA2-13B                   LLaMA2-34B
+                               4   8    12 16 20          24                  4 8 12 16 20 24 28
+                                    Buffer Size( / 32B)                            Buffer Size( / 32B)
+                                                                                                                                                 Fig. 13. Compatibility with Mix-Precision PU Design
+                (a) Buffer Requirement of Different Strategy                   (b) Speedup Sensitivity              FlexQ-NDP can further achieve 3.05× speedups on average.
+                       Fig. 11. Sensitivity of FlexQ-NDP to PU SRAM Buffer Size
+                                                                                                                                                                    XI. R ELATED W ORK
+                           Original FP32 Throughput   0.5x FP32 Throughput           0.25x FP32 Throughput
+                2.5                                                                                                    NDP compilersare essential for exploring the unique opti-
+                 2                                                                                                  mization space of NDP architectures. Existing NDP compilers
+  Speedup
+
+
+
+
+                1.5
+                                                                                                                    primarily target high-precision formats or coarse-grained inte-
+                 1
+                0.5
+                                                                                                                    ger quantization. OptiPIM [42] searches for the optimal data
+                        MVM1     MVM2 MVM3      MVM1 MVM2 MVM3                MVM1   MVM2 MVM3       MVM4           layout for both NDP and processing-using-DRAM systems.
+                               LLaMA2-7B           LLaMA2-13B                        LLaMA2-34B
+                                                                                                                    ATiM [49] automatically explores UPMEM-specific optimiza-
+                        Fig. 12. Sensitivity of FlexQ-NDP to PU FP32 Throughput
+                                                                                                                    tions, such as loop-boundary handling and host-UPMEM
+optimized strategies achieve latency below 8,400 cycles with                                                        communication. UniNDP [63] identifies optimal data layouts
+as little as 8×32 B of buffer. This represents approximately                                                        across various commercial NDP architectures. H2-LLM [35]
+a 3× reduction in required buffer capacity compared with                                                            jointly optimizes operator partitioning, data layout, and hybrid-
+the baseline, while still reaching near-optimal performance.                                                        bonding-based hardware configurations. PipePIM [27] enables
+These results show that FlexQ-NDP not only accelerates                                                              hardware pipelining of DRAM sub-array activation and com-
+quantized computation but also substantially relaxes the buffer                                                     putation. JIT-Q [26] leverages NDP as a GPU co-processor
+requirements, which is critical for resource-constrained NDP                                                        and does not support executing low-bit operators on NDP.
+architectures. Both optimized strategies achieve near-optimal                                                       Cost-Effective [30] optimizes low-bit computation with fine-
+performance with only 8×32 B of buffer, which corresponds                                                           grained groups but only for W-Only quantization and 4-bit in-
+to a reduction of approximately three times in the required                                                         teger formats, lacking compatibility with modern FP formats.
+buffer capacity compared with the baseline. This demonstrates                                                       In contrast, our work FlexQ-NDP provides comprehensive
+that FlexQ-NDP not only accelerates quantized computation                                                           support and optimization for a wide range of quantization
+but also significantly relaxes the SRAM buffer requirement,                                                         configurations on NDP, bringing NDP architectures fully into
+which is essential for resource constrained NDP architectures.                                                      the era of low-bit FP quantization.
+   Fig. 11(b) shows the relative speedup of the full FlexQ-NDP                                                                                                       XII. C ONCLUSION
+optimization pipeline over baseline on LLaMA 7B MVM2.
+                                                                                                                       In this paper, we propose FlexQ-NDP, an NDP compiler
+Overall, speedup tends to decrease as SRAM buffer size in-
+                                                                                                                    tailored for low-bit FP computation. FlexQ-NDP incorporates
+creases, but the improvement remains relatively stable (1.38×)
+                                                                                                                    an interleaving data layout to store the quantized matrix
+even as the SRAM size continues to grow.
+                                                                                                                    into DRAM, and a dequant-hiding technique to reduce the
+   2) FP32 Throughput: We evaluate the effectiveness of                                                             overhead of dequantization under fine-grained QGroups. We
+FlexQ-NDP on MVM operators (W4A4S8, Q1) across dif-                                                                 also construct an efficient DSE process to explore the op-
+ferent FP32 throughputs, as shown in Fig 12. When FP32                                                              timal compilation strategy for different QConfigs. Extensive
+Throughput gets smaller, computation dominates runtime, and                                                         experiments show that FlexQ-NDP achieves up to 3.29×
+the benefit from compute–memory overlap diminishes. But                                                             operator-level and 2.73× end-to-end speedups over existing
+our strategy is still effective across MVM workloads, with                                                          NDP compilation strategies across various low-bit FP formats.
+1.45× average speedup under 1/2 FP32 throughput, and 1.28×
+average speedup under 1/4 FP32 throughput.                                                                                                                        XIII. ACKNOWLEDGMENT
+   3) Compatibility with Mix-precision PU: On W4A16S8                                                                  We thank the anonymous reviewers and our shepherd for
+MVM operators, we conducted additional experiments assum-                                                           their valuable feedback. This work was supported by the
+ing an FP16 × FP4 PU design (51.2 GFLOPS, four times                                                                National Natural Science Foundation of China (62504139,
+the FP16 throughput). Each PU can fetch FP4 weights from                                                            62325405, U24B6015), Beijing Natural Science Founda-
+DRAM bank while simultaneously accessing the same number                                                            tion (L257010), the National Key R&D Program of China
+of FP16 activations from the SRAM buffer at four times the                                                          (2023YFB4502200), Beijing National Research Center for In-
+DRAM bandwidth, leveraging SRAM’s higher speed. With                                                                formation Science, Technology (No. BNR2024TD03001), and
+mixed-precision PUs, dequantization can be performed on                                                             State Key Laboratory of Space Network and Communications.
+the result instead of the weight, as a result, the previously                                                       This research was partially supported by ACCESS – AI Chip
+prohibited instruction reordering technique can be reapplied                                                        Center for Emerging Smart Systems, sponsored by InnoHK
+to W-Only cases. As shown in Fig. 13, this mix-precision PU                                                         funding, Hong Kong SAR (HKSAR) and Research Grants
+can reduce the baseline latency by 1.66× on average, and                                                            Council of HKSAR (16213824).
+
+
+
+
+                                                                                                             1395
+                        A RTIFACT A PPENDIX                                          1) GEMM Operator Speedup (Fig. 8): arranged in four
+    A. Abstract                                                                   steps, each step must wait for the preceding step is finished
+                                                                                  (including background processes).
+       This appendix provides guidance on reproducing the key
+                                                                                     Step 1: Search compilation strategies (∼1 day)
+    results of FlexQ-NDP. Our artifacts include a GitHub repos-
+                                                                              1 # run in the background
+    itory to reproduce the main results, which is modified from               2 bash ./scripts/final/3_single_op_with_predictor/
+    open-source UniNDP [63] simulator. Follow the steps in                          part_1.sh
+    Appendix XIII-D to set up the repository. In Appendix XIII-E,             3 # monitor processes running in the background
+                                                                              4 ps -aux | grep -c single_op_with_predictor_part1
+    we provide a detailed workflow to get most results and figures
+    in Sec.X, including Fig. 8, 9, 10, 11, 12, 13 and Tab. VI, VIII,                 Best    strategies   found     during  Part    1   are
+    IX. We also provide result files for the workflow of all these                stored       in       3_single_op_with_predictor/
+    experiments on Zenodo, to serve as reference for experiments                  tmp_strategy/tmp_strategy.yaml
+    with long runtimes. The same workflow is also documented                         Step 2: Simulate Baseline & FlexQ-NDP Latency (∼1 day)
+    in the README of the GitHub repository.                                  bash ./scripts/final/3_single_op_with_predictor/
+                                                                              1
+
+    B. Artifact check-list (meta-information)                                    part2_m1.sh    # 94 configs
+                                                                           2 bash ./scripts/final/3_single_op_with_predictor/
+      • Algorithm: Cost-model-guided Search, Instruction Reordering              part2_m2.sh    # 20 configs
+      • Program: Python, Shell                                             3 bash ./scripts/final/3_single_op_with_predictor/
+
+      • Run-time environment: Python3                                            part2_m4.sh    # 86 configs
+                                                                           4 bash ./scripts/final/3_single_op_with_predictor/
+      • Hardware: Linux Server with Multi-core CPU (We use AMD
+                                                                                 part2_m8.sh    # 20 configs
+        CPU with nproc=128)
+                                                                           5 bash ./scripts/final/3_single_op_with_predictor/
+      • Output: Text log files, CSV, and PNG.
+                                                                                 part2_m16.sh   # 94 configs
+      • Experiments: main results in Sec.X, including Fig. 8, 9, 10,       6 bash ./scripts/final/3_single_op_with_predictor/
+        11, 12, 13 and Tab. VI, VIII, IX.                                        part2_m32.sh   # 20 configs
+      • How much disk space required (approximately)?: ∼100MB              7 bash ./scripts/final/3_single_op_with_predictor/
+
+      • How much time is needed to prepare workflow (approxi-                    part2_m64.sh   # 86 configs
+        mately)?: 5 minutes                                                8 bash ./scripts/final/3_single_op_with_predictor/
+
+      • How much time is needed to complete experiments (approx-
+                                                                                 part2_m4096.sh # 46 configs
+                                                                           9 # monitor processes running in the background
+        imately)?: 4-5 days                                               10 ps -aux | grep -c single_op_with_predictor_part2
+      • Publicly available?: Yes
+      • Code licenses (if publicly available)?: MIT License
+                                                                                     Each script launches one process per config. As the
+      • Archived (DOI): https://doi.org/10.5281/zenodo.19452117
+                                                                                  simulation for MVMs (part2_m1-m64.sh) can be
+    C. Description                                                                finished quickly, you can start the next script whenever
+       1) How to access: The code is publicly available at https://               free CPU cores are available. As the simulation for MMs
+    github.com/ISCA26-FlexQ-NDP-ae/flexq ndp. The code with                       (part2_m4096.sh) may take few hours to one day, we also
+    all the result files are publicly available at Zenodo.                        provide all the result logs on Zenodo, under flexq_ndp/
+       2) Software dependencies: Python3 on Linux OS.                             scripts/final/3_single_op_with_predictor/
+                                                                                  log_rebuttal_mm_new.
+    D. Installation                                                                  Step 3: Theoretical Latency Lower Bound (< 1 hour)
+      1) Download & Requirement: follow the bash commands:                    1   bash ./scripts/final/3_single_op_with_predictor/
+1 # download the repository                                                           mm_speedup_optimal.sh
+2 git clone git@github.com:ISCA26-FlexQ-NDP-ae/
+      flexq_ndp.git                                                                 Step 4: CSV Extraction for Fig. 8 (< 1 minute)
+3 cd flexq_ndp
+                                                                              1   python ./scripts/final/3_single_op_with_predictor/
+4 pip install -r requirements.txt.
+                                                                                      extract_fig8.py
+      2) Path Setting for Scripts: Before running any experiment,
+                                                                                     Extracted CSV files for different sub-figures in Fig. 8
+    export the project directory as an environment variable:
+                                                                                  are saved to 3_single_op_with_predictor/fig8/.
+1   export FLEXQ_NDP_DIR="PATH_TO_FLEXQ_NDP"                                      Latencies are reported in cycles in the CSV files.
+                                                                                  To convert to nanoseconds, multiply by tCK found in
+      We recommend adding this line to ˜/.bashrc or
+                                                                                  flexq_ndp/config.
+    ˜/.zshrc for convenience.
+                                                                                    2) Energy Consumption (Table VI): takes ∼1 hour.
+    E. Experiment Workflow
+                                                                                    Energy consumption is estimated from simulation traces and
+       Note1: All command lines in Appendix XIII-E should be                      power parameters following the equations in DRAMSim3 [38],
+    run from the flexq_ndp project root (under flexq_ndp                          and is reported in pJ (picojoule) in the output file.
+    directory). All result paths provided in the workflow is under
+                                                                              1 # run energy simulation in the background
+    flexq_ndp/scripts/final directory.                                        2 bash ./scripts/final/8_energy/bash_energy.sh
+       Note2: Experiment for GEMM operator speedups (Fig. 8)                  3 # extract results
+                                                                              4 python ./scripts/final/8_energy/extract_energy.py
+    must be completed before running any other experiments, as
+    subsequent steps depend on its output.
+
+
+
+
+                                                                       1396
+       Results are written to 8_energy/energy_mvm.csv.                             8) FP32 Throughput Sensitivity (Fig. 12): takes ∼1 day.
+        3) Comparison between precisions and QConfigs (Fig. 9)               1 bash ./scripts/final/6_throughput_change/
+                                                                                   throughput_change.sh # 128 processes
+     : takes <1 minute.                                                      2 # extract results
+                                                                             3 python ./scripts/final/6_throughput_change/
+ 1 python ./scripts/final/3_single_op_with_predictor/
+                                                                                   extract_throughput_speedup.py
+       extract_all.py # extract all result
+ 2 python ./scripts/final/3_single_op_with_predictor/
+       extract_fig9.py # extract data for fig.9                                    Results:            6_throughput_change/
+                                                                                 throughput_speedup.csv
+       Results: 3_single_op_with_predictor/fig9/.
+                                                                                  9) Mixed-Precision PU Compatibility (Fig. 13): takes
+       4) CNN Operators (Table VIII): takes ∼1 hour.                             ∼0.5 hours.
+ 1   bash ./scripts/final/3_single_op_with_predictor/cnn.                    1 bash ./scripts/final/9_mix_precision_pu/mix_pre_pu.
+         sh # 128 processes                                                        sh # 128 processes
+                                                                             2 # extract results
+                                                                             3 python ./scripts/final/9_mix_precision_pu/
+       Results: 3_single_op_with_predictor/log_cnn/.                               extract_mix_precision_pu.py
+
+        5) End-to-End Latency (Fig. 10): takes ∼0.5 hour. Ar-                      Results:             9_mix_precision_pu/
+     ranged in four sequential steps, and each step must wait until              mix_precision_pu_summary.csv.
+     the preceding step, including any background processes, has
+     fully completed.                                                            F. Evaluation and expected results
+ 1 # Step 1: extract single-operator data (requires
+                                                                                   The results generated/plotted from this artifact should match
+       GEMM speedup experiment (Fig.8))                                          those shown in result figures and tables.
+ 2 python ./scripts/final/3_single_op_with_predictor/
+       extract_all.py                                                            G. Experiment customization
+ 3
+ 4 # Step 2: run FP16 baseline in the background                                   We already provide experiments for different hardware pa-
+ 5 bash ./scripts/fp16_baseline/process_workload_all.sh                          rameters (buffer sizes, throughput, different kind of PU). Users
+ 6 ps -aux | grep -c for_quant # wait until all
+                                                                                 can extend on these experiments to explore more hardware
+       processes finish
+ 7
+                                                                                 variants, or explore different combinations of hardware and
+ 8 # Step 3: get online quantisation latency in the                              quantization configurations.
+       background                                                                  For example, for mixed-precision PU experiment, user can
+ 9 bash ./scripts/final/3_single_op_with_predictor/
+       quant_latency/quant_lat.sh                                                modify the configuration file ( flexq_ndp/scripts/
+10 ps -aux | grep -c test_quant_latency # wait until                             final/9_mix_precision_pu/workload/
+       all processes finish                                                      quant.yaml) to test on more quantization configurations.
+11
+12   # Step 4: compute end-to-end latency and plot                               H. Notes
+13   python ./scripts/final/4_e2e/calculate_e2e_lat.py
+                                                                                    Background Process Management: Some of the tests
+        The end-to-end results (cycles and speedup) are printed                  might take time (a few hours to one day) due to long
+     directly to the terminal. Sub-figures for Fig. 10 are printed               simulation time of large operators (e.g., MMs in llama2 34B).
+     to 4_e2e/latency_plots/.                                                    Users can refer to this part of README file for how to
+                                                                                 monitor and terminate commands issued by the script.
+       6) Ablation Study (Table IX): takes ∼5 hours                                 HPC / Slurm Compatibility: The default .sh scripts are
+ 1 bash ./scripts/final/7_ablation/ablation.sh # 128                             designed for bare-metal servers and may launch jobs in the
+       processes                                                                 background. Therefore, on HPC clusters with Slurm, users
+ 2 # extract results
+                                                                                 should run the corresponding *_slurm.sh scripts instead.
+ 3 python ./scripts/final/7_ablation/extract_ablation.
+       py                                                                           For Step 2 in Appendix XIII-E1, two 34B MM4 cases are
+                                                                                 significantly more memory-intensive and may cause OOM
+       Results: 7_ablation/ablation_summary.csv.                                 errors if executed concurrently with other jobs on memory-
+                                                                                 constrained nodes. If this happens, users can run these cases
+       7) Buffer Size Sensitivity (Fig. 11): takes ∼8 hours.                     serially.
+ 1 bash ./scripts/final/5_buffer_change/buffer_change.                              More detailed instructions for HPC with Slurm are available
+       sh # 128 processes                                                        in this part of README file.
+ 2 # extract results
+ 3 python ./scripts/final/5_buffer_change/
+       extract_buffer_change.py
+
+       Results: 5_buffer_change/fig11a.csv                     and
+     5_buffer_change/fig11b.csv.
+
+
+
+
+                                                                      1397
+                              R EFERENCES                                                Proceedings of the Twenty-Second International Conference on Archi-
+                                                                                         tectural Support for Programming Languages and Operating Systems,
+ [1] F. Abecassis, A. Agrusa, D. Ahn, J. Alben, S. Alborghetti, M. Andersch,             2017, pp. 751–764.
+     S. Arayandi, A. Bjorlin, A. Blakeman, E. Briones et al., “Pretraining          [19] A. Gholami, S. Kim, Z. Dong, Z. Yao, M. W. Mahoney, and K. Keutzer,
+     large language models with nvfp4,” arXiv preprint arXiv:2509.25149,                 “A survey of quantization methods for efficient neural network infer-
+     2025.                                                                               ence,” in Low-power computer vision. Chapman and Hall/CRC, 2022,
+ [2] M. Alian, S. W. Min, H. Asgharimoghaddam, A. Dhar, D. K.                            pp. 291–326.
+     Wang, T. Roewer, A. McPadden, O. O’Halloran, D. Chen, J. Xiong                 [20] S. Han, H. Mao, and W. J. Dally, “Deep compression: Compressing
+     et al., “Application-transparent near-memory processing architecture                deep neural networks with pruning, trained quantization and huffman
+     with memory channel network,” in 2018 51st Annual IEEE/ACM In-                      coding,” arXiv preprint arXiv:1510.00149, 2015.
+     ternational Symposium on Microarchitecture (MICRO). IEEE, 2018,                [21] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image
+     pp. 802–814.                                                                        recognition,” in Proceedings of the IEEE conference on computer vision
+ [3] B. Asgari, R. Hadidi, J. Cao, S.-K. Lim, H. Kim et al., “Fafnir:                    and pattern recognition, 2016, pp. 770–778.
+     Accelerating sparse gathering by using efficient near-memory intel-            [22] M. He, C. Song, I. Kim, C. Jeong, S. Kim, I. Park, M. Thottethodi, and
+     ligent reduction,” in 2021 IEEE International Symposium on High-                    T. Vijaykumar, “Newton: A dram-maker’s accelerator-in-memory (aim)
+     Performance Computer Architecture (HPCA). IEEE, 2021, pp. 908–                      architecture for machine learning,” in 2020 53rd Annual IEEE/ACM
+     920.                                                                                International Symposium on Microarchitecture (MICRO). IEEE, 2020,
+ [4] S. Ashkboos, A. Mohtashami, M. L. Croci, B. Li, P. Cameron, M. Jaggi,               pp. 372–385.
+     D. Alistarh, T. Hoefler, and J. Hensman, “Quarot: Outlier-free 4-bit           [23] G. Heo, S. Lee, J. Cho, H. Choi, S. Lee, H. Ham, G. Kim, D. Ma-
+     inference in rotated llms,” Advances in Neural Information Processing               hajan, and J. Park, “Neupims: Npu-pim heterogeneous acceleration for
+     Systems, vol. 37, pp. 100 213–100 240, 2024.                                        batched llm inferencing,” in Proceedings of the 29th ACM International
+ [5] S. Bianco, R. Cadene, L. Celona, and P. Napoletano, “Benchmark                      Conference on Architectural Support for Programming Languages and
+     analysis of representative deep neural network architectures,” IEEE                 Operating Systems, Volume 3, 2024, pp. 722–737.
+     Access, vol. 6, p. 64270–64277, 2018. [Online]. Available: http:               [24] L. Huang, Y. Liu, X. Lin, C. Wei, W. Sun, Z. Wang, B. Cao, C. Zhang,
+     //dx.doi.org/10.1109/ACCESS.2018.2877890                                            X. Fu, W. Zhao et al., “Mpicc: Multiple-precision inter-combined
+ [6] T. Brown, B. Mann, N. Ryder, M. Subbiah, J. D. Kaplan, P. Dhariwal,                 mac unit with stochastic rounding for ultra-low-precision training,” in
+     A. Neelakantan, P. Shyam, G. Sastry, A. Askell et al., “Language mod-               Proceedings of the 30th Asia and South Pacific Design Automation
+     els are few-shot learners,” Advances in neural information processing               Conference, 2025, pp. 554–559.
+     systems, vol. 33, pp. 1877–1901, 2020.                                         [25] B. Hyun, T. Kim, D. Lee, and M. Rhu, “Pathfinding future pim archi-
+ [7] R. L. Castro, A. Panferov, S. Tabesh, O. Sieberling, J. Chen, M. Nikdan,            tectures by demystifying a commercial pim technology,” in 2024 IEEE
+     S. Ashkboos, and D. Alistarh, “Quartet: Native fp4 training can be                  International Symposium on High-Performance Computer Architecture
+     optimal for large language models,” arXiv preprint arXiv:2505.14669,                (HPCA). IEEE, 2024, pp. 263–279.
+     2025.
+                                                                                    [26] M. A. Ibrahim, S. Aga, A. Li, S. Pati, and M. Islam, “Jit-q: Just-in-
+ [8] J. Chen, J. Gómez-Luna, I. El Hajj, Y. Guo, and O. Mutlu, “Sim-
+                                                                                         time quantization with processing-in-memory for efficient ml training,”
+     plepim: A software framework for productive and efficient processing-
+                                                                                         Proceedings of Machine Learning and Systems, vol. 6, pp. 46–59, 2024.
+     in-memory,” in 2023 32nd International Conference on Parallel Archi-
+                                                                                    [27] T. Jeong and E.-Y. Chung, “Pipepim: Maximizing computing unit
+     tectures and Compilation Techniques (PACT). IEEE, 2023, pp. 99–111.
+                                                                                         utilization in ml-oriented digital pim by pipelining and dual buffering,”
+ [9] J. Chen, Y. Zhao, J. Yu, R. Chu, J. Chen, S. Yang, X. Wang, Y. Pan,
+                                                                                         IEEE Transactions on Computer-Aided Design of Integrated Circuits
+     D. Zhou, H. Ling et al., “Sana-video: Efficient video generation with
+                                                                                         and Systems, vol. 43, no. 12, pp. 4585–4598, 2024.
+     block linear diffusion transformer,” arXiv preprint arXiv:2509.24695,
+     2025.                                                                          [28] S.-h. Kang, B. Kim, S. Lee, and K. Sohn, “An architecture of sparse
+[10] M. Chen, J. Tworek, H. Jun, Q. Yuan, H. P. D. O. Pinto, J. Kaplan,                  length sum accelerator in axdimm,” in 2022 IEEE 4th International
+     H. Edwards, Y. Burda, N. Joseph, G. Brockman et al., “Evaluating large              Conference on Artificial Intelligence Circuits and Systems (AICAS).
+     language models trained on code,” arXiv preprint arXiv:2107.03374,                  IEEE, 2022, pp. 1–4.
+     2021.                                                                          [29] L. Ke, U. Gupta, B. Y. Cho, D. Brooks, V. Chandra, U. Diril,
+[11] B. Chmiel, M. Fishman, R. Banner, and D. Soudry, “Fp4 all the way:                  A. Firoozshahian, K. Hazelwood, B. Jia, H.-H. S. Lee et al., “Recnmp:
+     Fully quantized training of llms,” arXiv preprint arXiv:2505.19115,                 Accelerating personalized recommendation with near-memory process-
+     2025.                                                                               ing,” in 2020 ACM/IEEE 47th Annual International Symposium on
+[12] J. Cong, Z. Fang, M. Gill, F. Javadi, and G. Reinman, “Aim: accelerating            Computer Architecture (ISCA). IEEE, 2020, pp. 790–803.
+     computational genomics through scalable and noninvasive accelerator-           [30] B. Kim, C. Lee, G. Kim, and E. Park, “Cost-effective extension of
+     interposed memory,” in Proceedings of the International Symposium on                dram-pim for group-wise llm quantization,” IEEE Computer Architecture
+     Memory Systems, 2017, pp. 3–14.                                                     Letters, 2025.
+[13] G. Dai, Z. Zhu, T. Fu, C. Wei, B. Wang, X. Li, Y. Xie, H. Yang, and            [31] Y. Kwon, Y. Lee, and M. Rhu, “Tensordimm: A practical near-memory
+     Y. Wang, “Dimmining: pruning-efficient and parallel graph mining on                 processing architecture for embeddings and tensor operations in deep
+     near-memory-computing,” in Proceedings of the 49th Annual Interna-                  learning,” in Proceedings of the 52nd Annual IEEE/ACM International
+     tional Symposium on Computer Architecture, 2022, pp. 130–145.                       Symposium on Microarchitecture, 2019, pp. 740–753.
+[14] B. Darvish Rouhani, D. Lo, R. Zhao, M. Liu, J. Fowers, K. Ovtcharov,           [32] J. Lee, J. Park, S. Cha, J. Cho, and J. Sim, “Mx+: Pushing the limits
+     A. Vinogradsky, S. Massengill, L. Yang, R. Bittner et al., “Pushing                 of microscaling formats for efficient large language model serving,”
+     the limits of narrow precision inferencing at cloud scale with microsoft            in Proceedings of the 58th IEEE/ACM International Symposium on
+     floating point,” Advances in neural information processing systems,                 Microarchitecture®, 2025, pp. 869–883.
+     vol. 33, pp. 10 271–10 281, 2020.                                              [33] S. Lee, K. Kim, S. Oh, J. Park, G. Hong, D. Ka, K. Hwang, J. Park,
+[15] J. Deng, W. Dong, R. Socher et al., “Imagenet: A large-scale hierarchical           K. Kang, J. Kim et al., “A 1ynm 1.25 v 8gb, 16gb/s/pin gddr6-based
+     image database,” in CVPR, 2009.                                                     accelerator-in-memory supporting 1tflops mac operation and various
+[16] A. Farmahini-Farahani, J. H. Ahn, K. Morrow, and N. S. Kim, “Nda:                   activation functions for deep-learning applications,” in 2022 IEEE In-
+     Near-dram acceleration architecture leveraging commodity dram devices               ternational Solid-State Circuits Conference (ISSCC), vol. 65. IEEE,
+     and standard memory modules,” in 2015 IEEE 21st International Sym-                  2022, pp. 1–3.
+     posium on High Performance Computer Architecture (HPCA). IEEE,                 [34] S. Lee, S.-h. Kang, J. Lee, H. Kim, E. Lee, S. Seo, H. Yoon, S. Lee,
+     2015, pp. 283–295.                                                                  K. Lim, H. Shin et al., “Hardware architecture and software stack
+[17] M. Gao, G. Ayers, and C. Kozyrakis, “Practical near-data processing                 for pim based on commercial dram technology: Industrial product,” in
+     for in-memory analytics frameworks,” in 2015 International Conference               2021 ACM/IEEE 48th Annual International Symposium on Computer
+     on Parallel Architecture and Compilation (PACT). IEEE, 2015, pp.                    Architecture (ISCA). IEEE, 2021, pp. 43–56.
+     113–124.                                                                       [35] C. Li, Y. Yin, X. Wu, J. Zhu, Z. Gao, D. Niu, Q. Wu, X. Si,
+[18] M. Gao, J. Pu, X. Yang, M. Horowitz, and C. Kozyrakis, “Tetris:                     Y. Xie, C. Zhang et al., “H2-llm: Hardware-dataflow co-exploration
+     Scalable and efficient neural network acceleration with 3d memory,” in              for heterogeneous hybrid-bonding-based low-batch llm inference,” in
+
+
+
+
+                                                                                 1398
+     Proceedings of the 52nd Annual International Symposium on Computer                  appear in Proceedings of the 51th Annual International Symposium on
+     Architecture, 2025, pp. 194–210.                                                    Computer Architecture.
+[36] C. Li, Z. Zhou, Y. Wang, F. Yang, T. Cao, M. Yang, Y. Liang, and               [55] H. Touvron, T. Lavril, G. Izacard, X. Martinet, M.-A. Lachaux,
+     G. Sun, “Pim-dl: Expanding the applicability of commodity dram-pims                 T. Lacroix, B. Rozière, N. Goyal, E. Hambro, F. Azhar et al.,
+     for deep learning via algorithm-system co-optimization,” in Proceedings             “Llama: Open and efficient foundation language models,” arXiv preprint
+     of the 29th ACM International Conference on Architectural Support for               arXiv:2302.13971, 2023.
+     Programming Languages and Operating Systems, Volume 2, 2024, pp.               [56] H. Touvron, L. Martin, K. Stone, P. Albert, A. Almahairi, Y. Babaei,
+     879–896.                                                                            N. Bashlykov, S. Batra, P. Bhargava, S. Bhosale et al., “Llama
+[37] C. Li, Z. Zhou, S. Zheng, J. Zhang, Y. Liang, and G. Sun, “Specpim: Ac-             2: Open foundation and fine-tuned chat models,” arXiv preprint
+     celerating speculative inference on pim-enabled system via architecture-            arXiv:2307.09288, 2023.
+     dataflow co-exploration,” in Proceedings of the 29th ACM International         [57] Triton Developers, “Block scaled matrix multiplication — triton
+     Conference on Architectural Support for Programming Languages and                   documentation,” https://triton-lang.org/main/getting-started/tutorials/10-
+     Operating Systems, Volume 3, 2024, pp. 950–965.                                     block-scaled-matmul.html, 2020, accessed: 2025-11-18.
+[38] S. Li, Z. Yang, D. Reddy, A. Srivastava, and B. Jacob, “Dramsim3:              [58] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez,
+     A cycle-accurate, thermal-capable dram simulator,” IEEE Computer                    Ł. Kaiser, and I. Polosukhin, “Attention is all you need,” Advances in
+     Architecture Letters, vol. 19, no. 2, pp. 106–109, 2020.                            neural information processing systems, vol. 30, 2017.
+[39] S. Li, X. Ning, K. Hong, T. Liu, L. Wang, X. Li, K. Zhong, G. Dai,             [59] K. Wang, Z. Liu, Y. Lin, J. Lin, and S. Han, “Haq: Hardware-aware
+     H. Yang, and Y. Wang, “Llm-mq: Mixed-precision quantization for                     automated quantization with mixed precision,” in Proceedings of the
+     efficient llm deployment,” in The Efficient Natural Language and Speech             IEEE/CVF conference on computer vision and pattern recognition, 2019,
+     Processing Workshop with NeurIPS, vol. 9, 2023, p. 3.                               pp. 8612–8620.
+[40] J. Lin, J. Tang, H. Tang, S. Yang, W.-M. Chen, W.-C. Wang, G. Xiao,            [60] R. Wang, Y. Gong, X. Liu, G. Zhao, Z. Yang, B. Guo, Z. Zha,
+     X. Dang, C. Gan, and S. Han, “Awq: Activation-aware weight quanti-                  and P. Cheng, “Optimizing large language model training using fp4
+     zation for on-device llm compression and acceleration,” Proceedings of              quantization,” arXiv preprint arXiv:2501.17116, 2025.
+     machine learning and systems, vol. 6, pp. 87–100, 2024.                        [61] C. Wolters, X. Yang, U. Schlichtmann, and T. Suzumura, “Memory
+[41] A. Liu, B. Feng, B. Xue, B. Wang, B. Wu, C. Lu, C. Zhao, C. Deng,                   is all you need: An overview of compute-in-memory architectures for
+     C. Zhang, C. Ruan et al., “Deepseek-v3 technical report,” arXiv preprint            accelerating large language model inference,” 2024. [Online]. Available:
+     arXiv:2412.19437, 2024.                                                             https://arxiv.org/abs/2406.08413
+[42] J. Liu, M. Zhou, Y. Pan, C.-Y. Yang, L. Josipović, and T. Rosing,             [62] Y. Wu, Z. Wang, and W. D. Lu, “Pim gpt a hybrid process in memory
+     “Optipim: Optimizing processing-in-memory acceleration using integer                accelerator for autoregressive transformers,” npj Unconventional Com-
+     linear programming,” in Proceedings of the 52nd Annual International                puting, vol. 1, no. 1, p. 4, 2024.
+     Symposium on Computer Architecture, 2025, pp. 867–883.                         [63] T. Xie, Z. Zhu, B. Li, Y. He, C. Li, G. Sun, H. Yang, Y. Xie, and
+[43] O. Mutlu, “Memory-centric computing,” 2023. [Online]. Available:                    Y. Wang, “Unindp: A unified compilation and simulation tool for near
+     https://arxiv.org/abs/2305.20000                                                    dram processing architectures,” in 2025 IEEE International Symposium
+[44] M. Nagel, M. Fournarakis, R. A. Amjad, Y. Bondarenko, M. Van Baalen,                on High Performance Computer Architecture (HPCA). IEEE, 2025, pp.
+     and T. Blankevoort, “A white paper on neural network quantization,”                 624–640.
+     arXiv preprint arXiv:2106.08295, 2021.                                         [64] X. Xie, Z. Liang, P. Gu, A. Basak, L. Deng, L. Liang, X. Hu, and
+[45] OpenAI, “Gpt-4 technical report,” 2024. [Online]. Available: https:                 Y. Xie, “Spacea: Sparse matrix vector multiplication on processing-in-
+     //arxiv.org/abs/2303.08774                                                          memory accelerator,” in 2021 IEEE International Symposium on High-
+[46] J. Park, J. Choi, K. Kyung, M. J. Kim, Y. Kwon, N. S. Kim, and J. H.                Performance Computer Architecture (HPCA). IEEE, 2021, pp. 570–
+     Ahn, “Attacc! unleashing the power of pim for batched transformer-                  583.
+     based generative model inference,” in Proceedings of the 29th ACM              [65] J. Zhang, J. Wei, H. Huang, P. Zhang, J. Zhu, and J. Chen, “Sageatten-
+     International Conference on Architectural Support for Programming                   tion: Accurate 8-bit attention for plug-and-play inference acceleration,”
+     Languages and Operating Systems, Volume 2, 2024, pp. 103–119.                       arXiv preprint arXiv:2410.02367, 2024.
+[47] B. D. Rouhani, R. Zhao, A. More, M. Hall, A. Khodamoradi, S. Deng,             [66] J. Zhang, J. Wei, P. Zhang, X. Xu, H. Huang, H. Wang, K. Jiang, J. Zhu,
+     D. Choudhary, M. Cornea, E. Dellinger, K. Denolf et al., “Microscaling              and J. Chen, “Sageattention3: Microscaling fp4 attention for inference
+     data formats for deep learning,” arXiv preprint arXiv:2310.10537, 2023.             and an exploration of 8-bit training,” arXiv preprint arXiv:2505.11594,
+[48] M. Seo, X. T. Nguyen, S. J. Hwang, Y. Kwon, G. Kim, C. Park, I. Kim,                2025.
+     J. Park, J. Kim, W. Shin et al., “Ianus: Integrated accelerator based          [67] M. Zhou, W. Xu, J. Kang, and T. Rosing, “Transpim: A memory-
+     on npu-pim unified memory system,” in Proceedings of the 29th ACM                   based acceleration via software-hardware co-design for transformer,” in
+     International Conference on Architectural Support for Programming                   2022 IEEE International Symposium on High-Performance Computer
+     Languages and Operating Systems, Volume 3, 2024, pp. 545–560.                       Architecture (HPCA). IEEE, 2022, pp. 1071–1085.
+[49] Y. Shin, D. Kang, and H. Sung, “Atim: Autotuning tensor programs for
+     processing-in-dram,” in Proceedings of the 52nd Annual International
+     Symposium on Computer Architecture, 2025, pp. 899–915.
+[50] L. Song, F. Chen, H. Li, and Y. Chen, “Refloat: Low-cost floating-
+     point processing in reram for accelerating iterative linear solvers,” in
+     Proceedings of the International Conference for High Performance
+     Computing, Networking, Storage and Analysis, 2023, pp. 1–15.
+[51] W. Sun, Z. Li, S. Yin, S. Wei, and L. Liu, “Abc-dimm: Alleviating the
+     bottleneck of communication in dimm-based near-memory processing
+     with inter-dimm broadcast,” in 2021 ACM/IEEE 48th Annual Interna-
+     tional Symposium on Computer Architecture (ISCA). IEEE, 2021, pp.
+     237–250.
+[52] V. Thakkar, P. Ramani, C. Cecka, A. Shivam, H. Lu, E. Yan,
+     J. Kosaian, M. Hoemmen, H. Wu, A. Kerr, M. Nicely, D. Merrill,
+     D. Blasig, A. Atluri, F. Qiao, P. Majcher, P. Springer, M. Hohnerbach,
+     J. Wang, and M. Gupta, “Cutlass,” 1 2023. [Online]. Available:
+     https://github.com/NVIDIA/cutlass
+[53] B. Tian, Q. Chen, and M. Gao, “Abndp: Co-optimizing data access and
+     load balance in near-data processing,” in Proceedings of the 28th ACM
+     International Conference on Architectural Support for Programming
+     Languages and Operating Systems, Volume 3, 2023, pp. 3–17.
+[54] B. Tian, Y. Li, L. Jiang, S. Cai, and M. Gao, “Ndpbridge: Enabling cross-
+     bank coordination in near-dram-bank processing architectures,” 2024, to
+
+
+
+
+                                                                                 1399
+

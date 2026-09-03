@@ -1,0 +1,58 @@
+which activations to store requires information about all net-                        3 0 2 -1 0 1 0 0 0    uncompressed
+work layers, hence dynamic CNN frameworks select on a per-                         10110100
+layer basis. Most (Caffe2, Pytorch, and Chainer [22], [23]) use                     Mask
+                                                                                                 3 2 -1 1   compressed
+the following strategy: save the conv input, norm input, and
+ReLU output (r, c and y, resp., Figure 3). These choices are        Fig. 4: An example of Zero Value Compression (ZVC) of 8
+based on knowledge of the computation required to calculate         values
+gradients from each activation. For instance, the conv input (r,
+Figure 3) is required for gradient calculation, and is expensive
+to recalculate from the output, c. This results in frameworks       sparse activations. The authors decreased activation storage by
+discarding c if it is not required by another layer’s gradient.     up to 4× using DPR [13].
+   We focus on applying compression to activations in the              In BFP, fix-point values are used with power-of-two scaling
+conv/norm/ReLU (CNR) block (Figure 3), used in nearly               factors for a group of activations [38]. Courbariaux et. al train
+all modern CNNs. CNR blocks smooth the loss landscape,              networks on 10-bit multiplications using BFP [32].
+allowing the training of a wide variety of deep CNNs [3], [9],         3) Run-length Encoding: ReLU and dropout activations
+[10], [24]–[26]. Previously, networks containing alternating        have 50-90% sparsity [21], lending to zero-based compres-
+conv/ReLU layers only required memoizing the sparse ReLU            sion methods. Run-length encoding [39] has previously been
+activation [21]. The introduction of norm ((3), Figure 3),          investigated for activation compression and found to give poor
+however, adds the requirement that the dense conv output must       results [21]. The method is highly sensitive to sparsity patterns,
+be saved. Due to this, ReLU compression, such as in [21],           as it compresses “runs” of zeros. As well, dense activations
+covers less than 50% of modern network storage. Although            (e.g. conv) cannot be compressed in this manner.
+we focus on the CNR block, the compression methods that we             4) Zero Value Compression (ZVC): Randomly spaced zero
+use are flexible enough for other sparse and dense activations      values are compressed easily using Zero Value Compression
+such as dropout, pooling, and summations.                           [21], a derivative of Frequent Value Compression [40]. In
+                                                                    ZVC, a non-zero mask is created, and the non-zero values
+B. Activation Compression                                           are packed together (Figure 4). The mask limits the maximum
+   To compress activations, we require a method that can sus-       compression ratio to 8× for 8-bit values. A key advantage of
+tain both a high compression rate and throughput to match the       this method is that it works equally well regardless of zero
+GPU memory system. Compression methods can be classified            value distribution. The authors achieve a compression ratio of
+as either lossless or lossy. Lossless compression algorithms        2.6× on ReLU and dropout activations using ZVC.
+allow the original data to be perfectly reconstructed, whereas         5) JPEG: JPEG is a commonly used image compression
+lossy compression permits reconstruction of an approximation        algorithm [41]. JPEG represents high-frequency spatial infor-
+of the original data. By allowing partial reconstruction, lossy     mation in an image with less precision as this is less important
+methods discard irrelevant portions of the data to greatly          to perception. Below we summarize relevant portions of JPEG.
+increase the compression rate. Moving between high compres-         Additional details can be found elsewhere [41]–[43].
+sion error and high compression rate is commonly called the            Figure 5 illustrates the JPEG algorithm. JPEG splits images
+rate-distortion trade-off. We will now detail prior works on        into 8 × 8 blocks of adjacent pixels and quantizes them in the
+activation compression and the JPEG algorithm for images.           frequency domain. Due to space limitations in Figure 5 we
+   1) Binary ReLU Compression (BRC): Binary ReLU Com-               represent these blocks as 3 × 3 matrices. A block of pixels,
+pression was formulated by Jain et al. [13] to compress ReLU        represented with integers ( 1 ), is passed through a Discrete
+activations to 1-bit. The sign bit of the input ReLU activation     Cosine Transform (DCT, 2 ), which converts them to the
+is saved, effectively saving (x > 0) instead of x in Eqn. 3.        frequency space ( 3 ). Next division quantization (DIV, 4 ) is
+BRC can be used on a ReLU activation provided it is not             applied. Here frequency values are quantized after dividing
+immediately followed by a conv layer. Networks involving            them by corresponding entries in the Discrete Quantization
+dropout, which include VGG [27] and Wide ResNet [25], can           Table (DQT, 5 ). As the division output is quantized to 8
+use BRC, but not ResNet [3].                                        bits, a high value in the DQT results in fewer bits kept and
+   2) Precision Reduction: Many studies focused on inference        thus a higher compression. Quantization produces a matrix
+have explored reducing the precision of activations [28]–[31],      with a large number of zeros ( 6 ). These are removed in
+however, few examine training [13], [32]–[37]. To the best of       the next stage, Run-length and Huffman coding (RLE, 7 ).
+our knowledge, most require extensive network modifications         RLE is lossless and removes zeros by storing run-value pairs.
+[33]–[37], with the exception of Dynamic Precision Reduction        Huffman coding converts these using variable width codes ( 8 )
+(DPR) [13] and Block Floating Point (BFP) [32], [38].               to produce the final output ( 9 ).
+   In DPR, 32-bit activations are cast to either 16-bit or 8-bit
+floating-point values after the forward pass to reduce activation               III. T HE JPEG-ACT ACCELERATOR
+storage, however, Jain et al. noted the difficulty in using 8-bit     JPEG was selected for this work as it was designed for
+activations for deeper networks, such as VGG. Jain et al. use       image compression. Convolutions, in essence, are image pro-
+this in addition to Compressed Sparse Row (CSR) storage for         cessing kernels, and it follows that activations resulting from
+

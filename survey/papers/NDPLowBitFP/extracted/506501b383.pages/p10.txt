@@ -1,0 +1,80 @@
+                          TABLE III                                                                         TABLE V
+    Q UANTIZATION M ETHODS , P RECISIONS , AND G ROUP C ONFIGS                                    NDP A RCHITECTURE PARAMETERS
+
+ Quant. Method          W-A Quant.                W-Only Quant.                    DRAM Parameter Value         PU Parameter      Value
+ Precision          W4A4S8, W8A8S16           W4A16S8, W8A16S16                    # GDDR6 Chip        32       FP4 Throughput    51.2 GFLOPs
+                                                                                   # Channel / Chip    2        FP8 Throughput    25.6 GFLOPs
+ Q1–Q6 (GN , GK )   (1,16), (1,32), (16,16), (32,32), (64,64), (128,128)           # Bank / Channel    16       FP16 Throughput   12.8 GFLOPs
+                                                                                   # PU / Channel      16       FP32 Throughput   6.4 GFLOPs
+                        TABLE IV                                                   Data Rate / pin     12 Gbps  Frequency         0.4 GHz
+LLM W ORKLOAD C ONFIGURATIONS (T HE M, K, N DIMENSION NAMING                       Total External BW.  1.5 TB/s SRAM Buffer Size  20×32 Bytes
+         FOLLOWS THE SAME CONVENTION AS IN F IG . 1)                               Total Capacity      32 GB    Total PU Num.     1024
+                                                                                   Timing Parameters (from DRAMSim3 [38]): tCK = 0.66ns,
+LLaMA 7B  M      K    N LLaMA 13B   M      K    N
+                                                                                   tRCD = 24, tRP = 24, tCCDL = 4, BL = 16, tCL = 24
+MVM/MM1 1/4096 4096 4096 MVM/MM1 1/4096 5120 5120
+MVM/MM2 1/4096 4096 11008 MVM/MM2 1/4096 5120 13824
+MVM/MM3 1/4096 11008 4096 MVM/MM3 1/4096 13824 5120                                  2) Quantization Configs: We evaluate a diverse set
+LLaMA 34B M      K    N LLaMA 34B   M      K    N                                 of QConfigs, including QGroups ranging from (1,16) to
+MVM/MM1 1/4096 6656 6656 MVM/MM3 1/4096 6656 832                                  (128,128) (denoted as Q1 ∼ Q6), different quantization types
+MVM/MM2 1/4096 6656 20480 MVM/MM4 1/4096 20480 6656                               including weight-activation (W-A) and weight-only (W-Only),
+                                                                                  and various precision pairs for quantized values and scaling
+applicable to all design points with little additional latency,
+                                                                                  factors (e.g., W4S8, W8S16). These configurations cover
+and we also report results under slower FP32 configurations.
+                                                                                  several trending low-bit FP formats such as DeepSeek-FP8,
+   Adder tree optimization. Using full FP32 adders for all
+                                                                                  MXFP4, and NVFP4, and also allow us to assess the potential
+levels of the reduction tree is unnecessary. We observe that: (1)
+                                                                                  of alternative FP formats for NDP architectures.
+The first-level adders are only activated during FP4 operations.
+                                                                                     3) NDP Architecture Setup: The NDP architecture used for
+(2) The second-level adders are only activated for FP4 and FP8
+                                                                                  evaluation is modified from Hynix AiM [33], as described in
+operations. Thus, we reduce the precision of the early adder
+                                                                                  Sec. III-A. Detailed parameters of the NDP architecture and
+stages to match the required dynamic range. Specifically, first-
+                                                                                  the multi-precision PU are listed in Tab. V. The detailed timing
+level adders use FP8 precision, and second-level adders use
+                                                                                  and power parameters used for GDDR6 are also derived from
+BF16 precision, both of which can fully preserve the accuracy
+                                                                                  DRAMSim3. We also evaluate the sensitivity of FlexQ-NDP
+of FP4 and FP8 products. Higher levels of the tree use FP32
+                                                                                  by switching to different total buffer capacities and PU imple-
+adders to maintain overall accumulation accuracy.
+                                                                                  mentations (in particular, variations in FP32 throughput).
+B. Online Activation Quantization Implementation                                     4) Performance & Energy Simulation: We simulate NDP
+   When using weight-activation quantization, any intermedi-                      performance using modified UniNDP [63], as described in
+ate result that serves as the input to a low-bit operator must                    Sec. III-C. The energy consumption is calculated from the
+be quantized at runtime. To support this, whenever the output                     trace collected from simulation and power parameters, follow-
+buffer becomes full, we transfer the intermediate results back                    ing the equations in DRAMSim3 [38].
+to the host (same as original GDDR6-AiM dataflow).                                   5) Baseline Compilation Strategy: The baseline compila-
+   During computation, the host incrementally aggregates these                    tion strategy for low-bit FP GEMM is as follows: (a) For
+intermediate values and tracks the maximum magnitude of                           partition, the operator is divided along its output-channel
+each QGroup of next operator, which is then used to derive the                    across different PUs, which follows the partition strategy used
+scales. When preparing the input for the next operator, the host                  in AiM [33]; (b) Data mapping and dataflow are described
+distributes the unquantized intermediate results together with                    in Sec. III-B; (c) Buffer allocation is determined by matching
+their corresponding scales to all DRAM banks. PUs can then                        the ratio of scale-buffer capacity to data-buffer capacity with
+exploit the high internal memory bandwidth to perform the                         the ratio of scales to values; (d) Loop tile size is chosen to
+actual value quantization efficiently. The overhead of runtime                    match the size of scale and data buffer, and loop order is set
+quantization is also considered in the experiment for end-to-                     to Order1, and the input will be stored to value buffer during
+end LLM inference in Fig. 10.                                                     computation. For un-quantized (FP16) GEMM in Sec. X-C, we
+                                                                                  reuse the partition and data mapping strategy from the baseline
+C. Experiment Setup                                                               compilation strategy designed for low-bit FP GEMM.
+   1) Workloads: We use MVM and MM operators extracted
+                                                                                                   X. E XPERIMENT R ESULTS
+from LLMs (LLaMA2-7B/13B/34B [56]) for evaluation, as
+shown in Tab. IV. For end-to-end evaluation, we consider                          A. GEMM Operator
+attention computation and nonlinear operators in the original                        1) Speedups: We first evaluate quantized MVM and MM
+precision. In the prefill stage, the input length is set to the                   operators, as shown in Fig. 8. For each quantization config-
+maximum sequence length of LLaMA-2 (i.e., 4096). In the                           uration, we apply the full FlexQ-NDP optimization pipeline,
+decoding stage, we perform token-level analysis, with the                         including scale-value interleaved data layout, dequant-hiding
+attention latency measured at the 32nd generated token. We                        technique, and the DSE-based strategy search. We estimate
+further construct batched (B1-B64) version of these MVM to                        the theoretical performance upper bound by assuming that the
+evaluate batched LLM decoding.                                                    PU is fully utilized without idle cycles. This corresponds to
+
+
+
+
+                                                                           1392
+

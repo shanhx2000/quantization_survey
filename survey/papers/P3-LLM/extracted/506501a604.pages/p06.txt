@@ -1,0 +1,72 @@
+TABLE II. Wikitext-2 and C4 perplexity (↓) using different 8-bit              TABLE III. Wikitext-2 and C4 perplexity (↓) of different weight-
+numerical formats to quantize attention-scores. KV-cache is quantized         activation quantization methods. For activations, we compare INT8-
+to INT4-Asym following Section IV-A. The context length is 4K.                based SmoothQuant (SQ) and direct FP8-E4M3 quantization. For
+   Model   Llama-2-7B Llama-2-13B Llama-3.1-8B Llama-3.2-3B                   weights, we examine 4-bit BitMoD. The context length is 4K.
+  Dataset  Wiki C4     Wiki C4     Wiki C4      Wiki C4                            Precision          2-7B       2-13B       3.1-8B       3.2-3B
+   FP16    5.15 6.67 4.60 6.08     5.95 8.59    7.41 10.18                     Weight Activation   Wiki C4     Wiki C4     Wiki C4     Wiki C4
+   INT8    5.19 6.71 4.65 6.12     6.06 8.71    7.55 10.31                      16         16      5.12 6.63   4.57 6.05   5.84 8.43   7.28 10.01
+ FP8-E4M3  5.16 6.68 4.61 6.09     5.99 8.64    7.44 10.21                      16     INT8-SQ     5.15 6.67   4.61 6.09   5.92 8.54   7.34 10.08
+FP8-S0E4M4 5.15 6.67 4.60 6.08     5.95 8.59    7.42 10.18                      16    FP8-E4M3     5.12 6.63   4.58 6.05   5.85 8.46   7.31 10.03
+                                                                                 4     INT8-SQ     5.37 6.95   4.76 6.27   6.36 9.12   7.87 10.73
+                                                                                 4    FP8-E4M3     5.24 6.78   4.66 6.15   6.16 8.90   7.64 10.48
+hundreds, this memory overhead is < 1% and negligible.
+Second, the calculation of smoothing factors only involves the
+prefilling context and has no impact on the decoding stage. Our                  To address this, we propose an unsigned 8-bit floating-
+profiling on an A6000 GPU running Llama-3.1-8B reveals that                   point format, FP8-S0E4M4, that contains a 4-bit mantissa
+this calculation takes < 5 millisecond in total across all layers,            and a 4-bit exponent with an exponent bias of −15. There
+even under a context length of 32K. When considering a very                   are two insights that drive our design choice. First, because
+stringent service-level objective in chatbot applications, with               the attention-scores are produced after softmax, its numerical
+a 250-millisecond requirement on the time-to-first-token [97],                range always lies between 0 and 1, eliminating the need for
+the runtime overhead of dynamic smoothing is still < 2%.                      a sign bit in its encoding. Second, recall FP16 has a 5-bit
+   While per-channel smoothing has been explored by prior                     exponent with a bias of −15, which provides an exponent
+quantization works, our proposed strategy has two notable                     range of [−14, 15]. However, since attention-scores are always
+differences. First, prior methods often rely on a calibration                 less than 1, there is no need to use positive exponent values,
+dataset to determine the outlier threshold [42] or smoothing                  leading to an effective exponent range of [−14, −1] with 14
+factor [53], [88] offline, which can lead to overfitting. In                  distinct values. Thus, a 4-bit exponent is sufficient to represent
+contrast, our method does not require any calibration dataset.                the attention-score range, leaving 4 bits to store mantissa with
+Second, unlike prior works that focus exclusively on either                   better numerical fidelity. Table II reflects that FP8-S0E4M4
+pre-RoPE [28] or post-RoPE [53] key-cache quantization, we                    outperforms both INT8 and FP8-E4M3 for attention-score
+investigate both approaches by carefully analyzing the impact                 quantization, and achieves near-lossless model performance.
+of RoPE on the resulting key cache distribution of different
+models. Section V-B discuss the impact of pre-RoPE and post-                  C. Weight Quantization
+RoPE quantization on the co-designed dataflow of P3 -LLM.                        For weight quantization, we build upon an existing nu-
+Quantization Format. Due to the dynamic nature of KV-                         merical format, BitMoD [6], which adaptively remaps the
+cache, we employ 4-bit asymmetric integer (INT4-Asym)                         redundant negative zero encoding of FP4 to some pre-defined
+quantization, which offers superior computational efficiency.                 special values. On top of the basic FP4 quantization val-
+Furthermore, since the value cache shows no outlier pattern                   ues {± 0, ± 0.5, ± 1, ± 1.5, ±2, ±3, ±4, ±6}, BitMoD in-
+and the key cache has been greatly smoothed, their uniform                    troduces four additional special values {± 5, ± 8}, where one
+distributions are well-suited to the integer format.                          of them can be selected to replace the negative zero. By search-
+                                                                              ing for the optimal special value for each group of weights, it
+B. Attention-Score Quantization                                               reduces the quantization error compared to asymmetric integer
+                                                                              quantization with minimal hardware overhead. Notably, since
+   In order to fully exploit the hardware efficiency of KV-cache
+                                                                              weights and KV-cache are mapped to the same operand on
+quantization, it is essential to quantize additional operands,
+                                                                              the MAC hardware, a decoder is required to accommodate the
+e.g., attention-scores, within the self-attention module. Al-
+                                                                              numerical formats of both weights and KV-cache (i.e., BitMoD
+though attention-scores have little impact on the overall mem-
+                                                                              and INT4-Asym), which we discuss in Section V-A.
+ory footprint (see Section III-A), they play a critical role in the
+computation flow. Consider a low-precision PCU supporting 8-
+                                                                              D. Activation Quantization
+bit multiplication, if attention-scores remain in FP16, the PCU
+cannot be fully utilized to accelerate self-attention. Instead, the              Similar to the key cache, activations are also known to
+quantized value cache must be transferred to NPU and rely                     exhibit outlier channels [12], which makes standard integer
+on the FP16 compute units to perform multiplication with                      quantization error-prone. To reduce the quantization error of
+attention-scores, thus diminishing the bandwidth advantages                   integer activations, prior works mainly leverage two techniques
+of PIM for LLM decoding. A straightforward solution is to                     to suppress outliers. The first is Hadamard transformation,
+quantize attention-scores with INT8 [95], but this introduces                 which applies a Hadamard rotation matrix to activations
+two drawbacks. First, INT8 attention-scores cause noticeable                  before performing quantization [2], [59]. However, the on-
+perplexity degradation as shown in Table II. Second, as we will               line Hadamard transformation can bring considerable runtime
+demonstrate in Section IV-D, INT8 can lead to significant ac-                 overhead [8]. The second is smoothing, which migrates the
+curacy loss for activation quantization. Since attention-scores               quantization difficulty of outlier activation channels to the cor-
+behave the same as activations during the MAC operation on                    responding weight channels [88]. Unfortunately, the migration
+hardware, it is desirable to identify a good numerical format                 of quantization difficulty can significantly increase the error of
+that balances quantization accuracy and hardware complexity.                  low-precision weights.
+
+
+
+
+                                                                        609
+

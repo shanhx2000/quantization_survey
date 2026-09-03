@@ -1,0 +1,102 @@
+                                                                              Step 1 Step 2 Step 3 Step 4
+
+Algorithm 1 Efficient MXFFP4 Runtime Conversion                               TG                                                               Block 0      Block 1
+
+
+
+
+                                                                                                                Step 4 Step 3 Step 2 Step 1
+                                                                              0,2                                                                                           TG 0       TG 2       TG 0       TG 2
+                                                                                                                                              TG 0,1,4,5   TG 2,3,6,7
+                                                                             Blk 0 Blk 2 Blk 4 Blk 6
+Require: Block (or sub-block) x = {x1 , . . . , xN }                          TG
+
+
+                                                                                       A                                                              B                            C                     D
+                                                                              4,6                                                              Block 2      Block 3         TG 4       TG 6       TG 4       TG 6
+
+Ensure: Shared exponent Ebshared , config cfg, quantized values x̂            TG
+                                                                                                            ×                                                           ┼                     〓
+                                                                              1,3                                                              Block 4      Block 5         TG 1       TG 3       TG 1       TG 3
+                                                                             Blk 1 Blk 3 Blk 4 Blk 7
+ 1: Get exponents: Ei ← exponent(xi )                                         TG
+                                                                                                                                               Block 6      Block 7         TG 5       TG 7       TG 5       TG 7
+                                                                              5,7
+ 2: EbMAX ← maxi Ei
+ 3: Compute relative exponents: Eir ← Ei − EbMAX
+                                                                             Fig. 11: MXFFP data flow and threadgroup mapping. Each
+ 4: countE1 ← |{Eir = 0}|
+ 5: countE2 ← |{Eir ∈ {−2, −3}}|                                             block within a block set is assigned to specific threadgroups
+ 6: if count2E1 > countE2 then                                               (TGs) and steps, enabling step-wise execution while maintain-
+                        MAX
+ 7:    cfg ← E1M2, Eelement     ←1                                           ing configuration and shared exponent information.
+ 8: else
+                        MAX
+ 9:    cfg ← E2M1, Eelement     ←2                                           for each block. In this section, we describe the hardware design
+10: end if                                                                   based on these considerations and describe its key components
+                                shared
+11: Unified shared exponent: Eb        ← EbMAX − Eelement
+                                                      MAX
+                                                                             and dataflow in detail.
+12: Quantize each element:
+                                            shared                           A. Overview
+                        x̂i ← quant(xi /2Eb          )
+                                                                                Modern GPU Tensor Cores, widely used for ML accelera-
+13: return (Ebshared , cfg, x̂)
+                                                                             tion, now support multiple low-precision floating-point formats
+                                                                             such as FP4, FP6, FP8, and MXFP formats [22], [46]. MXFP
+                                                                             formats apply block-wise shared scaling, meaning that Tensor
+                        (                                                    Cores already provide hardware primitives for shared-exponent
+                            E1Mx,   count2E1 > countE2 ,
+             Config =                                           (5)          operation and format-specific low-bit conversions [2], [54].
+                            E2Mx,   otherwise.                               Building on these capabilities, we design the MXFFP Tensor
+   After selecting the configuration, MXFFP computes the                     Core as an extension of the conventional Tensor Core pipeline,
+shared exponent in the same manner as MXFP. However, large                   enabling flexible configurations without disrupting existing
+blocks, which are internally divided into multiple sub-blocks,               compute or data paths.
+require an additional consideration. When a block is split into                 Fig. 12(a) shows an overview of MXFFP Tensor Core.
+sub-blocks, each sub-block may select a different configuration              MXFFP blocks are fetched into the matrix buffer and retained
+(E1Mx or E2Mx). Because these configurations use different                   in their configured format until entering the dot-product unit.
+   MAX
+Eelement   values (1 for E1Mx and 2 for E2Mx), they naturally                Inside the dot-product unit, a lightweight mapper interprets
+require different shared exponents.                                          the configuration bits and aligns the incoming elements to the
+   To avoid storing multiple shared exponents, we adopt a uni-               low-precision arithmetic units. After multiplication and accu-
+fied approach. We first compute and store the shared exponent                mulation, the results are rescaled using each block’s shared
+assuming the E2Mx configuration. When the shared exponent                    exponent and accumulated into high-precision block out-
+is used, sub-blocks configured as E2Mx simply use this stored                puts. Finally, the MXFFP converter reconstructs new MXFFP
+value directly, while sub-blocks configured as E1Mx subtract                 blocks by determining the shared exponent, following the MX
+one from it to obtain their correct shared exponent. This simple             methodology, and selecting the most suitable configuration for
+approach allows all sub-blocks to reuse the same hardware                    each block or sub-block.
+path for exponent computation with negligible overhead, while                   Through this design, the MXFFP Tensor Core enables
+still respecting the correct bias of each configuration.                     accurate computation across multiple low-bit configurations,
+   Algorithm 1 summarizes the complete MXFFP runtime con-                    while preserving the memory-bandwidth benefits of uniformly
+version procedure, requiring only a few additional operations                low-bit operands. Note that the MXFFP Tensor Core natively
+beyond MXFP and incurring minimal hardware overhead.                         supports both block-level and sub-block-level execution. In the
+Despite its simplicity, the proposed conversion method closely               following description, we first present the design for block-
+matches oracle behavior with negligible overhead, as validated               level processing and then detail the additional mechanisms
+in Fig. 20.                                                                  required for sub-block support.
+                                                                             B. Data Flow
+                   V. MXFFP T ENSOR C ORE
+                                                                                Tensor Cores execute matrix multiply and accumulate
+   To fully exploit the benefits of MXFFP in hardware,
+                                                                             (MMA) operations by dividing a 16×16 output tile into eight
+several design considerations must be addressed. Since the
+                                                                             4×8 submatrices [29], [51], [55]. Each submatrix is computed
+MXFFP format employs multiple bit configurations (E1Mx
+                                                                             iteratively by a dedicated threadgroup (TG) consisting of four
+and E2Mx), the compute pipeline must inspect the config-
+                                                                             dot-product units as shown in Fig. 12(a). The computation
+uration of each block, properly align operand bits, and route
+                                                                             proceeds over four steps, where each step accumulates partial
+them to compatible low-bit execution lanes. Furthermore, after
+                                                                             sums to form the final output matrix as shown in Fig. 11.
+computation, the output values must be reorganized into blocks
+                                                                                Fig. 11 highlights the data flow of Step 1. Each threadgroup
+and converted back into the MXFFP representation by deriving
+                                                                             fetches its assigned tile from the operand buses into its matrix
+a shared exponent and selecting the appropriate configuration
+
+
+
+
+                                                                      2511
+

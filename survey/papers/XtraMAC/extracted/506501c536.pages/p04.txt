@@ -1,0 +1,71 @@
+utilization drops to 8.9% when supporting BF16-based MAC,                  leading-one bit (i.e., mx ∈ [1, 2) for normalized values). The
+which significantly reduces the hardware effectiveness.                    product of two such values x and y naturally decomposes as
+   These pronounced inefficiencies in DSP utilization un-                           x · y = (sx ⊕ sy ) · 2 ex +ey −bias · (mx · my ),   (1)
+derscore a fundamental microarchitectural problem, one that
+becomes increasingly problematic as mixed-precision floating-              when adopting the MAC constructed with FPGA DSP slice,
+point computation and runtime datatype switching grow preva-               the DSP computes only the mantissa product mx my , while
+lent in state-of-the-art LLM inference workloads.                          sign and exponent are processed separately [1], [4]. After mul-
+                                                                           tiplication, the product mantissa is normalized by a leading-
+C. Our Observations                                                        zero count (LZC):
+   The above quantitative results point to a common root cause:                   ∆ = LZC(mx my ),         mnorm = (mx my ) ≪ ∆,        (2)
+a mismatch between the bit-level processing patterns of low-                                  out
+                                                                                           e = ex + ey − bias − ∆.               (3)
+precision MAC operations and the fixed resource granularity
+                                                                             For mixed-precision INT×FP computation, the integer
+of FPGA DSP slices. Existing designs either upcast low-
+                                                                           operand a is interpreted as a two’s complement value and
+bit operands to a wide format or serialize high-precision
+                                                                           decomposed into sign and magnitude:
+operations over a narrow low-precision core. In both cases, the
+DSP multiplier is used as an opaque, single-lane primitive,                                          a = sa · ma ,
+rather than as a bit-space that can be systematically partitioned          where ma is treated as an integer mantissa after sign extrac-
+and shared across datatypes. Furthermore, both approaches                  tion. Since an integer carries no exponent encoding, we assign
+treat datatype switching as a coarse control problem over                  it a logical unbiased exponent of zero, which corresponds to
+whole datapaths, instead of a fine-grained organization of                 a biased exponent value equal to the bias of the floating-point
+workload allocation within the DSP bit-space.                              output format (e.g., 127 for FP32 and BF16, or 15 for FP16).
+   These observations suggest that substantial further gains are           The floating-point operand y is represented same as the x, with
+unlikely to be achieved by incremental datapath tweaks alone.              my including the leading-one bit. Their product becomes
+Instead, we rethink mixed-precision MAC support from a
+                                                                                     a · y = (sa ⊕ sy ) · 2 ey −bias · (ma · my ),      (4)
+processing-pattern perspective: how low- and mixed-precision
+INT/FP multiplications decompose into bit-level operations                 so that the DSP multiplier again computes only the mantissa
+that can be allocated to the DSP multiplier based on its                   product ma my . The exponent path forwards ey , subtracts the
+given processing characteristics, and how the DSP utilization              format bias, and applies the normalization shift:
+could be improved with proper parallelism supported by the                        ∆ = LZC(ma my ),         mnorm = (ma my ) ≪ ∆,        (5)
+microarchitecture of the MAC. The next section develops this
+processing-pattern formulation, which forms the theoretical                                     eout = ey − bias − ∆.                 (6)
+basis for the XtraMAC architecture and its ability to achieve                 Eqs. (1) and (4) show that both FP×FP and INT×FP multi-
+high DSP utilization and fine-grained runtime datatype switch.             plication share the same core operation: the DSP computes an
+                                                                           integer mantissa product, while sign and exponent are handled
+         III. P ROCESSING PATTERN F ORMULATION                             outside the DSP. This indicates that a common multiplication
+                                                                           datapath can be shared across different datatypes. The only
+   To fully exploit the sharing and performance potential of
+                                                                           differences arise in how operands are mapped into (s, m, e)
+mixed-precision MAC architectures, we first analyze how low-
+                                                                           fields and how the exponent is updated after normalization.
+and mixed-precision MAC operations map onto the native
+                                                                           Hence, across all integer, floating-point, and mixed-precision
+multipliers and accumulators of DSP slices in FPGAs. Unlike
+                                                                           formats, multiplication can be described as follows:
+conventional fixed-precision designs, these MAC operations
+introduce heterogeneous operand widths that misalign with                  1) Mapping: extract or construct sign, mantissa, and exponent
+DSP bit-granularity, giving rise to distinct sub-DSP packing                   for each input operand of the DSP slice.
+and lane parallelism patterns. Hence, a resource-compact MAC               2) DSP multiplication: compute product mprod = mA · mB .
+architecture must be grounded in a systematic characterization             3) Post-compute: apply LZC-based normalization and update
+of these bit-level processing patterns. We begin with normal-                  the exponent according to the operand formats.
+ized, non-exceptional values to establish the core formulation,               This formulation shows that datatype-specific behavior is
+and extend the analysis in a later subsection to cover special             confined to lightweight mapping and post-compute logic,
+values and rounding. Under these conventions, XtraMAC                      while the DSP slice consistently performs the same integer
+produces bit-exact results matching NVIDIA A100/H100 Ten-                  multiplication. Consequently, a single multiplier datapath can
+sor Cores [27], [28] and the official AMD Floating-Point                   support FP×FP, INT×FP, and pure integer multiplication with
+Operator [1] across all supported datatypes.                               minimal additional hardware.
+                                                                           B. Datatype-specific Accumulation
+A. Shared Multiplication Datapath across Different Datatypes                  Unlike the multiplication stage, which naturally shares a
+   For a floating-point operand x = sx · 2ex · mx in IEEE                  unified integer–mantissa structure across all data types, ad-
+format, we assume that the mantissa mx includes the implicit               dition behaves fundamentally differently due to incompatible
+
+
+
+
+                                                                    2539
+

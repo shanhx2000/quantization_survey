@@ -1,0 +1,128 @@
+            Hash Table Entry ADDR0 TAG0 … ADDR7 TAG7                                                                         16000
+                                                                                                                             14000
+
+
+
+
+                                                                                   LZ length code distribution weighted by
+                    8 addrs                     64 FIFO ADDR/TAG                                                             12000
+         8 x HASH
+                                HASH TABLE      pairs
+                    11b each                                                                                                 10000
+                               2048 x 144b in
+        FUNCTIONS                                                                                                             8000
+                               16 SRAM banks
+
+
+
+
+                                                                                                length (byte)
+                                                       FILTER
+                                                                                                                              6000
+               8 x K-byte                              64 to 2
+               search                 FIFO ADDR                                                                               4000
+               tokens                                                                                                         2000
+                                                    2 x 16B strings,
+                                                    probable INPUT                                                               0
+          INPUT                HISTORY FIFO
+
+
+
+
+                                                                                                                                      10
+                                                                                                                                      11
+                                                                                                                                      13
+                                                                                                                                      15
+                                                                                                                                      17
+                                                                                                                                      19
+                                                                                                                                      23
+                                                                                                                                      27
+                                                                                                                                      31
+                                                                                                                                      35
+                                                                                                                                      43
+                                                                                                                                      51
+                                                                                                                                      59
+                                                                                                                                      67
+                                                                                                                                      83
+                                                                                                                                      99
+                                                                                                                                       3
+                                                                                                                                       4
+                                                                                                                                       5
+                                                                                                                                       6
+                                                                                                                                       7
+                                                                                                                                       8
+                                                                                                                                       9
+
+
+
+
+                                                                                                                                     115
+                                                                                                                                     131
+                                                                                                                                     163
+                                                                                                                                     195
+                                                                                                                                     227
+                                                                                                                                     258
+                                                    matches, sent to
+          8B/clk                SRAM 32KB                                                                                            LZ length code (byte). File: alice29.txt
+                                                    the LZ encoder
+                                                                                                                                                   '/W         NXU
+Fig. 7. Far history pseudo-CAM uses a hash table to search the recent 32KB
+input. Data tags eliminate false positives.                                      Fig. 8. LZ length code distribution weighted by length. Area under the curves
+                                                                                 are proportional to the source data compressed by two LZ77 implementations
+
+replaced in FIFO order. In effect, the hash table is an 8-way
+                                                                                 Section IV-D.
+set-associative cache directory with FIFO replacement policy
+and with 8 R/W ports. The 8 virtual ports are implemented                        D. Discussion on Design Trade-offs and a Comparison
+with 16 banks of 1-port SRAMs in POWER9 and 2-port
+                                                                                    Originally, the hashing logic was designed for K = 3-byte
+SRAMs in z15. Bank conﬂicts are resolved either by stalling
+                                                                                 tokens since 3-byte is the minimum string length in Deﬂate.
+the compressor pipeline or by dropping R/W requests to be
+                                                                                 A short token may identify many matches, 3-bytes and longer.
+discussed in Section IV-D.
+                                                                                 But only 8 positions are available in a hash table entry. For
+   Eight tokens of the input word hash to 8 different hash table                 example, consider the phrase the which is contained in many
+entries returning 64 addresses in total. However, the History-                   longer strings, the , then , there , therefore whose ﬁrst 3-
+FIFO SRAM has only 2-read ports and therefore 2 addresses                        bytes all hash to the same entry when K = 3. Items are
+out of the 64 History-FIFO addresses must be selected. The                       aged and lost faster in such hot table entries due to FIFO-
+FILTER in Fig.7 uses probabilistic data tags and address cross-                  replacement. On the other hand, with a long search token size,
+comparisons to identify two candidates, one of which may                         e.g. K = 8, hot entries are fewer and items age slower but
+potentially yield the longest match.                                             they cannot ﬁnd shorter (< K byte) substrings of the token.
+   Non-equal tokens may hash to the same table entry. False                         We experimentally determined that K = 5 performs the
+positives are reduced with yet another hash of the search token,                 best on average for a range of benchmarks. Outliers exist such
+a 6-bit digest called ”tag”, stored in the hash table (Fig.7). Tags              as the internal CUST2 benchmark dataset shown in Fig.9 for
+are saved in SRAM since they are smaller than tokens (6-bits                     which K = 8 yields 10% higher compression than the default;
+vs. K-bytes). The FILTER dismisses a large fraction of non-                      it indicates that the Far-history range contains many 8-byte or
+equal tokens simply by comparing the input tags to the stored                    longer matches, which K = 8 is better at identifying. Note
+tags. False positive probability is 1/26 which may degrade                       that the near-history logic is not affected by the token size and
+compression ratio, a trade-off made in exchange for saving                       it still identiﬁes as short as 3-byte matches.
+area. Note that false positives are not a correctness issue since                   The hash table is constructed using 16 banks of 1-read and
+any data read from the History-FIFO and the source input                         1-write port SRAM on the POWER9 chip. With 8 requests per
+are eventually compared to verify a match. The FILTER uses                       cycle, bank conﬂicts occur 87% of the time on average, stalling
+additional heuristics for identifying long matches not detailed                  the pipeline to resolve the conﬂict with an average access
+in this paper. The ﬁnal two addresses out of the FILTER are                      latency of 2.1 cycles (1.0 ideal). A ﬁrmware conﬁguration
+used to read two data chunks from the History-FIFO. The                          option is available to drop conﬂicted access requests: higher
+two chunks are then fed to the LZ77 Encoder (Fig.4) which                        throughput may be achieved at the expense of increased hash
+selects from multiple matches reported by the near and far                       table misses and therefore reduced compression ratio. The z15
+history CAMs.                                                                    processor in comparison to POWER9, adopted 2-port SRAMs
+   An example hybrid encoder result is shown in Fig.8. The                       to reduce bank conﬂicts resulting in an average 1.12 cycle
+benchmark ﬁle is compressed with the gzip tool and NXU. The                      access latency, however at the expense of larger SRAMs.
+LZ length distribution weighted by the length itself (minus an                   Performance beneﬁts of this change will be discussed later
+estimate of 2 bytes per pointer overhead) are plotted. Area                      on Fig.13 in Section VIII-C.
+under the two curves represent the source bytes compressed                          The NXU hash table organization is quite efﬁcient in terms
+and eliminated by the two methods. We observe that NXU                           of SRAM bits. Total capacity used for the sliding window is
+does not encode as many desirable long matches (> 8 byte)                        32KB for History-FIFO plus 36KB for the hash table. Since
+as the gzip tool, evidenced by the NXU curves generally                          the z15 hash table uses 2-port SRAMs; its area is larger in z15
+lower than gzip in that x-axis region. NXU encodes more 3-                       than POWER9. Prior art, mostly FPGA based, often replicate
+8 byte matches than gzip. NXU ﬁnds fewer 4-byte matches                          logic to meet throughput and compression ratio objectives
+than gzip because 5-byte tokens cannot identify 4-byte strings                   which is not suitable for an on-chip design. In [4], four
+as they will hash to different entries to be discussed next, in                  separate compression engines work in parallel on four different
+
+
+
+
+                                                                             5
+
+       Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:40 UTC from IEEE Xplore. Restrictions apply.
+

@@ -1,0 +1,78 @@
+                     Exponent            Mantissa             Compensation                                   Exponent bit         Mantissa bit    Bias bit          Padding bit
+
+          11(E4M3)     6 (E4M3)                                6 (E1M2)      6 (E1M2)                        Fine-grained Compensation bit       Coarse-grained Compensation bit
+ FPMA     1 1 0 0 1 1 1           (60)              FPMA        1 1 0 0            (32)                 W4×A4 (E1M2)                              W8×A8 (E4M3)
+                          +                                            +
++ CG-Comp             1                         + CG-Comp          0         (Not useful)                                                               carry
+                                                                                                                                                         bit
+          1 1 0 1 0 0 0           (64) ≈                        1 1 0 0            (32)                      +                                      +           +
++ FG-Comp                         0 1           + FG-Comp                         0 1                        +                                      +           +
+                                                                                                                                                        carry
+          1 1 0 1 0 0 0 0 1       (66)                          1 1 0 0 0 1        (36)                                                                  bit
+
+
+FP Mult   1 1 0 1 0 0 0 0 1       (66)              FP Mult     1 1 0 0 0 1         (36)           (a) A W4A4 S-FPMA.                (b) Two Fused S-FPMA for W8A8.
+                                                                                                                                             W16×A16 (E5M10)
+(a) Both coarse- and fine-grained (b) Only fine-grained compen-
+compensation are useful for E4M3.   sation is useful for E1M2.
+                                                                                                         +       +     +      +
+Fig. 5: While coarse-grained compensation [6] fails in low                                               +       +     +      +
+bit-width FPMA, fine-grained compensation can improve ac-
+curacy for both low and higher bit-width situations.
+                                                                                                                 (c) Four Fused S-FPMA for W16A16.
+temporary E3M2 expansion is a precision-preserving internal                                            Fig. 6: Illustration of the fusible S-FPMA arithmetic.
+re-encoding confined to the compute datapath, thereby retain-
+ing the system-level benefits of low-bit storage while enabling                                    therefore precompute, offline, the residual between the exact
+stable, subnormal-free arithmetic. Although this conversion                                        product and the FPMA result in an extended-precision domain.
+will slightly expand the bit-width of the calculation datapaths,                                   We then encode the fine-grained portion of this residual as
+the resource overhead remains minimal for FPMA due to its                                          a short bit-pattern and store it in a tiny LUT indexed by
+addition nature.                                                                                   (MA , MW ). At runtime, FPMA produces its approximate re-
+                                                                                                   sult within the original mantissa width, and the corresponding
+B. Dual-Path Error Compensation for FPMA                                                           FG compensation bits Cf g (MA , MW ) are concatenated to the
+                                                                                                   LSB side of this result, effectively extending the mantissa. It is
+   After subnormal normalization, all FPMA operands are
+                                                                                                   noteworthy that the two error compensation methods together
+represented as normal floating-point numbers. The remaining
+                                                                                                   enable FPMA to achieve exact results under the FP4 format.
+inaccuracy then comes purely from FPMA’s approximate
+                                                                                                      This mechanism is illustrated in Figure 5: for FP8 (E4M3),
+realization of multiplication in the logarithmic domain. This
+                                                                                                   FPMA produces 60. CG-Comp adjusts the high-order bits to
+approximation distorts the exact product across mantissa bits.
+                                                                                                   64, and FG-Comp concatenates the missing fine bits (“01”),
+   1) Limitation of Coarse-grained Compensation: To achieve
+                                                                                                   recovering the exact result 66, while for FP4 (E1M2), CG-
+hardware-efficient error compensation, existing FPMA designs
+                                                                                                   Comp cannot change the result (still 32), but once FG-Comp
+(e.g., April [6]) introduce a coarse-grained (CG) compensation
+                                                                                                   appends the fine bits (“01”), the result becomes 36, exactly
+term where a down-sampled or error of nearby mantissa
+                                                                                                   matching full-precision multiplication.
+combinations is injected into the mantissa field of the FPMA
+result. This works reasonably well at higher precision. Fig-                                       C. Composable and Scalable FPMA Arithmetic (S-FPMA)
+ure 5a illustrates an example with FP8 (E4M3) operands.                                               To support multiple quantization formats within one archi-
+FPMA underestimates the exact product (66) and produces                                            tecture, the arithmetic unit must scale its bit-width without
+60. Adding a 1-bit coarse compensation shifts the result to                                        duplicating full datapaths. Existing FPMA designs [50], how-
+64, which already aligns closely with the true product. The                                        ever, are rigidly tied to a single operand width and cannot
+remaining fine-grain error is small because the 3-bit mantissa                                     expand to wider precisions. U NI C ORE addresses this by de-
+still preserves most of the significant information.                                               composing FPMA into a uniform slice (4-bit as the example),
+   However, this method is not effective in ultra-low-bit for-                                     enabling the construction of wider FPMA operators simply
+mats such as FP4 (E1M2). As shown in Figure 5b, FPMA                                               by chaining slices through their carry interfaces. Because
+again underestimates the exact product (36) and yields 32.                                         FPMA fundamentally performs an integer addition on the
+However, the mantissa is now only 2 bits wide. Since CG-                                           concatenated exponent–mantissa field, its datapath naturally
+Comp operates at this coarse 2-bit granularity, it fails to                                        decomposes into fixed-width adders, unlike multipliers whose
+represent the correction, as the error magnitude is too small                                      partial-product structures do not compose linearly.
+to trigger the last bit. In the example, even after CG-Comp,                                          Figure 6a illustrates one such slice operating as a complete
+the result remains 32, and the large error persists.                                               W4×A4 FPMA. Each 4-bit slice independently processes
+   2) Fine-grained Compensation via Bit Concatenation:                                             a local exponent–mantissa segment, subtracts the bias, and
+To overcome this limitation, we introduce fine-grained (FG)                                        incorporates both fine-grained (FG) and coarse-grained (CG)
+compensation, which explicitly reconstructs the missing low-                                       compensation. FG compensation is injected at the LSB side of
+order information by extending the effective mantissa width                                        the slice to restore the missing lower-order bits of the product.
+of the FPMA result. For a given mantissa pair (MA , MW ),                                             Wider precisions are obtained by fusing slices. In W8×A8
+FPMA and exact multiplication are both deterministic. We                                           mode (Figure 6b), the lower slice processes the low 4 bits and
+
+
+
+
+                                                                                            2524
+

@@ -1,0 +1,1481 @@
+                 2020 ACM/IEEE 47th Annual International Symposium on Computer Architecture (ISCA)
+
+
+
+
+          DRQ: Dynamic Region-based Quantization for
+              Deep Neural Network Acceleration
+       Zhuoran Song1 , Bangqi Fu1 , Feiyang Wu1 , Zhaoming Jiang1 , Li Jiang1 , Naifeng Jing1 *, Xiaoyao Liang1,2
+                          1 Shanghai Jiao Tong University, China, 2 Biren Research, China
+
+
+
+     Abstract—Quantization is an effective technique for Deep Neu-                                         6HQVLWLYH5HJLRQV     +LJK3UHFLVLRQ0RGHO
+  ral Network (DNN) inference acceleration. However, conventional
+  quantization techniques are either applied at network or layer                       ,QSXW)HDWXUH0DS
+  level that may fail to exploit ﬁne-grained quantization for further
+
+
+
+
+                                                                                                                                                                    DRQ
+  speedup, or only applied on kernel weights without paying                                                ,QVHQVLWLYH5HJLRQV   /RZ3UHFLVLRQ0RGHO
+  attention to the feature map dynamics that may lead to lower
+  NN accuracy. In this paper, we propose a dynamic region-based
+  quantization, namely DRQ, which can change the precision of
+  a DNN model dynamically based on the sensitive regions in the
+
+
+
+
+                                                                                                                                                                    OLAccel
+  feature map to achieve greater acceleration while reserving better                   ,QSXW)HDWXUH0DS       4XDQWL]HG0RGHO
+
+
+
+
+                                                                                                                                 5HODWLYHVFDOH
+  NN accuracy. We propose an algorithm to identify the sensitive
+  regions and an architecture that utilizes a variable-speed mixed-
+  precision convolution array to enable the algorithm with better                                                                                 9DOXHRI:HLJKW
+  performance and energy efﬁciency. Our experiments on a wide
+  variety of networks show that compared to a coarse-grained                    Fig. 1: Comparison of DRQ and other quantization schemes.
+  quantization accelerator like “Eyeriss”, DRQ can achieve 92%
+  performance gain and 72% energy reduction with less then 1%
+  accuracy loss. Compared to the state-of-the-art mixed-precision                  In this paper, we propose a novel dynamic region-based
+  quantization accelerator “OLAccel”, DRQ can also achieve 21%
+                                                                                quantization, termed as DRQ, to capture the feature charac-
+  performance gain and 33% energy reduction with 3% prediction
+  accuracy improvement which is quite impressive for inference.                 teristic in the input feature map for quantization. As shown
+                                                                                in Fig. 1, the dynamic quantization can dynamically track the
+                          I. I NTRODUCTION                                      sensitive regions in the input feature map which are likely to
+                                                                                contain important feature information for the ﬁnal inference
+     Facing the increasing demand on the computing power for
+                                                                                results, and smartly adjust the weight and activation precision
+  DNNs, quantization has been acknowledged as an effective
+                                                                                for computation to different levels according to the sensitivity.
+  technique for reducing the inference workload, and spawns
+                                                                                In this way, the characteristics of the input feature map will be
+  a number of accelerator designs, such as Eyeriss [5], Bit-
+                                                                                reserved and fortiﬁed for better NN accuracy and meanwhile
+  Fusion [29] and OLAccel [26]. Quantization techniques, by
+                                                                                saving signiﬁcant amount of computing resources and power
+  means of transforming ﬂoating point into integer data or clus-
+                                                                                from the non-sensitive regions.
+  tering data into groups [15], [17], [22], [37], [38], can greatly
+                                                                                   Our study mainly answers the following three questions to
+  reduce the workload and the required memory bandwidth, and
+                                                                                make the proposed quantization method practical and efﬁcient:
+  therefore have an overall beneﬁt on performance, energy and
+  the silicon area for the accelerators.                                           • Is it possible to conduct an input region-based quan-
+     As illustrated in Fig. 1, the conventional quantization tech-                   tization for better NN accuracy? The answer is yes.
+  niques [15], [17], [26], [33], [38], as well as OLAccel [26]                       Based on our study in Section II, we ﬁnd that some
+  try to quantize the NN models based on the static distribution                     of the input values are highly correlated with the NN
+  of the weight values, and are succeed in reducing the model                        accuracy, termed as the sensitive values. In addition,
+  precision from FP32 to INT8, or even to INT2. Since the                            we ﬁnd that these sensitive values tend to aggregate in
+  weight values can be trained beforehand, this simpliﬁes the                        a region. The observation implies that applying high-
+  quantization scheme and makes the solution ﬁxed at the                             ﬁdelity quantization on the sensitive regions will reserve
+  beginning of any kernel execution. On the other hand, the input                    the NN accuracy, while applying low-ﬁdelity quantization
+  feature map values are also important and have varying degrees                     on the insensitive regions can boost the performance.
+  of impact on NN as reported in works [10] and [3]. However,                      • How to ﬁnd the sensitive regions for the dynamic quanti-
+  the existing quantization techniques fail to dynamically capture                   zation? In Section III, we propose an algorithm to identify
+  the sensitivity and variability in the input feature map values,                   the sensitive regions at run time. The algorithm can be
+  so that these works end up missing the chance in further                           instantiated as a just-in-time predictor, which can be
+  reducing the power and improving accuracy. Therefore, we are                       neatly embedded after each convolution layer to predict
+  motivated to apply different levels of quantization for different                  the sensitivity of the input values for the next layer.
+  sensitivity in the feature map values.                                           • How to conduct an efﬁcient dynamic quantization? In
+
+
+
+
+978-1-7281-4661-4/20/$31.00 ©2020 IEEE                                     1010
+DOI 10.1109/ISCA45697.2020.00086
+         Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:20 UTC from IEEE Xplore. Restrictions apply.
+                                          OLAccel   BitFusion     Eyeriss                                     ))7   )7)     7))     7)7        77)   777
+           Method               DRQ                                                                     
+                                 √          [26]       [29]         [5]
+    Dynamic Quantization                     ×          ×           ×                                   
+
+
+
+
+                                                                                             $FFXUDF\
+                                 √           √          √           √
+                 Network-wise                                                                                           7))
+                                 √          √           √                                                                  7)7
+ Quantization     Layer-wise     √                                  ×                                                   77)
+                                                                                                                           777
+ Granularity     Region-wise     √          ×
+                                            √           ×           ×                                   
+                  Value-wise                            ×           ×                                   
+           Bit-width            4/8 bit   4/8 bit   1/2/4/8 bit   16 bit                                                                
+                                                                                                                                X
+                                                                                                                                D
+  TABLE I: Comparison of different quantization methods.                                                
+
+
+
+
+                                                                                             $FFXUDF\
+                                                                                                        
+      Section IV, we propose an accelerator design to support                                           
+                                                                                                                     7))
+                                                                                                                     7)7
+                                                                                                                     77)
+      the dynamic region-based quantization, mainly consisting                                                    777
+
+
+      of a variable-speed systolic convolution array, which                                             
+                                                                                                                                            
+      can switch the execution mode based on the sensitivity                                                                    X
+                                                                                                                                E
+      identiﬁed by the predictor. It applies a simple but ﬁne-
+      grained control scheme that can perform high-precision                   Fig. 2: ResNet-32 accuracy with CIFAR-10 (a) and ILSVRC-
+      computation for the sensitive regions and low-precision                  2012 (b) bearing different noise patterns.
+      computation for the insensitive regions.
+   For a better understanding of our DRQ scheme, we compare                       To study the two questions in this section, we ﬁrst verify
+it with other quantization techniques as in Table. I. Different                that a small number of key values in the input feature maps
+from the conventional static quantization [5], [26], [29], DRQ                 do affect the accuracy and they are termed as sensitive values.
+dynamically quantizes weights and input values based on the                    With just a little noise added, these sensitive values will have a
+sensitive regions that can better reserve the NN accuracy. The                 great impact on the prediction accuracy. This means improper
+idea is to make the high-precision computation happening to                    quantization of these values might seriously deteriorate the
+the right place in the feature map. Since the input images                     overall NN accuracy. In addition, we show that these values
+vary according to the realtime applications, only dynamic                      tend to aggregate in space in the various levels of input feature
+schemes can capture the facts per image basis. Conventional                    maps that form the sensitive regions.
+schemes only support network- or layer-wise quantization.                         As a result, sensitive values and regions should be carefully
+But DRQ can support sub-layer and even sub-feature-map                         identiﬁed and quantized in ﬁne-grained manner to reserve
+quantization, which can provide more freedom for ﬁne-grained                   more detailed feature characteristics for the NN, while there
+tuning. Finally, DRQ is hardware friendly and can be realized                  is no such need for other insensitive regions. A natural
+by slightly modifying the widely used systolic convolution                     implication is that we should take advantage of the sensitivity
+array, largely reserving the NN accuracy and saving power. In                  to speed up the convolution by differentiating quantization
+summary, DRQ facilitates an efﬁcient accelerator design with a                 on different regions in the same feature map with almost no
+tightly coupled algorithm and hardware architecture for image                  accuracy loss, which motivates our algorithm and architecture
+classiﬁcation workloads.                                                       as elaborated in Section III and Section IV.
+   The remaining of this paper is organized as follows. Sec-
+tion II introduces the motivation of our proposed design. Sec-
+                                                                               A. Sensitive Values
+tion III describes the sensitivity aware convolution algorithm
+and Section IV elaborates the proposed microarchitecture.                         In this section, we will study the existence of input sensitive
+Section V and VI present the experimental methodology and                      values in different datasets that affect the NN accuracy and
+the experiment results. Section VII reviews the related work.                  to what degree. We take two widely used datasets—CIFAR-
+Finally, Section VIII concludes this paper.                                    10 [19] and ILSVRC-2012 [20] on ResNet-32 as case studies.
+   II. I DENTIFYING S ENSITIVITY R EGION IN THE I NPUT                            First, we classify the input feature map values into several
+                        F EATURE M APS                                         segments according to their magnitudes. For example, for layer
+                                                                               i (i = 0, 1, . . . , 31), we classify the values into three segments
+   According to the value distribution in the input feature                    by using two thresholds that locate at 20% and 80% of the
+maps of the convolution neural networks (CNNs), it has been                    value distribution. That means segment 0 contains the largest
+observed that the majority of values in input feature map                      20% values of the feature map, segment 1 contains the middle
+after batch normalization and ReLU activation function are                     60% and segment 2 contains the smallest 20% data values.
+close to or exactly zero, while a small number of values are                   We then add noise onto the values in different segments. We
+large. Because quantizing values impacts the NN accuracy as                    use a constant factor u to represent the magnitude of noise.
+revealed by prior studies [26], [27], two questions naturally                  By changing u, we can adjust the intensity of the noise.
+arise: 1) whether there are certain values in input feature                    Finally, we measure the NN accuracy and study the sensitivity
+maps that are important to the NN accuracy? And how these                      of different segments by varying u. Fig. 2 gives the results,
+values affect the accuracy and to what extend; 2) what are the                 where we have several curves representing different patterns.
+locations of these values in the input feature maps and how                    For example, curve labeled as “TFF” represents noise being
+are they spatially distributed?
+
+
+
+                                                                            1011
+
+      Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:20 UTC from IEEE Xplore. Restrictions apply.
+                                                                                                                               3UHGLFWRU
+                                                                    Q
+                                                              ROXWLR
+                                                          &RQY                                                                                                
+                                                                                                                               0HDQ
+                                                                                                                              )LOWHULQJ
+                       &RQYROXWLRQ                                           /D\HU                                                              
+                                                                                                                                 
+                                                                                                                                                                                           
+                                                                                                                                                                                               
+                                                                        ,QSXW)HDWXUH0DS                                        ȭ                
+                                                                                                                                                                 $FWLYDWLRQ
+                                                                                                                                                                                             
+                                                                                                                                                                                               
+                                                                                                                                                                     VWHS                0DVN
+                                                          &RQY
+          /D\HU                         /D\HU             ROXWLR
+                                                                    Q
+         5DZ,PDJH                   ,QSXW)HDWXUH0DS
+
+                                                                                                                                                          5H/8
+          9DOXHRI6HJPHQW         9DOXHRI6HJPHQW           9DOXHRI6HJPHQW                                                                        RU
+                                                                                                                                                        0D[3RROLQJ
+                                                                                                                                     ELW&RQY
+Fig. 3: Visualizing the sensitive regions in the feature maps
+                                                                                                                   4XDQWL]HG)HDWXUH
+for different layers of the three segments.                                                                              0DS                                                    ELW$GG
+                                                                                                   ,QSXW)HDWXUH                                           5H/8                              2XWSXW)HDWXUH
+                                                                                                       0DS
+                                                                                                                                                            RU                                   0DS
+added only to segment 0, while curve “FTT” represents noise                                                                                             0D[3RROLQJ
+                                                                                                                                     ELW&RQY
+being added to both segment 1 and segment 2.
+   From the plot, several observations can be made:                                                                Fig. 4: DRQ algorithm overview.
+   1) When we add noise to only one segment, “TFF” curve
+       drops more rapidly at the smaller u compared with                                          We can apply a x×y rectangle to partition the whole feature
+       “FTF” and “FFT”;                                                                        map into individual regions, and each can be attributed as
+   2) As long as we add noise to segment 0, the network                                        sensitive or insensitive. In turn, we can apply dynamic quan-
+       behaves approximately the same no matter whether we                                     tization policies for different regions. Given the observation
+       add noise to other segments because the curves “TFF”,                                   that sensitive regions only account for a small percentage
+       “TFT”, “TTF” and “TTT” all coincide;                                                    and insensitive regions dominate the entire feature map, the
+   3) Segment 2 holding the small values in the feature map                                    sensitivity analysis offers us a new opportunity to improve the
+       can tolerate larger noise as “FFT” only starts to degrade                               inference efﬁciency with runtime quantization strategy.
+       when u becomes very large.                                                                 Therefore, we propose a dynamic feature map region-based
+   4) The NN accuracy for different datasets has similar re-                                   quantization—a software and hardware co-design scheme, to
+       action to the noise. ILSVRC-2012 is slightly vulnerable                                 accelerate inference performance with nearly no accuracy loss
+       to the noise than CIFAR-10 since it classiﬁes thousands                                 for NN. The scheme consists of a DRQ algorithm and the
+       of object types that require more image details.                                        corresponding architecture design.
+   These observations clearly manifest that different input
+values (in segments) may have different impact (or sensitivity)                                        III. A LGORITHM FOR DYNAMIC R EGION - BASED
+on the ﬁnal accuracy, and it is a popular observation across                                                          Q UANTIZATION
+different networks we have investigated. To be speciﬁc, values                                   Section II has shown that there are sensitive regions in the
+in segment 0 are more sensitive to noise than other segments,                                  input feature maps. Based on this observation, there are two
+which implies that the largest set of values in the input feature                              more problems need to be addressed:
+map are relatively more sensitive to the accuracy. In other                                      1) How to identify the sensitive regions in the input feature
+words, we can retain the NN accuracy for a given dataset by                                          maps at runtime. This process needs to be efﬁcient and
+restricting the quantization impact (equivalent to noise) for the                                    hardware friendly. Different from the weights that can
+sensitive values in the feature maps, while quantization for the                                     be learnt ofﬂine, the input feature maps are not available
+insensitive values can be relaxed.                                                                   until run time, and their sensitivity has to be extracted
+B. Sensitive Regions                                                                                 efﬁciently by the algorithm and hardware.
+                                                                                                 2) How to conduct an efﬁcient input sensitivity aware
+   In this section, we will explore how these sensitive values
+                                                                                                     convolution. Different sensitivity regions may introduce
+are spatially distributed in the feature map. We take the LeNet-
+                                                                                                     values with different precision in the same feature map
+5 [21] with MNIST dataset [7] as a simple yet visualize-able
+                                                                                                     with different quantization schemes. This intra-layer
+example.
+                                                                                                     and multi-precision quantization requires ﬁne-grained
+   After training the network with MNIST, we randomly select
+                                                                                                     control on the underlying hardware to reduce the convo-
+a raw image, e.g. the number “3” to conduct the inference
+                                                                                                     lution workload and beneﬁt the inference performance.
+process. Fig. 3 visualizes the input feature maps for the ﬁrst
+three layers. We also use different colors to mark the values                                  A. Algorithm Overview
+into three segments. From the plot, we see that larger values
+                                                                                                  The DRQ algorithm can be depicted in Fig. 4. The algorithm
+in segment 0 do not randomly scattered in the input feature
+                                                                                               is consisted of two steps:
+map across all layers. Instead, they tend to aggregate in space
+                                                                                                  First, we design a prediction algorithm to locate the sensitive
+forming several sensitive regions. Meanwhile, smaller values
+                                                                                               regions in the input feature maps. It performs mean ﬁltering
+in segments 2 and 3 dominate the feature map as insensitive
+                                                                                               over the target feature map. Then we use step activation
+regions.
+                                                                                               function to generate a binary mask, which can distinguish the
+
+
+
+
+                                                                                            1012
+
+      Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:20 UTC from IEEE Xplore. Restrictions apply.
+       &DVH                                      &DVH                                     is insensitive and the values in the region have been stored in
+                                                                                              the INT4 format in DRAM. When the kernel slides over this
+                                                                                              region, we clip the precision of the kernel weights to INT4
+                                                                                              and accordingly perform the 4-bit convolution. We will give
+                                                                 .HUQHO
+                       .HUQHO                                     ,17                        the detailed hardware support in Section IV-C.
+                        ,17
+                                                                                                 However, the precision switching between regions of dif-
+     ,QSXW)HDWXUH              2XWSXW)HDWXUH   ,QSXW)HDWXUH            2XWSXW)HDWXUH      ferent sensitivities may complicate the convolution process,
+         0DS                        0DS              0DS                      0DS
+                                                                                              which will be discussed in Section IV.
+                     6HQVLWLYH5HJLRQ,17          ,QVHQVLWLYH5HJLRQ,17
+                                                                                              D. Design Space Exploration
+Fig. 5: Two cases of mixed-precision convolution, kernel over
+a sensitive region (left) and a insensitive region (right).                                      Obviously, the threshold determines the number of the
+                                                                                              sensitive regions. And consequently, the smaller number of
+sensitive and insensitive regions in the input feature map. We                                sensitive regions, the larger number of INT4 computations that
+will provide more details in Section III-B.                                                   can speed up the convolution, but may affect the NN accuracy.
+   Second, we propose a mixed-precision convolution for infer-                                   The size of the sensitivity region also matters. Different
+ence computation, which adjust the kernel precision at runtime                                NN models may require different region sizes depending on
+based on the sensitivity of the input feature map. For example,                               the feature characteristics. In general, a larger region means
+when the kernel slides over the sensitive regions (denote as                                  coarse-grained identiﬁer, which is a hardware-friendly choice
+the green blocks in Fig. 4), the convolution enters into high-                                but at the cost of lower NN accuracy. Alternatively, a smaller
+precision mode with ﬁner quantization of both weights and                                     region may reserve ﬁne-grained characteristics with higher NN
+input feature map. Otherwise the convolution uses a low-                                      accuracy, but may cause frequent precision switching and more
+precision mode over the insensitive regions (denote as the pink                               complicated control, which can be seen in Section IV-C. More-
+blocks in Fig. 4). We will provide more details in Section III-C.                             over, the region size also affects the efﬁciency of sensitivity
+                                                                                              predictor as presented in Section IV-E.
+B. Sensitivity Prediction                                                                        To ensure the NN accuracy, we need to retrain the pre-
+   Given an input feature map of h × w dimension, we ﬁrst                                     deﬁned NN model and ﬁne-tune the weights so that they can
+quantize the input feature map from FP32 to INT8. This is                                     be aware of the sensitivity information in the feature maps.
+a typical step in conventional quantization schemes because                                   During this process, we can also ﬁnd the proper threshold
+INT8 is sufﬁcient for most inference workloads. Afterwards,                                   value and region size. First, we acquire the value distribution
+we split it into several x × y regions. For each region, as                                   of the input feature maps in each layer. Based on the value
+shown in Fig. 4, we perform the dot-product with an all-one                                   distribution, we choose an initial threshold and a region size by
+x × y kernel (mean ﬁltering), which produces an output value.                                 empirically starting from some large values. Then, we retrain
+Consequently, we obtain h×wx×y output values. We compare all                                  the model for guaranteed accuracy, during which we will apply
+the output values to the predeﬁned threshold. The comparison                                  the mix-precision convolution in the forward propagation,
+process can be treated as using the step activation function as                               but full-precision backward propagation for weight updating
+shown in Fig. 4. The corresponding region is sensitive if the                                 to minimize the loss of NN accuracy. We repeat the above
+output value is larger than the threshold. We ﬁnally generate                                 training process until the NN converges. Next, we conduct the
+a binary mask map with a dimension of h×w    x×y , where ”1” in                               mix-precision convolution for inference and evaluate whether
+the mask map indicates that the region is sensitive, while ”0”                                the NN accuracy can meet the expected requirement. If yes, the
+indicates that the region is insensitive. This can be applied to                              threshold and region size are determined. Otherwise, we will
+each input channel for sensitivity prediction.                                                repeat the above steps by halving the region size or threshold.
+                                                                                              Although trial-and-error, the above process can always ﬁnd
+C. Mixed-Precision Convolution
+                                                                                              the satisfactory values within a few iterations.
+   Once we distinguish the sensitive and insensitive regions,
+we perform the mixed-precision convolution.                                                       IV. A RCHITECTURE FOR DYNAMIC R EGION - BASED
+   Without loss of generality, in this paper, we deﬁne convolu-                                                  Q UANTIZATION
+tion with INT8 as high-precision and INT4 as low-precision.
+With the sensitivity information recorded in the mask maps,                                     Section III introduces the DRQ algorithm, which offers a
+there can be two common cases for the mixed-precision                                         new opportunity to reduce the computation workload with
+convolution as shown in Fig. 5. Note that we always store                                     sustained NN accuracy by identifying the sensitivity regions
+the kernel weights in INT8 format in the DRAM. But the                                        in the feature maps. In this section, we will introduce the
+value of the input feature map can be stored in either INT8                                   accelerator architecture to support the algorithm.
+or INT4 format depending on its sensitivity. In case 1, the
+                                                                                              A. Architecture Overview
+region is sensitive. When the kernel slides over this region,
+we use INT8 to represent the weights and the values in the                                     Conventional accelerators [26], [29] cannot support the
+region and perform the 8-bit convolution. In case 2, the region                               DRQ algorithm due to two major challenges: 1) the DRQ
+
+
+
+
+                                                                                           1013
+
+       Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:20 UTC from IEEE Xplore. Restrictions apply.
+algorithm requires dynamic mix-precision convolution de-                                                                                      '5$0
+pending on the input feature map values, which cannot be
+learned ofﬂine like weights. This requires the architecture to be                            *OREDO%XIIHU                                       *OREDO%XIIHUFRQWUROOHU
+capable of handling random precision switching at any time; 2)
+different precision levels can be interleaved inside a single PE                                                                               9DULDEOH6SHHG&RQYROXWLRQ$UUD\
+array for convolution with different computing and memory                                                 >@>@
+                                                                                                                                                         W
+                                                                                             /LQH          >@
+                                                                                                                                               W                  W         WQ
+throughput. Both problems call for a novel redesign of the
+accelerator architecture.                                                                    /LQH
+                                                                                                          >@>@
+                                                                                                             >@
+                                                                                                                                               W       W        W         WQ
+
+   To this goal, the proposed DRQ architecture is illustrated in
+
+
+
+
+                                                                                                                                                                          
+                                                                                                          >@>@
+Fig. 6. It consists of several processing element (PE) pages,                                /LQH          >@
+                                                                                                                                               W       W        W         WQ
+
+which communicate with memory through a global buffer.
+                                                                                                                                                                 
+Each PE page mainly consists of a line buffer, a mixed-                                                   >@>@
+                                                                                                                                               WQ       WQ        WQ         WQQ
+                                                                                             /LQHQ         >@
+precision convolution array, an accumulation unit, an output
+                                                                                            /LQH%XIIHU
+buffer, an activation and pooling unit, a sensitivity predictor                                                                                          $FFXPXODWLRQ8QLW
+and the associated control logic.                                                          ,PFRO3DFN
+
+
+
+
+                                                                                                                   3UHFLVLRQ&RQWURO6LJQDO
+                                                                                             (QJLQH                                                            2XWSXW%XIIHU
+   The DRQ architecture can be brieﬂy described as follows.
+The global buffer stores the raw input feature maps and                                                                                                     $FWLYDWLRQ8QLW
+
+weights. To feed the convolution array, there is an im2col/pack                              &HQWUDO                                                          3RROLQJ8QLW
+engine in each PE page to pull feature maps from global                                     &RQWUROOHU
+                                                                                                                                                     0DVN%XIIHU      7R*OREDO%XIIHU
+buffer, transform them into the regulated format and pack                                                                                                        3UHGLFWRU
+them into the input line buffers. It also works for weights
+by loading and ﬁxing them into each column of the array.                                  Fig. 6: Overview of the DRQ architecture.
+One of the key parts in each PE page is the convolution
+array supporting mixed-precision convolution which will be                    line buffer storage. The insensitive value is packed into a 4-
+elaborated in Section IV-C. Partial sums are accumulated in                   bit register, like F00 , while the sensitive value is packed into
+the output buffers which also works for variable kernel sizes.                a 8-bit register like F04 in the Fig. 7(a). The sensitivity of
+After the activation and pooling function, the output feature                 values can be extracted from the associated binary mask map
+maps are fed to another key part—the sensitivity predictor                    accordingly. The binary mask from mask buffer will decide
+to identify the sensitive regions that can guide the DRQ for                  the working mode for the PEs in the convolution array.
+the next convolution layer. The sensitivity predictor can be                  C. Convolution Array with Variable Speed
+implemented together with the pooling unit. Finally, the output
+results are stored into the global buffer.                                       As shown in Fig. 6, the convolution array consists of PEs
+                                                                              capable of mixed-precision computation. In DRQ architecture,
+   As an accelerator customized for DNNs, there can be no
+                                                                              the weights will always be quantized into INT8 format, and
+data communication between PE pages if well scheduled. For
+                                                                              they are held into each PE in the array during the convolution
+example, we can keep the kernels of one ﬁlter in a PE but split
+                                                                              process. The leftmost column of PEs accept new feature map
+the ﬁlers into different pages to eliminate the communication.
+                                                                              values shifted from the line buffers for every clock cycle.
+                                                                              Feature map values are shifted right and the partial sums are
+B. Line buffer and Input Data Packing                                         shifted down to the neighboring PEs every cycle.
+   The line buffer lies between the global buffer and the                        1) Multi-Precision PE: The PE in the convolution array
+convolution array. To start the convolution, in each PE page,                 features by its multi-precision capability for MAC operation.
+the input feature maps are read from the global buffer. The                   In this study, we design our PE that is capable of executing
+input feature map values are transformed to ﬁt the mixed-                     two different precision (INT4 and INT8) because our DRQ
+precision convolution, and packed with the binary masks into                  algorithm proves that the two-level quantization is sufﬁcient
+the line buffer. Then the input feature map values are fed to                 for most NN models without degrading the NN accuracy. Such
+the leftmost PEs in the convolution array.                                    a PE design can be found in previous work [29] exhibiting as
+   To match the systolic array convolution, the feature map                   an INT4 MAC, but can be united into an INT8 MAC taking
+stored into line buffer are transformed like the im2col function              four cycles in a timing-multiplexing manner.
+in GPUs, as shown in Fig. 7(a). Speciﬁcally, for every kernel                    Fig. 8 illustrates how to adapt the PE in our variable-speed
+on the feature map, it will be aligned into a column, and the                 systolic array. There are two 8-bit registers W and F holding a
+column is staggering arranged into the line buffer. Note that                 weight value and an input value, respectively. A 16-bit register
+every line in the line buffer lags one cycle after the above lines,           P store the partial result. In default, the PE is in INT4 mode,
+so as to form the data shifting and partial sum accumulation                  whose INT4 MAC is used for the multiplication of a 4-bit
+in the systolic array [18].                                                   weight with a 4-bit input. On demand, the PE can switch to
+   To cater for the mixed-precision convolution, the input                    INT8 mode depending on the binary mask map generated in
+feature map are densely packed for a higher utilization of the                the previous sensitivity prediction. To be speciﬁc, in cycle t,
+
+
+
+
+                                                                         1014
+
+       Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:20 UTC from IEEE Xplore. Restrictions apply.
+                                                                                                                                      /LQH%XIIHU                                        &RQYROXWLRQ$UUD\
+                                             F F F F
+                                                                        ,PFRO3DFN                                 F F F F F F F F F F F F                        3(     3(
+                                             F F F F
+                                             F F F F
+                                                                          (QJLQH
+                                                                                                                     F F F F F F F F F F F                            3(     3(
+
+
+
+
+                                                                                                                                                                                                            
+                                             F F F F
+                                                                           ,PFRO$QG
+                                                 )HDWXUH0DS                 3DFN                                    F F F F F F F F F F                                3(     3(
+
+                                                 F ELWYDOXH           F ELWYDOXH
+                                                                                                                                                                                            3(     3(
+                                                                                                                                                                                                     
+                                                                                                                     F F F F F F F F F
+                                                                                                                                           
+                                                                                D 7KH'DWD$UUDQJHPHQWIRU0L[HGSUHFLVLRQ&RQYROXWLRQ
+                                                                                                                                                                                                     
+                    &ORFN
+
+                    3(           F       F      F        F       Stall       Stall         Stall                   F                           F                        F      F    F
+                                                                       
+
+                    3(                     F       F       F       Stall         Stall       Stall                   F                             F                      F      F    F    F
+                                                                                                             
+
+                    3(                               F                         F                                       F             F   Stall       Stall     Stall        F     F     F    F    F
+                                                             
+                    3(                                                           F                                       F             F     Stall       Stall   Stall        F      F    F    F    F    F
+
+
+                    3(                     F       F       F       F           Stall       Stall       Stall              F                                F                     F    F    F
+                                                                                   
+
+                    3(                               F       F        F          Stall       Stall       Stall              F                                F                     F    F    F    F
+
+                    3(                                         F                           F                                  F              F         Stall   Stall       Stall     F    F    F    F    F
+
+                    3(                                                                       F                                  F              F         Stall       Stall   Stall     F    F    F    F    F    F
+
+                                                                                E 7KHH[HFXWLRQWLPLQJIRU0L[HGSUHFLVLRQ&RQYROXWLRQ
+
+
+  Fig. 7: The data arrangement for mixed-precision convolution (a); The execution timing for mixed-precision convolution (b).
+
+                            Ctrl                                            Ctrl                                                          map region, while P E00 and P E01 still receive INT4 values
+                3          :           )                     3          :                  )
+                                                                                                                                          because their corresponding feature map values are insensitive.
+                            H            H                                  L               H                                             For MACs in the INT8 mode, P E02 and P E03 need four
+                    ,170$&                                     ,170$&
+                         << 4
+                                                                                                                                          cycles to complete the 8-bit computation. To match the rate
+                                                                                                                                          in the systolic array, P E00 and P E01 need to be stalled
+                      &\FOHW                                        &\FOHW
+                                                                                                                                          for three cycles waiting for P E02 and P E03 to complete.
+                            Ctrl                                            Ctrl                                                          Consequently, the INT8 result is fully generated in four cycles.
+                3          :             )                   3          :                  )                                              In cycle 8, P E00 , P E01 , P E02 and P E03 all receive INT8
+                            H            L                                  L               L
+                                                                                                                                          values meaning they enter the sensitive regions, so all the four
+                    ,170$&                                     ,170$&
+                         << 4                                                                                                             PEs will consume four cycles for computation. In cycle 12,
+                                                                                                                                          a similar situation happens as in cycle 4, but this time P E02
+                     &\FOHW                                       &\FOHW
+                                                                                                                                          and P E03 need to be stalled. Starting from cycle 16, all the
+          Fig. 8: The proposed multi-precision PE.                                                                                        PEs leaves the sensitive regions, so the systolic array returns
+                                                                                                                                          back to the INT4 mode and can consume one new input value
+it extracts the higher 4 bits (H) of the weight value and the                                                                             for every cycle.
+input value from W and F , respectively. The result is then                                                                                  For the second column in the convolution array containing
+shifted left by 4 and stored into the P register. In cycle t + 1,                                                                         P E10 , P E11 , P E12 and P E13 , it simply receives values
+it extracts the lower 4 bits (L) of weight value and the higher 4                                                                         shifted from the ﬁrst column including the “stalls” control
+bits (H) of input value from W and F , respectively for another                                                                           signal, so as to replicate exactly the same behavior as in the
+4-bit MAC accumulated with the previous product. The result                                                                               ﬁrst column but with one cycle latency.
+is written into the P register. The behavior in cycle t + 2 and                                                                              As seen from Fig. 7(b), our proposed mixed-precision
+t + 3 is similar with t and t + 1.                                                                                                        convolution array can skillfully support variable-speed con-
+   2) Execution Flow for Mixed-Precision: The convolution                                                                                 volution, meeting the different requirements for sensitive and
+array is built from the dual-mode PEs. If all PEs get insensitive                                                                         insensitive regions. It works at full speed in INT4 mode, and
+values, they behave as an INT4 unit. With any sensitive value                                                                             switches to INT8 computation on demand by inserting stalls.
+shifted in, the convolution array can still work in a systolic                                                                               3) Control Scheme for the Array.: The control scheme
+manner but with a variable speed as explained in Fig. 7(b).                                                                               for the mixed-precision convolution array can be easy to
+   For example, the ﬁrst column in the convolution array con-                                                                             implement following a similar systolic manner like the data
+taining P E00 , P E01 , P E02 and P E03 will normally receive                                                                             ﬂow, as shown in Fig. 7(b). In brief, normally all PEs work
+INT4 feature map values as shown in the ﬁrst three clocks.                                                                                in the INT4 mode. Any PE receiving INT8 feature map value
+However in the 4th clock, both P E02 and P E03 receive                                                                                    (identiﬁed by the binary mask) switches this column to INT8
+INT8 values because the convolution enters a sensitive feature                                                                            mode (denote as signal 1 in the plot). Those PEs have to
+
+
+
+
+                                                                                                                                   1015
+
+      Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:20 UTC from IEEE Xplore. Restrictions apply.
+spend four cycles to ﬁnish the computation (denote as signal                                                             $FWLYDWLRQV
+                                                                                                    \
+
+
+
+
+                                                                                                ^^
+ 4 ). Meanwhile, if there are any other PEs receiving INT4                                                                 
+
+on the same column, those PEs need to be stalled for three                                      Q                    3RROLQJ8QLW
+                                                                                                                                 
+cycles (denote as signal 2 ), and this makes all the PEs on
+                                                                                            ^                                          
+
+
+                                                                                        ^
+                                                                                            Q                        5HJ        5HJ
+the same column to synchronize in the systolic execution.                               [                                       
+In addition, the “stall” signal will be shifted to the right-                                                             $GGHU
+neighboring column in the array with one cycle latency (denote                                                             
+                                                                                                                          )LQLVK"
+as signal 3 ), making the whole array still work in a systolic                                                      1R
+                                                                                                                                <HV
+manner facing inputs with different sensitivity.                                                                        &RPSDUDWRU
+   The control signals will not only control the timing of the                                                             
+array, but also serve as the local control for each PE as in                                                            0DVN%XIIHU 7R*OREDO%XIIHU
+Fig. 8, where the PE can be set to work in either INT4 or                                                                     3UHGLFWRU
+                                                                                                    D                             E
+INT8 mode depending on the control signal.
+                                                                              Fig. 9: The pooling and prediction process (a); The pooling
+D. Output Buffer and Accumulation Unit
+                                                                              unit and the predictor of the proposed architecture (b).
+   The output buffer lies between the convolution array and
+the predictor. It temporarily stores the partial results and
+                                                                                                                                           $FWLYDWLRQ
+performs an in-place accumulation for the output feature
+maps. At the same time, it feeds the output feature maps                                                                                   3RROLQJ:LQGRZ
+to the activation/pooling unit, whose results are send to the
+                                                                                                                                           3UHGLFWLRQ:LQGRZ
+sensitivity predictor to quantities the output feature maps with
+the binary masks. In our design, the traditional “activation-                               D                       E
+pooling” process in NN needs to be extended with one more                     Fig. 10: Z-scan of activations during the pooling process (a);
+step as “activation-pooling-prediction”. Since the convolution                Z-scan of activations during the prediction process (b).
+process dominates the execution time, the added “prediction”
+step can be well inserted into the existing NN pipeline, with                 in Fig. 9(b), we ﬁrst conduct the pooling on a window (denote
+negligible performance overhead as described in Section IV-E.                 as 1 ). Then we store the pooling results into the temporal
+We design a dual buffering scheme for the output buffer to
+                                                                              buffer ( 2 ), which are then added with the partial result of
+parallelize the convolution accumulation and the “activation-
+                                                                              the predictor ( 3 ). Next, we check whether all the pooling
+pooling-prediction” process.
+   The proposed output buffer and accumulation units also                     windows in the prediction window have ﬁnished ( 4 ). If no, we
+support variable kernel sizes and channels. Our proposed                      keep the partial prediction result in a register waiting for the
+convolution array prioritizes the kernel size of 3 × 3 as in                  next pooling ( 5 ). If yes, we compare the ﬁnal prediction result
+most of the NN models, but also supports other conﬁgurations,                 with a predeﬁned threshold ( 6 ), which actually generates
+such as 5 × 5 and 7 × 7 with the aid of the the accumulation                  the binary mask map ( 7 ). The binary mask also indicates
+unit. For larger kernel size, we will split the kernel into several           how the pooling results in the temporal registers should be
+sub-kernels and launch them to the convolution array to obtain                quantized (INT8 or INT4). The binary mask is stored back
+the partial sum. Finally, we accumulate the partial sum of each               to the mask buffer to assist the feature map for the next
+sub-kernel in the accumulation unit to calculate the ﬁnal result.             convolution layer ( 8 ).
+This is a common practice widely used in systolic array based                    As illustrated in Fig. 10 (a) and (b), the access order of
+NN accelerators.                                                              activations in the pooling and prediction process are different.
+                                                                              This is because the window sizes of pooling and prediction are
+E. Sensitivity Predictor                                                      different. Therefore, the pooling results need to be held in a
+   The sensitivity prediction is the key to enable DRQ which                  temporal buffer for some time for the later computation in the
+differentiates it from conventional quantization techniques.                  predictor, which requires additional on-chip storage. In brief,
+Based on the predicting scheme discussed in Section III-B,                    we need to buffer wy partial prediction results and w  n × n−1
+                                                                                                                                            x
+
+which is actually a mean ﬁltering, we propose a sensitivity                   pooling results, where w is the width of the feature map. From
+predictor design that can reuse the pooling unit without adding               this, we can see that a stripe-shaped region (large y and small
+much complexity to the inference process.                                     x) is more economic if not hurting NN accuracy and is more
+   Since the current feature map undergoing pooling will                      beneﬁcial for storage saving as observed in our experiments in
+naturally become the input for the next convolution layer, we                 Section VI-B2. Note that the storage overhead of 4×16 region
+can reuse the pooling results to serve the predictor. Consider a              size is only 2KB in ResNet-18, which is negligible compared
+x × y prediction window containing pooling windows of size                    to the capacity of line buffer.
+n × n. For x = y = 4 and n = 2 as the example illustrated                        Given there can be other pooling conﬁgurations in different
+in Fig. 9(a), we can directly take the four average pooling                   networks, such as the convolution layer is not followed by
+results for prediction instead of adding them again. As shown                 an average pooling or even other operations. We still need to
+
+
+
+                                                                         1016
+
+       Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:20 UTC from IEEE Xplore. Restrictions apply.
+                    Eyeriss   BitFusion        OLAccel        DRQ            where an INT16 MAC unit is almost 16X larger than an INT4
+        # PEs        224        3168        2499 (2448+51)    3168           MAC unit. So, with similar area budget, Eyeriss has a total
+       Bitwidth     INT16       INT4         INT4+INT16       INT4
+     area (mm2)      0.32        0.32            0.32          0.32          of 224 INT16 MAC units, BitFusion has 3168 INT4 MACs
+    Global Buffer                         5 MB                               and OLAccel has 2448 (= 3 × 8 × 6 × 17) INT4 MAC units
+                                                                             and 51 (= 3 × 17) INT16 MAC units. Accordingly, DRQ
+TABLE II: Conﬁgurations of different accelerators (Unit area
+                                                                             architecture has 3168 INT4 PEs (MACs) that are organized
+of INT4, INT8 and INT16 MACs are 100.5, 377.5 and 1423
+                                                                             into 16 PE pages with 18 rows and 11 columns of PEs.
+um2 , under TSMC 45nm).
+                                                                             Note that each PE can freely switch between INT4 or INT8
+                                                                             modes just as in BitFusion. The INT8 mode will have 1/4 the
+execute the above prediction shown in Fig. 9(b) except that we
+                                                                             computing power of the INT4 mode. For a fair comparison, we
+do not store the pooling results back to the global buffer. We
+                                                                             use the same global buffer capacity and memory bandwidth
+need to keep the average pooling adders to work in parallel
+                                                                             for all these accelerators, and use CACTI [31] to estimate the
+with other operations.
+                                                                             area, power and latency to meet our design goal.
+             V. E XPERIMENTAL M ETHODOLOGY                                      To evaluate the performance of our proposed DRQ archi-
+A. Validation on NN Accuracy                                                 tecture, we develop a cycle-accurate simulator to simulate
+                                                                             the mixed-precision convolution array with line buffers and
+   To valid our DRQ algorithm with two-level (INT8 and                       output accumulation together with the predictor. To be speciﬁc,
+INT4) quantization, we implement it in the Tensorﬂow frame-                  we dump both the input feature maps and the binary mask
+work [1]. To be speciﬁc, we built a computing graph contain-                 maps for inference using Tensorﬂow, which are then fed into
+ing INT4 and INT8 computation using the built-in API called                  our simulator to get the cycle-accurate performance. Under
+and the binary mask map generated at runtime. Although                       500MHz PE frequency, we verify that the required memory
+INT16 is sufﬁcient for widely used CNN networks for image                    bandwidth is much smaller than the typical memory bandwidth
+classiﬁcation [6], [13], [18] including AlexNet, VGG, and                    provided by DDR3. So, with the regulated format of input data
+ResNet, recent TensorRT results [9] show that they can be                    cached in the large global buffer, the algorithm can sustain a
+quantized to INT8 without accuracy loss, so we did not apply                 non-blocking convolution with multi-precision support.
+retraining for the quantization to INT8. However, DRQ itself
+is not precision limited and it can be easily extended to support                               VI. E XPERIMENTAL R ESULTS
+INT16 and above.                                                             A. Accuracy, Performance and Energy Consumption
+   The datasets we used are CIFAR-10 [19] and ILSVRC-
+                                                                                Fig. 11 ﬁrst shows the NN accuracy for the six networks
+2012 [20]. Note that they two are representative and well-
+                                                                             with CIFAR-10 and ILSVRC-2012 datasets. For example,
+acknowledged in various CNN accelerator designs for image
+                                                                             regarding ResNet-50, our DRQ algorithm shows nearly no
+classiﬁcation [16], [26], [29]. The NN models we used are
+                                                                             accuracy loss for CIFAR-10 compared to Eyesiss (full INT16)
+AlexNet, VGG16, ResNet-18, ResNet-50, Inception-v3 and
+                                                                             and BitFusion (full INT8), and a 1.5% accuracy improvement
+MobileNet-v2, which cover a wide range of classic and
+                                                                             over the OLAccel algorithm. For ILSVRC-2012, DRQ algo-
+modern networks with different parameter sizes.
+                                                                             rithm shows a 0.9% accuracy loss compared to Eyesiss and
+   We compare the NN accuracy of DRQ with the following
+                                                                             BitFusion, and a signiﬁcant 5.1% accuracy improvement over
+designs: 1) Eyeriss [5], which is a spatial energy-efﬁcient
+                                                                             OLAccel. This is because DRQ algorithm can identify the
+dataﬂow architecture. It uses coarse-grained quantization of
+                                                                             sensitive regions in the input feature maps on the run and
+INT16 throughout the network. We will use it as the baseline
+                                                                             fortify the computation precision over those regions. Instead,
+for standard NN accuracy; 2) BitFusion [29], which is an
+                                                                             OLAccel only statically analyzes the numerical distribution of
+accelerator featured by the composable MAC unit. It employs
+                                                                             the weights and quantizes the weights accordingly, missing the
+the model typologies proposed in prior work [24], [35]. If the
+                                                                             real geometric feature implication on the feature maps. There-
+algorithm permits, it can change quantization at the layer gran-
+                                                                             fore, for the sensitive regions in the feature map, DRQ can
+ularity. If a coarse-grained quantization of INT16 is applied
+                                                                             reserve more major feature information with high-precision
+throughout the network, it can retain the accuracy as Eyeriss;
+                                                                             (INT8) quantization.
+3) OLAccel [26], which is a state-of-the-art accelerator based
+                                                                                Fig. 11 also shows the percentage of high- and low-precision
+on the outlier-aware low-precision computation. It does a static
+                                                                             used in the computation for the six networks. Both OLAccel
+quantization on the weight values based on magnitude. For
+                                                                             and DRQ take full advantage of low-bit quantization and
+comparison, we take the results of AlexNet as reported in their
+                                                                             the majority of the computation is done with INT4 mode.
+paper [26]. For ResNet-18, ResNet-50, VGG16, Inception-v3
+                                                                             However, OLAccel performs a static quantization so that the
+and MobileNet-v2 that are not available in their paper, we
+                                                                             bit conﬁguration for a certain NN is determined at pre-run
+reproduce their experiments and report the results.
+                                                                             time and ﬁxed across all the layers and datasets. However,
+B. Modeling Accelerator Architecture                                         in DRQ, the quantization is dynamically decided according
+   Table. II shows the conﬁgurations for all the accelerators                to the feature map predictor, so that the number of bits used
+in our experiments. We use 45nm TSMC technology library                      for weight and activation values may vary from time to time.
+to study the area of the MAC units with different precision,                 As demonstrated in the up-to-date Inception-v3, DRQ (0.7%
+
+
+
+
+                                                                        1017
+
+      Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:20 UTC from IEEE Xplore. Restrictions apply.
+                                                                                                                                                                                                                                ELW3HUFHQWDJH                                    ELW3HUFHQWDJH                                   ELW3HUFHQWDJH                                                $FFXUDF\
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+   3HUFHQWDJH
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 $FFXUDF\
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+                                              %LW)XVLRQ
+
+
+
+
+                                                                                                                                                  %LW)XVLRQ
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                            %LW)XVLRQ
+                                                                                                  %LW)XVLRQ
+
+
+
+
+                                                                                                                                                                                              %LW)XVLRQ
+
+
+
+
+                                                                                                                                                                                                                                          %LW)XVLRQ
+
+
+
+
+                                                                                                                                                                                                                                                                                        %LW)XVLRQ
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                   %LW)XVLRQ
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                           %LW)XVLRQ
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     %LW)XVLRQ
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               %LW)XVLRQ
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  %LW)XVLRQ
+                                                                                                               2/$FFHO
+                                                          2/$FFHO
+
+
+
+
+                                                                                                                                                              2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                 2/$FFHO
+                                                                                                                                                                                                          2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                      2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                                     2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                         2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             2/$FFHO
+                                                                                                                                                                                                                                                                                                                                                                                                                                                           2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              2/$FFHO
+                                                                        '54
+
+
+
+
+                                                                                                                            '54
+
+
+
+
+                                                                                                                                                                         '54
+
+
+
+
+                                                                                                                                                                                                                    '54
+
+
+
+
+                                                                                                                                                                                                                                                                '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                               '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                     '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                           '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         '54
+                                   (\HULVV
+
+
+
+
+                                                                                    (\HULVV
+
+
+
+
+                                                                                                                                      (\HULVV
+
+
+
+
+                                                                                                                                                                                   (\HULVV
+
+
+
+
+                                                                                                                                                                                                                              (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                          (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                     (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                            (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                               (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        (\HULVV
+                                             &,)$5                                     ,/695&                                           &,)$5                              ,/695&                                       &,)$5                            ,/695&                                        &,)$5                                       ,/695&                                                &,)$5                                      ,/695&                                                  &,)$5                              ,/695&
+                                                                    $OH[1HW                                                                                             9**1HW                                                                             5HV1HW                                                                                  5HV1HW                                                                                                  ,QFHSWLRQ9                                                                                        0RELOH1HW9
+
+
+                                                                                                 Fig. 11: Comparison of NN accuracy and percentage of 8/4-bit for different networks.
+                                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                           3HUIRUPDQFH                                                                                                                                                                                                                                                                                                                                &RUH
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          *OREDO%XIIHU
+                                                                                                                                                                                                                                                                                                                     
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          '5$0
+  
+                                                                                                                                                                                                                                                                                                                     
+
+                                                                                                                                                                                                                                                                                                                     
+  
+                                                                                                                                                                                                                                                                                                                     
+                                                                                                                                                                                                                                                                                                                       
+                           %LW)XVLRQ
+                                        2/$FFHO
+
+
+
+
+                                                                              %LW)XVLRQ
+
+
+
+
+                                                                                                                                   %LW)XVLRQ
+
+
+
+
+                                                                                                                                                                                  %LW)XVLRQ
+                                                                                                                                                                                              2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                              %LW)XVLRQ
+
+
+
+
+                                                                                                                                                                                                                                                                            %LW)XVLRQ
+                                                                                              2/$FFHO
+
+
+
+
+                                                                                                                                                2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                           2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                           2/$FFHO
+                                                     '54
+
+
+
+
+                                                                                                              '54
+
+
+
+
+                                                                                                                                                              '54
+
+
+
+
+                                                                                                                                                                                                          '54
+
+
+
+
+                                                                                                                                                                                                                                                       '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                        '54
+                 (\HULVV
+
+
+
+
+                                                                (\HULVV
+
+
+
+
+                                                                                                                         (\HULVV
+
+
+
+
+                                                                                                                                                                        (\HULVV
+
+
+
+
+                                                                                                                                                                                                                    (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                    %LW)XVLRQ
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                              %LW)XVLRQ
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                     %LW)XVLRQ
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            %LW)XVLRQ
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            %LW)XVLRQ
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         %LW)XVLRQ
+                                                                                                                                                                                                                                                                                                                                                                  2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                          2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     2/$FFHO
+                                                                                                                                                                                                                                                                                                                                                                                '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                         '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               '54
+                                                                                                                                                                                                                                                                                                                                       (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                  (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                       (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               (\HULVV
+                           $OH[1HW                                        9**1HW                                               5HV1HW                                      5HV1HW                                ,QFHSWLRQ9                               0RELOH1HW9                                                                     $OH[1HW                                                    9**1HW                                         5HV1HW                                            5HV1HW                                         ,QFHSWLRQ9                                 0RELOH1HW9
+                                                                                                               D 3HUIRUPDQFHRIGLIIHUHQW11V                                                                                                                                                                                                                                                                                                    E (QHUJ\EUHDNGRZQRIGLIIHUHQW11V
+
+
+                                                                                                                                               Fig. 12: Performance (a); energy breakdown (b) of different networks.
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+loss) is better at preserving accuracy than OLAccel (5.1% loss)
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                $FFXUDF\/RVV
+                                                                                                                                                                                                                                                                                                                          3HUFHQWDJH
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+with a similar 90% of 4-bit percentage. While for the more                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+compact MobileNet-v2 which has a much smaller parameter                                                                                                                                                                                                                                                                                                                                                                                                                                     
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+size, the shifting from weight quantization to input feature map                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                                                                                                                                                %LW)XVLRQ
+
+                                                                                                                                                                                                                                                                                                                                                                                                    2/$FFHO
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                             %LW)XVLRQ
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                 2/$FFHO
+                                                                                                                                                                                                                                                                                                                                                                                                                   '54
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 '54
+                                                                                                                                                                                                                                                                                                                                                                (\HULVV
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                               (\HULVV
+quantization makes our DRQ more robust for preserving NN
+accuracy (0.9% loss) than OLAccel (5.4% loss) with 85% of                                                                                                                                                                                                                                                                                                                    &,)$5                                               ,/695&
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       (\HULVV %LW)XVLRQ 2/$FFHO                                                         '54
+                                                                                                                                                                                                                                                                                                                                                                             ELW3HUFHQWDJH                                             ELW3HUFHQWDJH
+4-bit percentage.                                                                                                                                                                                                                                                                                                                                                            ELW3HUFHQWDJH                                            $FFXUDF\/RVV                                                                                                      1RUP&\FOHV                                     1RUP(QHUJ\
+                                                                                                                                                                                                                                                                                                                                                                                                                          D                                                                                                                                                                          E
+   Fig. 12(a) shows the total execution cycles on different
+accelerators for the six networks, which are all normalized                                                                                                                                                                                                                                                           Fig. 13: Average accuracy loss (lower is better) (a), average
+to Eyeriss. Still taking ResNet-50 as an example, compared to                                                                                                                                                                                                                                                         normalized performance and energy (b).
+Eyeriss, DRQ achieves nearly 93% performance improvement
+because DRQ mostly uses INT4 MACs for insensitive regions
+                                                                                                                                                                                                                                                                                                                      because all weights are kept as INT8 in DRAM in DRQ, while
+with only a limited number of INT8 MACs for sensitive
+                                                                                                                                                                                                                                                                                                                      most of the weights are set to INT4 in OLAccel. We choose
+regions. About 16 times larger number of INT4 MAC units
+                                                                                                                                                                                                                                                                                                                      the weight stationary scheme so that we can avoid frequently
+can be ﬁt into the same area budget containing INT16 MACs
+                                                                                                                                                                                                                                                                                                                      reading INT8 weights from global buffer because the weights
+used in Eyeriss. Compared to BitFusion, DRQ achieves 73%
+                                                                                                                                                                                                                                                                                                                      are kept in the systolic array. Consequently, DRQ consumes
+performance improvement because BitFusion mainly utilizes
+                                                                                                                                                                                                                                                                                                                      similar energy as OLAccel on global buffer. The reduced core
+INT8 for computation in the comparison. For OLAccel, since
+                                                                                                                                                                                                                                                                                                                      energy in DRQ is mainly due to the systolic array processing
+it applies dedicate INT16 MACs for the ﬁrst layer and separate
+                                                                                                                                                                                                                                                                                                                      of the convolution so that most of the data can be shifted
+INT4 MACs for the rest layers [26], DRQ can achieve 20%
+                                                                                                                                                                                                                                                                                                                      from neighboring PEs. However, to make OLAccel viable,
+performance improvement thanks to the larger number of PEs
+                                                                                                                                                                                                                                                                                                                      their architecture is designed more towards a GPU processing
+under the same area budget in our scheme. Note that the
+                                                                                                                                                                                                                                                                                                                      style requiring each PE to fetch weight and activation from the
+speedup brought by OLAccel is at the cost of about 5% NN
+                                                                                                                                                                                                                                                                                                                      local register ﬁle every cycle so as to cause a large amount
+accuracy loss for benchmark like ILSVRC-2012.
+                                                                                                                                                                                                                                                                                                                      of data accessing energy. Overall, DRQ consumes less energy
+   Fig. 12(b) shows the energy consumption of different accel-
+                                                                                                                                                                                                                                                                                                                      than OLAccel on the core computation part.
+erators for the six networks, which is decomposed into DRAM,
+global buffer and processing cores (Core). Speciﬁcally, for                                                                                                                                                                                                                                                              Fig. 13 reports the average accuracy loss, execution cycles
+ResNet-50, compared to Eyeriss, BitFusion and OLAccel,                                                                                                                                                                                                                                                                and energy across the six networks. Note that in this plot,
+DRQ consumes 72%, 43% and 32% less energy, respectively.                                                                                                                                                                                                                                                              we show the accuracy LOSS (lower is better). On average,
+The energy reduction against Eyeriss and BitFusion is mainly                                                                                                                                                                                                                                                          for CIFAR-10, DRQ incurs 0.3% accuracy loss compared to
+due to the reduced precision on PEs, and the resultant narrower                                                                                                                                                                                                                                                       Eyesiss and BitFusion, while OLAccel has 1.6% accuracy
+bit-width data transferred between DRAM and global buffer.                                                                                                                                                                                                                                                            loss instead. For ILSVRC-2012, DRQ incurs 0.8% accuracy
+Compared to OLAccel, energy consumption diversiﬁes in dif-                                                                                                                                                                                                                                                            loss compared to Eyesiss and BitFusion, while OLAccel has
+ferent components. DRQ consumes more energy from DRAM                                                                                                                                                                                                                                                                 4.3% accuracy loss, which might be unacceptable for certain
+
+
+
+
+                                                                                                                                                                                                                                                                                                       1018
+
+                  Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:20 UTC from IEEE Xplore. Restrictions apply.
+                              ELW3HUFHQWDJH                 ELW3HUFHQWDJH                                                    ELW3HUFHQWDJH             ELW3HUFHQWDJH
+                              6WDOO5DWLR                      $FFXUDF\                                                            6WRUDJH2YHUKHDG             $FFXUDF\
+                                                                                                                                                                  
+                                                                                                                                                                     
+
+
+
+
+                                                                                                              3HUFHQWDJH
+         3HUFHQWDJH
+
+
+
+
+                                                                                                                                                                                     $FFXUDF\
+                                                                                   $FFXUDF\
+                                                                                                                                                                     
+
+                                                                                                                                                                     
+
+                                                                                                                                                                     
+
+                                                                                                                                                                        
+                                                                                                       Z                    
+                                            7KUHVKROG                                                                                     3UHGLFWLRQ5HJLRQ6L]H
+
+                      Fig. 14: Analyzation of the threshold.                                     Fig. 15: Analyzation of the sensitivity feature map region size.
+                                                                                                        NN Model                  Region Size         Average Threshold in Integer Number
+                                                                                                         AlexNet                      2*4                             18
+applications. In terms of performance, DRQ improves the                                                  VGG16                        2*4                             17
+performance by an average of 92% and 83% compared to                                                    ResNet-18                    4*16                             21
+Eyeriss and BitFusion, and 21% compared to OLAccel with                                                 ResNet-50                     4*8                             19
+3.3% accuracy improvement at the same time, which is quite                                             Inception-v3                   4*8                             23
+                                                                                                        MobileNet                     2*4                             25
+impressive for inference. Meanwhile, DRQ reduces 72%, 49%
+and 33% energy consumption on average over the other three                                           TABLE III: The region size and the average threshold used.
+schemes. Note that DRQ has the capability of tuning the
+threshold value to sustain the same accuracy levels as Eyesiss                                   noise in one pixel, leading to degraded accuracy and therefore
+and BitFusion, while gaining notable performance.                                                requiring more INT8 quantization to recover the accuracy
+   In conclusion, by properly predicting the sensitive regions                                   impact. For too larger region size like 32 × 32, most of the
+in the feature map and applying the sensitivity-aware quanti-                                    regions in the feature map have a high chance to cover some
+zation algorithm, the dynamic mix-precision convolution array                                    part of feature characteristic, ending up with many regions
+can reserve much of the key feature characteristics to deliver a                                 unnecessarily being marked as sensitive incurring redundant
+faithful NN accuracy comparable to the full-precision model,                                     INT8 quantization. Furthermore, as discussed in Section IV-E,
+while at the same time saving much of the bandwidth and                                          the region size also affects the storage overhead for prediction.
+computing power for the dominant insensitive regions.                                            In Fig. 15, we normalize the storage overhead to that in the
+                                                                                                 32 × 32 case. We ﬁnd that the stripe-shaped regions like
+B. Design Space Exploration                                                                      4 × w will be beneﬁcial for the storage saving in ResNet-
+   As discussed in Section III-D, the threshold and the region                                   18. Speciﬁcally, the plot suggests that a 4 × 16 region size is
+size affect the performance of our proposed architecture and                                     the best choice for balancing all above factors.
+the NN accuracy. In this section, we want to determine the                                          Note that the optimal threshold and region size differ from
+appropriate threshold by balancing the relationship among                                        network to network. Table III shows the actual region sizes
+the 4-bit percentage (higher is better), the stall ratio in the                                  and thresholds we use for all the investigated networks. The
+systolic array (lower is better) and the NN accuracy (higher                                     thresholds are set to different integer numbers for different
+is better). Based on the determined threshold, we choose                                         layers, so we only show the value averaged across all the layers
+the suitable region size by making tradeoffs among the 4-bit                                     in the table. We can ﬁnd the most suitable settings through an
+percentage (higher is better), the storage overhead (lower is                                    ofﬂine study, while the architecture can set the corresponding
+better) and the NN accuracy (higher is better).                                                  parameters at run time.
+   1) Impact of Threshold: Fig. 14 shows the impact of the                                          We need to mention that as the layers go deep, the size of
+threshold value for ResNet-18. We sweep it from 0.001 to 1.                                      the feature maps shrinks due to the pooling operation and we
+Generally, a higher threshold means less sensitive regions and                                   need to scale the region size accordingly. For the last a few
+allows for more INT4 quantization, but it will degrade the                                       convolution layers, the size of the sensitivity region is reduced
+NN accuracy. Moreover, less sensitive regions lead to lower                                      and ﬁxed at 2 × 2 in our experiments. As for the threshold, it
+stall ratio. Note that the stall ratio represents the probability                                remains similar in the front layers and may become 5X smaller
+of bubbles in the realtime execution. From this plot, we ﬁnd                                     in the last few layers. This is because most of the activations
+that with a threshold of 0.025, DRQ achieves an optimal point                                    aggregate as small values towards zero.
+for ResNet-18.
+   2) Impact of Region Size: Fig. 15 studies the impact of                                       C. Performance Breakdown
+region size on ResNet-18 considering the 4-bit percentage,                                         For a better understanding of the DRQ, we make a detailed
+storage overhead for buffering used in the predictor and NN                                      performance breakdown on ResNet18.
+accuracy. We set the region sizes to 4 × w, 4 × 16, 32 × 32,                                       Fig. 16 shows the execution cycles for different algorithm
+16 × 16 and 4 × 4, where w is the feature map width.                                             blocks (C1, B1, B2, B3 and B4) in ResNet-18, which are
+From the plot, we see that different region sizes may have                                       normalized to the total execution cycles. Note that a block
+different impacts. For a too small region size like 4 × 4, the                                   in ResNet-18 contains multiple layers. From the plot, we
+sensitivity of a region can be easily affected by the strong                                     can see that different blocks occupy different proportions of
+
+
+
+
+                                                                                              1019
+
+      Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:20 UTC from IEEE Xplore. Restrictions apply.
+                                       ,17&\FOH   ,17&\FOH   /RDG:&\FOH       To be speciﬁc, pruning makes NN sparse, quantization reduces
+                              
+
+
+           1RUPDOL]HG&\FOH
+                                                                                       NN precision and both reduce the required memory bandwidth.
+                               
+                                                                                       EIE [14] and Cnvlutin [2] exploits sparse NN models, while
+                              
+                                                                                       their special data format requires additional hardware over-
+                               
+                                                                                       head. BISMO [32] and BitFusion [29] proposed to execute
+                              
+
+                                
+                                                                                       quantized NN models. OLAccel [26] is the most up-to-date
+                                     &          %        %         %       %      accelerator that utilizes quantization with 4-bit and 16-bit
+                                                   5HV1HW%ORFNV
+                                                                                       MACs. For the ﬁrst layer, OLAccel applies 16-bit MAC, while
+                                 Fig. 16: Utilization breakdown.                       for the rest layers, it applies 4-bit MAC. These designs mainly
+                                                                                       cater for general NN pruning and quantization. Consequently,
+execution time. No matter in which block, the computation                              their architectures struggle for peak performance because it is
+cycles dominate the data loading cycles. Due to the different                          difﬁcult to ﬁnd a perfect ﬁtted quantization algorithm.
+ratio of sensitive regions in different blocks, the INT4 and
+                                                                                       B. Quantization algorithms
+INT8 execution cycles change across blocks. It is worth noting
+that the ﬁrst block (C1) of ResNet-18 is more sensitive than                              Quantization algorithms compress the NN model by reduc-
+all other blocks, so the INT8 operation ratio is higher (12%                           ing the number of bits required for weight and input feature
+of total execution cycles) in the ﬁrst block.                                          map value. Some of the representative algorithms are,
+   The DRQ is idling when switching to another set of weights                             1) Weight clustering: Gong et al. [12] and Wu et al. [34]
+(Load W). Because the size of the feature maps is much                                 applies k-means clustering to reduce the number of values
+smaller for the last block (B4), the weight loading process may                        that weights can represent. Han et al. [15] quantizes weights
+account for relatively longer period to around 4% of the total                         using weight sharing and then applies Huffman coding to the
+execution cycles in that block. For other blocks, the weight                           quantized weights for higher compression rate. However, the
+loading overhead is negligible.                                                        weight clustering methods require special data indexing, which
+                                                                                       is time-consuming and unfriendly to hardware.
+        VII. BACKGROUND AND R ELATED W ORKS                                               2) Binarization: For higher compression rate, several works
+A. Neural Network Accelerators                                                         are proposed to quantize NN by binarized or ternary weights
+                                                                                       and input feature map values. Lin et al. [22] binarizes the
+   In the last few years, various NN accelerators are proposed                         weights and input feature map values into {−1, +1}. Zhou et
+for inference [4], [6], [8], [11], [13], [18], [28], [30], [36].                       al. [37] binarizes weights into {−w, +w}. Zhu et al. [38] maps
+Some of the representative designs and techniques are,                                 weight into {−wN , 0, +wP }. However, these works achieve
+   1) Diannao series—on-chip memory design: Diannao se-                                high compression rate at the cost of notable accuracy loss.
+ries [6], [8], [23] introduce multiple NN accelerators. DaDi-                             3) Intra-layer quantization: Considering the importance of
+anNao [6] integrates a large on-chip eDRAM to avoid frequent                           NN accuracy, Park et al. [27] uses low-bit precision on the
+off-chip memory accessing. ShiDianNao [8] accelerates small                            majority of small data while applying high-bit precision on
+NN by storing all parameters of NN into a small on-chip                                a small part of large data. However, since the input feature
+SRAM. On top of these accelerators, Cambricon [23] is                                  map values are obtained on-line, quantizing input feature map
+designed as a domain-speciﬁc instruction set architecture to                           cannot be supported by accelerators in [25], [26], [29], [32]
+support multiple kinds of NN models. Since reducing off-                               due to the mismatch in hardware.
+chip memory accesses is important to performance, our DRQ                                 In summary, a close interaction between algorithm and
+architecture also beneﬁts from these on-chip memory designs.                           hardware is still missing in above works, which we believe
+   2) Eyeriss—dataﬂow analysis: As large NNs are im-                                   will be the trend for future NN accelerators. Our proposed
+possible to ﬁt the on-chip memory, researchers proposed                                DRQ makes such a trial to closely link them by respecting the
+dataﬂow analysis. Eyeriss [5] explores input-stationary (IS),                          NN accuracy and enabling higher accelerator performance.
+weight-stationary (WS), output-stationary (OS), and no-local-
+reuse (NLR) and propose row-stationary (RS) dataﬂow to                                                      VIII. C ONCLUSION
+improve data reuse. Nowadays, dataﬂow analysis becomes                                    Contemporary quantization algorithms by quantizing weight
+essential for NN accelerators. Our DRQ architecture supports                           or activation into integer values only focus on the value
+IS, WS, OS and RS, but applies WS in priority because the                              magnitude statistics but fail to capture the inherent geometric
+storage overhead of weights is larger than input values.                               characteristics in the input feature maps. This paper ﬁrst stud-
+   3) TPU—systolic array: Systolic array in TPU [18] is efﬁ-                           ies the sensitive regions in the feature map that may affect NN
+cient for convolution, as it can reuse data as much as possible.                       accuracy. To reduce the computation complexity, we propose
+Our DRQ proposal steps forward by closely interacting with                             DRQ algorithm to dynamically quantize the convolution based
+the algorithm, and leverages the systolic array as an efﬁcient                         on the sensitivity regions in the input feature map. Moreover,
+infrastructure for mixed precision.                                                    we propose the DRQ architecture to efﬁciently implement
+   4) Accelerators for NN pruning and quantization.: General                           the proposed DRQ algorithm through a well-designed mixed-
+NN pruning and quantization are widely used for inference.                             precision convolution array. Our evaluation shows that the
+
+
+
+
+                                                                                    1020
+
+      Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:20 UTC from IEEE Xplore. Restrictions apply.
+proposed DRQ scheme outperforms other similar schemes in                            [17] Benoit Jacob, Skirmantas Kligys, Bo Chen, Menglong Zhu, Matthew
+                                                                                         Tang, Andrew Howard, Hartwig Adam, and Dmitry Kalenichenko.
+performance, energy or accuracy.                                                         Quantization and training of neural networks for efﬁcient integer-
+                                                                                         arithmetic-only inference. In Proceedings of the IEEE Conference on
+                         ACKNOWLEDGMENT                                                  Computer Vision and Pattern Recognition, pages 2704–2713, 2018.
+                                                                                    [18] Norman P Jouppi, Cliff Young, Nishant Patil, David Patterson, Gaurav
+                                                                                         Agrawal, Raminder Bajwa, Sarah Bates, Suresh Bhatia, Nan Boden,
+  We thank the reviewers for their thoughtful comments and                               Al Borchers, et al. In-datacenter performance analysis of a tensor
+suggestions. This work is partly supported by the National                               processing unit. In ACM/IEEE 44th Annual International Symposium
+Natural Science Foundation of China (Grant No. 61772331,                                 on Computer Architecture (ISCA), pages 1–12, 2017.
+                                                                                    [19] Alex Krizhevsky, Vinod Nair, and Geoffrey Hinton. The cifar-10 dataset.
+61972242, 61834006) and National Key Research and De-                                    online: http://www. cs. toronto. edu/kriz/cifar. html, 55, 2014.
+velopment Program of China (Grant No. 2018YFA0701500).                              [20] Alex Krizhevsky, Ilya Sutskever, and Geoffrey E Hinton. Imagenet
+Naifeng Jing is the corresponding author.                                                classiﬁcation with deep convolutional neural networks. In Advances
+                                                                                         in neural information processing systems, pages 1097–1105, 2012.
+                                                                                    [21] Yann LeCun, Léon Bottou, Yoshua Bengio, Patrick Haffner, et al.
+                              R EFERENCES                                                Gradient-based learning applied to document recognition. Proceedings
+                                                                                         of the IEEE, 86(11):2278–2324, 1998.
+                                                                                    [22] Xiaofan Lin, Cong Zhao, and Wei Pan. Towards accurate binary
+ [1] Martı́n Abadi, Paul Barham, Jianmin Chen, Zhifeng Chen, Andy Davis,                 convolutional neural network. In Advances in Neural Information
+     Jeffrey Dean, Matthieu Devin, Sanjay Ghemawat, Geoffrey Irving,                     Processing Systems, pages 345–353, 2017.
+     Michael Isard, et al. Tensorﬂow: A system for large-scale machine              [23] Shaoli Liu, Zidong Du, Jinhua Tao, Dong Han, Tao Luo, Yuan Xie, Yunji
+     learning. In 12th {USENIX} Symposium on Operating Systems Design                    Chen, and Tianshi Chen. Cambricon: An instruction set architecture for
+     and Implementation ({OSDI} 16), pages 265–283, 2016.                                neural networks. In ACM/IEEE 43rd Annual International Symposium
+ [2] Jorge Albericio, Patrick Judd, Tayler Hetherington, Tor Aamodt, Na-                 on Computer Architecture (ISCA), pages 393–405, 2016.
+     talie Enright Jerger, and Andreas Moshovos. Cnvlutin: Ineffectual-             [24] Asit Mishra, Eriko Nurvitadhi, Jeffrey J Cook, and Debbie Marr. Wrpn:
+     neuron-free deep neural network computing. ACM SIGARCH Computer                     wide reduced-precision networks. arXiv preprint arXiv:1709.01134,
+     Architecture News, 44(3):1–13, 2016.                                                2017.
+ [3] David Bau, Bolei Zhou, Aditya Khosla, Aude Oliva, and Antonio                  [25] NVIDIA Whitepaper. Nvidia turing gpu architecture, 2018.
+     Torralba. Network dissection: Quantifying interpretability of deep visual      [26] Eunhyeok Park, Dongyoung Kim, and Sungjoo Yoo. Energy-efﬁcient
+     representations. In Proceedings of the IEEE Conference on Computer                  neural network accelerator based on outlier-aware low-precision com-
+     Vision and Pattern Recognition, pages 6541–6549, 2017.                              putation. In ACM/IEEE 45th Annual International Symposium on
+ [4] Srimat Chakradhar et al. A dynamically conﬁgurable coprocessor for                  Computer Architecture (ISCA), pages 688–698, 2018.
+     convolutional neural networks. ACM SIGARCH Computer Architecture               [27] Eunhyeok Park, Sungjoo Yoo, and Peter Vajda. Value-aware quantization
+     News, 38(3):247–257, 2010.                                                          for training and inference of neural networks. In Proceedings of the
+ [5] Yu-Hsin Chen, Joel Emer, and Vivienne Sze. Eyeriss: A spatial architec-             European Conference on Computer Vision (ECCV), pages 580–595,
+     ture for energy-efﬁcient dataﬂow for convolutional neural networks. In              2018.
+     ACM SIGARCH Computer Architecture News, volume 44, pages 367–                  [28] Maurice Peemen et al. Memory-centric accelerator design for convolu-
+     379, 2016.                                                                          tional neural networks. In ICCD, volume 2013, pages 13–19, 2013.
+ [6] Yunji Chen, Tao Luo, Shaoli Liu, Shijin Zhang, Liqiang He, Jia Wang,           [29] Hardik Sharma, Jongse Park, Naveen Suda, Liangzhen Lai, Benson
+     Ling Li, Tianshi Chen, Zhiwei Xu, Ninghui Sun, et al. Dadiannao: A                  Chau, Vikas Chandra, and Hadi Esmaeilzadeh. Bit fusion: Bit-level
+     machine-learning supercomputer. In Proceedings of the 47th Annual                   dynamically composable architecture for accelerating deep neural net-
+     IEEE/ACM International Symposium on Microarchitecture, pages 609–                   works. In Proceedings of the 45th Annual International Symposium on
+     622, 2014.                                                                          Computer Architecture, pages 764–775, 2018.
+ [7] Li Deng. The mnist database of handwritten digit images for machine            [30] Vivienne Sze et al. Efﬁcient processing of deep neural networks: A
+     learning research [best of the web]. IEEE Signal Processing Magazine,               tutorial and survey. Proceedings of the IEEE, 105(12):2295–2329, 2017.
+     29(6):141–142, 2012.                                                           [31] Shyamkumar Thoziyoor, Naveen Muralimanohar, Jung Ho Ahn, and
+ [8] Zidong Du, Robert Fasthuber, Tianshi Chen, Paolo Ienne, Ling Li, Tao                Norman P Jouppi. Cacti 5.1. Technical report, Technical Report HPL-
+     Luo, Xiaobing Feng, Yunji Chen, and Olivier Temam. Shidiannao:                      2008-20, HP Labs, 2008.
+     Shifting vision processing closer to the sensor. In ACM SIGARCH                [32] Yaman Umuroglu, Lahiru Rasnayake, and Magnus Själander. Bismo: A
+     Computer Architecture News, volume 43, pages 92–104, 2015.                          scalable bit-serial matrix multiplication overlay for reconﬁgurable com-
+ [9] Szymon Migacz et al. 8-bit inference with tensorrt, 2017.                           puting. In IEEE 28th International Conference on Field Programmable
+[10] Robin Genuer, Jean-Michel Poggi, and Christine Tuleau-Malot. Vari-                  Logic and Applications (FPL), pages 307–3077, 2018.
+     able selection using random forests. Pattern Recognition Letters,              [33] Kuan Wang, Zhijian Liu, Yujun Lin, Ji Lin, and Song Han. Haq:
+     31(14):2225–2236, 2010.                                                             Hardware-aware automated quantization with mixed precision. In
+[11] Vinayak Gokhale et al. A 240 g-ops/s mobile coprocessor for deep                    Proceedings of the IEEE Conference on Computer Vision and Pattern
+     neural networks. In CVPR Workshops, pages 682–687, 2014.                            Recognition, pages 8612–8620, 2019.
+[12] Yunchao Gong, Liu Liu, Ming Yang, and Lubomir Bourdev. Com-                    [34] Jiaxiang Wu, Cong Leng, Yuhang Wang, Qinghao Hu, and Jian Cheng.
+     pressing deep convolutional networks using vector quantization. arXiv               Quantized convolutional neural networks for mobile devices. In Pro-
+     preprint arXiv:1412.6115, 2014.                                                     ceedings of the IEEE Conference on Computer Vision and Pattern
+[13] Suyog Gupta, Ankur Agrawal, Kailash Gopalakrishnan, and Pritish                     Recognition, pages 4820–4828, 2016.
+     Narayanan. Deep learning with limited numerical precision. In                  [35] Yuhui Xu, Yongzhuang Wang, Aojun Zhou, Weiyao Lin, and Hongkai
+     International Conference on Machine Learning, pages 1737–1746, 2015.                Xiong. Deep neural network compression with single and multiple
+[14] Song Han, Xingyu Liu, Huizi Mao, Jing Pu, Ardavan Pedram, Mark A                    level quantization. In Thirty-Second AAAI Conference on Artiﬁcial
+     Horowitz, and William J Dally. Eie: efﬁcient inference engine on com-               Intelligence, 2018.
+     pressed deep neural network. ACM SIGARCH Computer Architecture                 [36] Chen Zhang et al. Optimizing fpga-based accelerator design for deep
+     News, 44(3):243–254, 2016.                                                          convolutional neural networks. In FPGA, pages 161–170, 2015.
+[15] Song Han, Huizi Mao, and William J Dally. Deep compression:                    [37] Aojun Zhou, Anbang Yao, Kuan Wang, and Yurong Chen. Explicit
+     Compressing deep neural networks with pruning, trained quantization                 loss-error-aware quantization for low-bit deep neural networks. In
+     and huffman coding. arXiv preprint arXiv:1510.00149, 2015.                          Proceedings of the IEEE Conference on Computer Vision and Pattern
+                                                                                         Recognition, pages 9426–9435, 2018.
+[16] Andrew G Howard, Menglong Zhu, Bo Chen, Dmitry Kalenichenko,
+                                                                                    [38] Chenzhuo Zhu, Song Han, Huizi Mao, and William J Dally. Trained
+     Weijun Wang, Tobias Weyand, Marco Andreetto, and Hartwig Adam.
+                                                                                         ternary quantization. arXiv preprint arXiv:1612.01064, 2016.
+     Mobilenets: Efﬁcient convolutional neural networks for mobile vision
+     applications. arXiv preprint arXiv:1704.04861, 2017.
+
+
+
+
+                                                                                 1021
+
+        Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:20 UTC from IEEE Xplore. Restrictions apply.
+

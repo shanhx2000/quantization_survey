@@ -1,0 +1,86 @@
+Values are quantized to a 4b indexes which are a 3b index                                                                           16 values
+into the stored dictionary entries and a 1b sign.
+
+
+
+
+                                                                                     OT Pointers Quantized Values
+                                                                                                                      9     2                          7
+
+
+
+
+                                                                                                                                                           per group
+                                                                                                                                                            4 lines
+E. Outliers
+
+
+
+
+                                                                                                                                                                       Memory Controller
+   Outliers (OT) are exceedingly rare and represent less than
+2% of weights and 5% of activations (varies per model
+and task). However, they do span over a disproportionally                                                            4b
+large value range. To quantize outliers, we adapt the Golden                                                          2         1     31
+Dictionary approach.
+   We could naı̈vely use a common dictionary for all values.                                                           6b     6b      6b      6b
+                                                                                                                    OT/group0              OT/group1
+Starting with the 16 centroid dictionary for the G values, we
+found that to support outliers, we need to widen the index                                                                 Off-Chip Memory
+range to int = 45. Encoding the index to such a dictionary                                                                Fig. 5: DRAM layout
+would require 6(index)+1(sign)=7 bits per value. We use a
+two-prong approach to limit index lengths to 4b. First, we use          98.5% G values and 1.5% outliers. G values are stored in the
+a separate outlier dictionary. Second, we take advantage of             form of exponents (4-bit) and outliers are stored as small (16
+the exceedingly rare occurrence of outliers to store all values,        entry–4-bit) dictionary indexes where the dictionary entries
+outlier or Gaussian, using a 4b index. A separate, space-               are 16b fixed-point values. A list of pointers identifies which
+and access-efficient list of pointers explicitly identifies which       indexes are to the outlier dictionary. Third, Mokey performs
+indexes correspond to outliers (all others index to the Gaussian        a run over a randomly selected batch of inputs to generate
+dictionary). Section III-A describes the encoding.                      the dictionaries for the activations. The profiling is to find the
+   Outliers require different handling during computation as            mean, standard deviation, and the outlier bins that activations
+they do not fit under the same exponents (0 to 7) as the                are using. The dictionaries and other constants per tensor
+Gaussian values. For any product where at least one of the              are stored along with the model. The space needed for this
+values is an outlier, Mokey converts the values into their              metadata pales in comparison with the size of the respective
+centroids and performs a multiply-accumulate. Since outliers            tensors; a G dictionary (8×16b entries), an OT dictionary
+are exceedingly rare, this is a rare occurrence (less than 4% of        (16×16b), plus a few constants and a list of outlier pointers.
+the multiplications in BERT). However, unless further action
+is taken, the centroids would be FP16 numbers necessitating              III. M OKEY M EMORY L AYOUT AND P ROCESSING U NITS
+FP16 capable MAC hardware. Fortunately, Mokey is further                   This section describes the memory encoding and processing
+enhanced to require only fixed-point values and hardware.               units of Mokey. Combined they reduce memory traffic and
+F. Integer Computation Throughout                                       footprint while performing most computations using narrow
+                                                                        fixed-point arithmetic.
+   Integer compute units are faster and more energy-efficient
+than floating-point units. Mokey maps what were originally              A. Off-Chip Memory Layout
+floating-point computations to the fixed-point (integer) do-
+                                                                           To take advantage of Mokey’s quantization for reducing off-
+main. The conversion to fixed-point arithmetic is done during
+                                                                        chip memory traffic and footprint, we need to map Gaussian
+profiling. The process starts after the mean, standard deviation,
+                                                                        and outlier values in a DRAM-friendly data container. Per
+the dictionary (bins) that we are going to use for outliers and
+                                                                        tensor, Gaussian and outlier values are represented as 4b
+the few constants (SoW, PoM) have been derived. To convert
+                                                                        indexes. Since outliers are rare, Mokey stores all values using
+these parameters to integer, Mokey first needs to set the total
+                                                                        4b indexes as shown in Figure 5. An extra list of pointers
+bit-width (b) and to compute the number of fractional bits per
+                                                                        identifies which of those indexes are outliers. The pointers
+layer (f rac). The number of fractional bits (f rac) needed is:
+                                                                        are encoded as follows: Conceptually, the regular “Quantized
+              f rac = b − ceil (log2 (max − min))            (7)        value” 4b index array is split into groups of 64, 4b indexes.
+                                                                        To identify those indexes that are outliers, the “OT Pointers”
+where max and min are the maximum and minimum values                    list first stores outlier count per group, followed by a list of
+that appear for the layer. The float (f l) to fixed-point(f x)          6b indexes marking their relative position within the group. In
+mapping then is:                                                        the example shown, group0 has two outliers at positions 1 and
+                f x = round(f l × 2f rac )/2f rac            (8)        31. This container is DRAM-friendly as accesses to the two
+                                                                        sub-arrays will be done through two streams, each proceeding
+G. Summary                                                              through the respective areas sequentially with the bulk of
+   In summary, Mokey quantized an input model as follows:               accesses going to the “Quantized Values” area. For simplicity,
+First, it generates the Golden Dictionary for quantization. This        at an appropriate level of the on-chip hierarchy the values can
+step is done once and the output is reused across all models.           be expanded to 5b (dictionary selection/1b, sign/1b, centroid
+Second, it quantizes the model’s parameters and embeddings.             index/3b) indexes. This facilitates single stream accesses per
+On average, these statically known values consist of about              tensor.
+
+
+
+                                                                    6
+

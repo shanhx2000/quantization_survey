@@ -1,0 +1,73 @@
+LightNobel: Improving Sequence Length Limitation in Protein Structure Prediction Model via Adaptive Activation Quantization             ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                            External Memory & Memory Interface                                      in a pipelined manner, where the RMPU passes intermediate results
+                                                                                 LightNobel
+                                                                                                    to the VVPU, improving overall throughput.
+     Token Aligner          Token Scratchpads      Weight Scratchpad
+                                                                                 Controller            PPM has a small hidden dimension (e.g., 128) compared to typi-
+                                                                                                    cal attention-based models (e.g., 4,096 in LLaMA 7B [58]), leading
+          Reconfigurable Matrix Processing Unit (RMPU)                       RMPU                   to small token sizes. However, the number of tokens is extremely
+      RMPU Data Aligner (RDA) 1      ...   RMPU Data Aligner (RDA) N     RDA 1... RDA N
+                                                                                                    large, easily reaching multi-millions, since it increases quadrati-
+                              RMPU Engine                                 RMPU Engine         ...   cally with respect to the protein sequence length. This results in
+                           RMPU Output FIFO                                RMPU FIFO
+                                                                                                    a significant volume of vector operations in the later processing
+                                                                                                    pipelines. To efficiently manage these workloads, the RMPU is de-
+                                                                                              ...
+                                                                                                    signed for high-throughput token-level operations, while the VVPU
+                     Global Crossbar Network (GCN)                               GCN
+                                                                                                    specializes in iterative vector computations. LightNobel ensures a
+     Versatile Vector Processing Unit (VVPU)                    VVPU     VVPU                       balanced execution by pairing each RMPU with a fixed number of
+              Local Crossbar Network (LCN)                      LCN       LCN
+                                                                                                    VVPUs. A Global Crossbar Network (GCN) interconnects all mod-
+            SIMD Lane
+                               ...    SIMD Lane
+                                                       ...      SIMD     SIMD
+                                                                                        ...   ...   ules and scratchpads, enabling dynamic scheduling between the
+         SIMD Scratchpad                 Pad                       ...
+                                                                 Pad      Pad ...
+                                                                                                    RMPU and the allocated VVPUs. For large-scale vector operations
+                Scalar Support Unit (SSU)                       SSU       SSU                       such as Softmax or Sequence Representation dataflow, multiple
+                                                                                                    VVPUs can work together as a single large processing unit via the
+                                            Output Scratchpad                                       GCN, enhancing their computational capacity. Finally, computa-
+                                                                                                    tion results are written back to the external main memory via the
+Figure 8: Overall block diagram of LightNobel architecture.                                         Output Scratchpad.
+
+                                                                                                    5.1    Token Aligner
+of quantized tokens in the memory. Inliers are stored sequentially,
+followed by outliers, scaling factors, and outlier indices. To opti-                                As explained in Section 4.3, multiple tokens are grouped to enhance
+mize memory utilization, data from multiple tokens is grouped into                                  memory bandwidth utilization. To allow the RMPU and VVPU to
+blocks, with the block size determined based on the bandwidth of                                    access these blocks efficiently from the scratchpad, the token blocks
+the memory channel.                                                                                 must be reorganized. This reorganization ensures that each line in
+   Despite token-wise quantization sharing the scaling factor on                                    the token scratchpad corresponds to the data of a single token, fa-
+a token level, inliers require a dequantization process in the last                                 cilitating more efficient token-level processing. To achieve this, the
+step of computation, while outliers do not. Therefore, inlier-outlier                               Token Aligner decodes and realigns the token blocks into a token-
+adjacency minimizes scaling factor computations, enhancing hard-                                    wise format before writing them to the scratchpad. This alignment
+ware utilization. This out-of-order value mapping is feasible due to                                process ensures seamless execution of subsequent computations by
+our hardware support for matrix multiplication without dequanti-                                    maintaining compatibility with the processing units, maximizing
+zation during runtime, particularly through the crossbar network,                                   the efficiency of token-wise operations.
+which handles any necessary ordering process. More details about
+hardware support are explained in Section 5.                                                        5.2    Reconfigurable Matrix Processing Unit
+                                                                                                    The Reconfigurable Matrix Processing Unit (RMPU) is designed to
+5    LightNobel Architecture                                                                        efficiently support matrix operations while maximizing computa-
+We propose LightNobel, a hardware accelerator designed to effi-                                     tional resource utilization and parallelism. A key feature of RMPU is
+ciently accelerate PPM using the proposed Adaptive Activation                                       that it can process various data precisions with minimal dequantiza-
+Quantization (AAQ). Figure 8 shows the overall architecture of                                      tion. Instead of performing dequantization on every piece of data, it
+LightNobel. LightNobel is designed to maximize token-level par-                                     minimizes redundant dequantization by prioritizing the execution
+allelism by leveraging the benefits of token-wise quantization. To                                  of operations that can be processed in advance. However, support-
+achieve this, it includes a Token Aligner, Reconfigurable Matrix Pro-                               ing multi-precision operations introduces another challenge, as
+cessing Units (RMPUs), Versatile Vector Processing Units (VVPUs),                                   the requirement for diverse computational units often leads to se-
+crossbar data networks, scratchpads, and a controller. A swizzle                                    vere underutilization. To address this, RMPU employs a bit-level
+switch [55] is employed as a crossbar network to enhance area and                                   reconfiguration strategy, where data is divided into minimum-unit
+power efficiency.                                                                                   bit chunks, and computational units are structured to execute nu-
+   At the beginning of execution, the Token Aligner reads and                                       merous small-scale operations. By dynamically allocating computa-
+stores the token block to the Token Scratchpad, which operates in a                                 tional elements and shifters based on data precision, RMPU ensures
+double-buffering manner to hide memory latency. Simultaneously,                                     efficient hardware utilization [57].
+weights are preloaded into the Weight Scratchpad for the weight-                                       Despite these advancements, achieving high utilization across
+stationary dataflow that maximizes reuse. The RMPU or VVPU                                          multiple data precisions within a single workload still remains a
+then fetches tokens and weights from these scratchpads. The RMPU                                    challenge. Without adjusting computational resources at runtime
+dynamically processes a configurable number of tokens in parallel,                                  based on operation requirements, underutilization is inevitable. In
+adapting to the quantization scheme, while the VVPU executes                                        AAQ, the number of computational units required varies accord-
+iterative computations such as LayerNorm. These two units operate                                   ing to the ratio of outliers and the precision level of inliers, even
+

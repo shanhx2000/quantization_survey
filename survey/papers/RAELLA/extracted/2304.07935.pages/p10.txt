@@ -1,0 +1,77 @@
+ISCA ’23, June 17–21, 2023, Orlando, FL, USA.                                                          Tanner Andrulis, Joel S. Emer, and Vivienne Sze
+
+
+sum. Column sums appear as a current on a column, which is
+buffered and scaled by a current buffer [24] before being captured
+as capacitor voltages and held by sample+hold circuits [38].
+   Next, four 7b ADCs [23] convert the 512 column sums in
+100ns [54]. 7b signed ADC results are summed by shift+add circuits
+and accumulated in 16b psum buffers [82].
+   With the most-dense slicing of two slices per weight, one cross-
+bar may produce up to 256 psums, which are stored in a 256-entry
+psum buffer. Each entry stores a 16b psum + 8b success flags, for a
+768B psum buffer total capacity.
+   In speculation/recovery cycles, inputs are streamed to crossbars
+                                                                         Figure 11: Dataflow. One row of outputs for a layer are com-
+once for each cycle. In speculation, ADCs process all columns. If
+                                                                         puted at a time. Tiles receive/send inputs/outputs once.
+an ADC saturates, the psum is not updated and the success flag is
+marked. In recovery, all success flags are checked. ADCs process
+and write results only for columns that failed speculation.                 Like other PIM accelerators [24, 47, 54, 80], RAELLA is pro-
+   The crossbar cycle is pipelined in two stages [54]. In the first      grammed once for many inferences to mitigate high ReRAM write
+stage, the DACs supply input pulses, the crossbar computes analog        energy [45]. When compiling a configuration for RAELLA, we use
+column sums, and the results are latched in sample+hold circuits.        lightweight preprocessing for Center+Offset and Adaptive Weight
+4b pulse train DACs with 1ns/1ns on/off pulse width take 30ns to         Slicing, as discussed in Section 4.2.2.
+send up to 15 input pulses. Crossbars settle and produce column
+sums in less than a nanosecond [17]. In the second stage, ADCs           5.5    DNN Dataflow
+convert sample+hold results in 100ns [54]. The overall crossbar          Each DNN layer is mapped to one crossbar if it fits. Otherwise, it will
+cycle time is 100ns from the slower-stage ADC processing.                spill over to more crossbars, IMAs, and tiles. RAELLA’s interlayer
+   RAELLA utilizes input bit sparsity to reduce column sum val-          dataflow follows ISAAC’s [54] to minimize eDRAM footprint and
+ues and crossbar energy, benefiting from the high bit sparsity of        inter-tile communication requirements. Fig. 11 shows RAELLA’s
+unsigned inputs (Fig. 8). If inputs are signed, RAELLA processes         dataflow. DNN layers are run in a pipeline across parallel tiles.
+positive/negative inputs in two separate cycles to generate sparsity.    Tiles generate one row of a layer’s output tensor at a time, reusing
+                                                                         previously-used input rows and fetching only new input rows. As
+                                                                         a tile produces rows of the output tensor from top to bottom, in-
+5.2     In-Situ Multiply Accumulate
+                                                                         put rows are consumed from the previous tile in the same order.
+Four crossbars are organized into an In-Situ Multiply Accumu-
+                                                                         Communication and data reuse patterns are coordinated by pat-
+late (IMA) with an input buffer [54]. An input network sends in-
+                                                                         tern generators and fixed at program time. Below the tile level,
+put vectors to crossbars, and if all inputs are shared between two
+                                                                         Timeloop [41] is used to find optimal data reuse patterns.
+crossbars, the input vector is multicast. To exploit temporal input
+                                                                            RAELLA replicates weights to increase throughput following
+reuse [47, 59], the input buffer stores reused inputs between cross-
+                                                                         previous work [24, 54, 56]. If there is space, weights are replicated
+bar cycles. The four crossbars can process up to 4 × 512 = 2048
+                                                                         in-crossbar to compute multiple convolution steps using a partial
+inputs across all rows, so the buffer is sized 2kB.
+                                                                         Toeplitz expansion [11, 24]. Weights can be further replicated across
+   To support Center+Offset weights, each IMA includes a weight
+                                                                         crossbars, IMAs, or tiles. Replication follows a greedy scheme: while
+center buffer and digital addition circuitry to calculate input sums.
+                                                                         there are tiles left, the lowest-throughput layer is replicated.
+A running sum is kept for each crossbar. To exploit input reuse [47],
+we add inputs to the sum when they are first used in crossbar
+                                                                         5.6    RAELLA Reduces Analog Nonidealities
+columns and subtract when they are last used. If different crossbar
+                                                                         PIM crossbars can suffer from nonidealities such as IR drop and
+columns use different subsets of the inputs, RAELLA adds/subtracts
+                                                                         sneak current. RAELLA reduces these relative to ISAAC.
+inputs in a streaming fashion while processing columns.
+                                                                            High current traversing long crossbar columns causes IR drop,
+                                                                         which can cause accuracy loss [7, 75]. Positive/negative 2T2R de-
+5.3     Tile                                                             vices consume current from their neighbors, reducing IR drop [28,
+Eight IMAs are organized into a tile. Each tile includes a 64kB          81]. Furthermore, RAELLA’s ADC saturates at 64, or fewer than five
+eDRAM buffer [54] storing 8b inputs/outputs, digital maxpool             ReRAMs in the highest-conductance state. Therefore, RAELLA’s
+units, and quantization circuits. RAELLA digitally computes 8b           columns must only tolerate current from five ReRAMs, compared
+per-channel quantization [82], allocating 32b per output channel         to an ISAAC-like design that sums current for 128 ReRAMs.
+to store a FP16 quantization scale and bias [82], or 32kB per tile.         Sneak current, or leakage through off ReRAMs, can cause accu-
+                                                                         racy loss [7]. Sneak current is zero in 2T2R crossbars as the leakages
+5.4     Accelerator & Programming                                        from positive and negative ReRAMs negate [81].
+Like ISAAC [54], every four tiles share a router enabling on-chip
+communication. When a tile completes a set of outputs, it sends          6     EVALUATION
+data to the next tile via its router. If a layer has more weights than   RAELLA is compared to accelerators ISAAC [54], FORMS-8 [80],
+a tile can store, its weights are split across multiple tiles.           and TIMELY [24]. ISAAC does not require DNN retraining. FORMS
+

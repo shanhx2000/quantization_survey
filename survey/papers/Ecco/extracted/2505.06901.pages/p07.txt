@@ -1,0 +1,78 @@
+   Ecco: Improving Memory Bandwidth and Capacity for LLMs via Entropy-aware Cache Compression                                                                   ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+
+                                          S=2                 S=8                 S = 32            S = 128                    Our analysis revealed that the k-means patterns are highly skewed
+                                          S=4                 S = 16              S = 64            S = 256                 due to the scaling of each group’s k-means using the absolute max-
+                         5.68                                                                                               imum value (absmax), which is treated as a separate centroid and
+Perplexity on Wikitext
+
+
+
+
+                         5.66                                                                                               excluded from the k-means pattern. To visualize this phenomenon,
+                                                                                                                            we plotted 16 shared k-means patterns in Figure 7. This charac-
+                         5.64                                                                                               teristic provides an opportunity for optimization. We propose a
+                         5.62                                                                                               simplified method that compares only the minimum and maximum
+                         5.60                                                                                      AWQ      values of each group (excluding the absmax) with the maximum
+                                                                                                                            and minimum of each k-means pattern. This approach dramatically
+                         5.58                                                                                               reduces hardware complexity from 𝐺 comparisons to just 2, offer-
+                         5.56                                                                                               ing significantly improved flexibility in implementation. While this
+                                  1        2         4            8      16       32        64     128      256             approach may slightly reduce compression efficiency compared to
+                                              Number of Huffman Codebooks (H)                                               Huffman coding, it provides more predictable compression ratios
+   Figure 5: Design space exploration showing the impact of                                                                 and greater adaptability to changing pattern distributions during
+   shared k-means patterns numbers (𝑆) and Huffman code-                                                                    inference. Experimental results demonstrate that this simplified
+   books numbers(𝐻 ) on LLaMA2-7B perplexity.                                                                               method incurs only a minimal drop in perplexity, representing
+                                                                                                                            an excellent trade-off between hardware realization complexity
+                                                                                                                            and model performance. This approach allows for efficient online
+  outperform state-of-the-art performance while offering the addi-                                                          compression of KV Cache without significant compromise to the
+  tional benefits of our compression scheme. This choice allows us                                                          model’s accuracy or computational efficiency. Our adapted KV
+  to maintain high model quality while enabling efficient hardware                                                          Cache compression strategy achieves hardware-efficient online
+  implementation and reduced memory footprint.                                                                              compression with minimal performance drop compared to MSE-
+  KV Cache Compression. The compression of KV Cache follows                                                                 based methods. In addition, by sharing the same structure as weight
+  a similar methodology to weight compression, with some key adap-                                                          compression, it enables unified decompression implementation for
+  tations to accommodate its dynamic nature. We utilize the same                                                            both weights and KV cache.
+  calibration dataset employed in weight compression, capturing each
+  layer’s KV cache by forwarding this dataset through the model. The
+  offline steps ( 1 2 3 4 6 7 ) in KV cache compression are identi-                                                                                                                              KP1
+                                                                                                                                                                                                 KP2
+  cal to those used for weight compression. However, the final steps                                                                                                                             KP3
+  ( 8 9 ) are transitioned to an online execution phase. A notable                                                                                                                               KP4
+                                                                                                                                                                                                 KP5
+  difference arises in the selection of the shared k-means pattern                                                                                                                               KP6
+  ( 5 ). Unlike weight compression, which is static and allows for                                                                                                                               KP7
+                                                                                                                                                                                                 KP8
+  offline optimization, KV Cache compression must be performed on-                                                                                                                               KP9
+  line during runtime. This real-time requirement presents a unique                                                                                                                              KP10
+  challenge, as computing mean squared error (MSE) to find the opti-                                                                                                                             KP11
+                                                                                                                                                                                                 KP12
+  mal pattern for each group would incur prohibitive computational                                                                                                                               KP13
+  overhead in circuit implementation. The naive approach of round-                                                                                                                               KP14
+                                                                                                                                                                                                 KP15
+  ing values using all 𝑆 shared k-means patterns, calculating MSE                                                                                                                                KP16
+  for each, and selecting the minimum would be extremely costly.
+  For instance, processing a single group would require 𝐺 binary
+                                                                                                                              1.00   0.75   0.50   0.25 0.00   0.25   0.50    0.75    1.00
+  searches, 𝐺 subtractions, multiplications, and additions for each of                                                                         Kmeans Centroid Values
+  the S patterns, where 𝐺 is the number of elements in each group.
+  Implementing this would either increase latency by a factor of                                                            Figure 7: Highly skewed shared k-means patterns. Each row
+  𝑆 or necessitate 𝑆-fold hardware duplication, both of which are                                                           represents a k-means pattern, each point represents a cen-
+  impractical solutions.                                                                                                    troid value.
+                                                                                                                            Activation Compression. Activation compression requires a dif-
+                                                                                                                            ferent approach due to the more dynamic nature of activation
+        ⇤1b~15b⇥                      ⇤2b⇥      ⇤ 8b ⇥        ⇤       256b~501b     ⇥   ⇤           0b~240b            ⇥    ranges. We target an average of 8 bits per activation value to ac-
+                         ID_KP        ID_HF
+                                                   Scale         Huffman Coded Data             Padded Outliers             commodate this variability. Given that activations are typically
+                                                  Factor         (Each Data: 2b~8b)     (Each Outlier: 7b addr, 8b value)
+                                                                                                                            consumed by the subsequent kernel immediately after the current
+                                (a) Compressed block of Weight and KV Cache: Compression ratio 4x                           kernel completes, we prioritize a simple compression scheme for
+       ⇤                  8b     ⇥ ⇤     8b     ⇥ ⇤         8b     ⇥ ⇤     8b     ⇥          ⇤    8b   ⇥ ⇤        8b   ⇥
+                                                                                                                            efficiency. Our method employs integer-based uniform quantization
+                                                                                                                            with a zero point. The final format of a compressed block is shown
+                    Data #0             Data #1            Data #2        Data #3       …        Data #62      Data #63
+                                                                                                                            in Figure 6-b. To ensure all metadata, including the scale factor and
+                                      (b) Compressed block of Activation: Compression ratio 2x                              zero point, fit within the compressed block, we allocate 7 bits for
+                                                                                                                            the compressed data width. The remaining bit every 8 bits is used
+   Figure 6: Compressed block format of weight, KV cache, and                                                               to store a 16-bit zero point and a 16-bit scale factor.
+   activations.
+

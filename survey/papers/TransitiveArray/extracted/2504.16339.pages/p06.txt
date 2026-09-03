@@ -1,0 +1,82 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                     Cong Guo, Chiyue Wei, Jiaming Tang, Bowen Duan, Song Han, Hai Li, and Yiran Chen
+
+
+      0b           3b 4b     11b 12b        15b 16b                  27b 28b            31b 32b        33b
+                                                                                                               indices by applying a 1-to-0 bit flip to the prefix bitmap, while the
+       Node           Count Prefix Bitmap 1 Prefix Bitmap 2,3,4 Suﬃx Bitmap                       Lane ID
+                                                                                                               Suffix Translator reconstructs suffix indices through a 0-to-1 bit flip.
+            10                    2           8       For distance              11         14
+            1010      0~255 1010 0010        1000
+                                                       with 2 3 4.
+                                                                      0101     1011        1110     0~3        This design eliminates the need to explicitly store prefix and suffix
+                                       3                                              12                       data, significantly reducing significant (𝑇 times for 𝑇 -bit) memory
+                                   0011                                               1100
+                                             Bitmap                                                 Bitmap
+                    - 1000                                            0000                                     overhead. Moreover, the method achieves fast and accurate decod-
+            11        0000             9     1011            8     + 0100             10             0111
+            1011    - 0010         1001                     1000   + 0010             1010
+                                                                                                               ing with minimal hardware complexity, making it highly suitable
+                    - 0001             10
+                                                                   + 0001              9
+           Prefix Translator       1010                     Suffix Translator         1001                     for high-performance systems.
+                                                                                                                  Finally, we get only one prefix for each node. It is important to
+Figure 6: Bit field diagram of 4-bit Scoreboard and prefix and                                                 note that the distance in the algorithm is a conceptual construct.
+suffix translators.                                                                                            In the hardware implementation, a straightforward logic circuit
+                                                                                                               utilizing bitmaps can accurately determine the distance without
+memory requirement for SI is: 2 × 𝑇 × 2𝑇 bits, where 𝑇 is the Tran-
+                                                                                                               introducing conflicts or dependencies, thanks to the efficient data
+sRow width. When 𝑇 = 8, the SI needs only 512 Bytes of memory,
+                                                                                                               structure design. Consequently, we are able to fully exploit the
+which is insignificant and stored in the on-chip buffer.
+                                                                                                               inherent parallelism of the Hasse graph by processing each level
+                                                                                                               concurrently. This is facilitated by a multi-way Scoreboard design,
+3.3         Static Scoreboard                                                                                  which achieves high efficiency during on-the-fly operations.
+The execution order for all tensors in a DNN model, including
+weight and activation tensors, can be precomputed. For activation                                              4     Transitive Array
+tensors, a small calibration dataset is used to generate the activation
+                                                                                                               Fig. 7 and Fig. 8 shows Transitive Array design and an example of
+tensors. We first transform the quantized tensor into a binary matrix,
+                                                                                                               processing TransArray computation.
+which is then divided into 𝑇 -bit TransRows. All TransRows within
+the tensor are recorded, and the final static Scoreboard Information
+                                                                                                               4.1     Tiling
+(SI) is computed offline using our proposed algorithm in Fig. 5.
+   However, static SI may introduce efficiency challenges. GEMM                                                Tiling is a fundamental technique for partitioning GEMM opera-
+relies on tiling (Sec. 4.1), and for a given tile, the prefix of a Tran-                                       tions into smaller tiles, optimizing execution for DNN accelerators.
+sRow in the static SI may not exist in that tile, leading to an SI Miss,                                       In Fig. 8 1 , we illustrate an example featuring an 𝑆-bit weight ma-
+similar to a cache miss. An SI miss disrupts the prefix-suffix path,                                           trix of shape (𝑁 × 𝐾), an 8-bit input matrix of shape (𝐾 × 𝑀), and a
+significantly impacting performance. We conduct experiments to                                                 32-bit partial sum output matrix of shape (𝑁 × 𝑀). Initially, tensors
+evaluate this impact in Sec. 5.8. To ensure that the Scoreboard re-                                            are stored in off-chip DRAM. For each TransArray, only a small
+mains transparent to users and minimizes SI misses, we propose an                                              tile is processed in the on-chip buffer, consisting of a weight tile
+efficient hardware-supported dynamic Scoreboard for enhanced                                                   (𝑛 × 𝑘), an input tile (𝑘 × 𝑚), and an output tile (𝑛 × 𝑚). Using the
+performance.                                                                                                   bit-slice method, the weight tensor is decomposed into a binary
+                                                                                                               weight tile of shape (𝑆 · 𝑛 × 𝑘). The pre-quantization and bit-slicing
+3.4         Dynamic Scoreboard                                                                                 processes are performed offline, while all subsequent steps execute
+                                                                                                               at runtime. During computation, the TransArray unit processes
+Fig. 6 illustrates the bit fields of a single entry in the 4-bit dynamic
+                                                                                                               a sub-tile consisting of a weight tile (𝑆 · 𝑛 × 𝑇 ) and an input tile
+Scoreboard design.
+                                                                                                               (𝑇 × 𝑚), where 𝑇 represents the TransRow width.
+    Node and Count: Each entry contains a Node identifier (e.g.,
+Node 10) and an 8-bit Count field, representing the number of
+                                                                                                               4.2     Scoreboarding
+TransRows sharing the same value as the node. The Count field
+facilitates load balancing across the trees.                                                                   In Fig. 8 1 bottom, TransArray can select only one type of Score-
+    Prefix Bitmaps (PBs): We allocate four Prefix Bitmap fields,                                               board Information (SI) between static and dynamic. The static SI
+each corresponding to prefix indices at distances of 1, 2, 3, and 4.                                           is stored in DRAM and pre-fetched by TransArray before GEMM
+    Suffix Bitmap (SB): The Suffix Bitmap records suffix nodes that                                            computation, incurring no runtime overhead. Thus, all sub-tiles
+are absent from the current set of TransRows.                                                                  in the tensor share the same static SI. In contrast, the dynamic
+    Lane ID: Each entry includes a Lane ID field that records the lane                                         SI is generated at runtime using the hardware Scoreboard when
+identifier associated with the node. This facilitates the distribution                                         the weight sub-tile (𝑆 · 𝑛 × 𝑇 ) is sent to the on-chip network. Un-
+of tasks across multiple parallel lanes.                                                                       like the static SI, each sub-tile has its own private dynamic
+    Furthermore, the Scoreboard can be extended to accommodate                                                 SI, enabling optimal prefix for each TransRow. As illustrated in In
+an 8-bit Hasse graph by maintaining the same fields but increasing                                             Fig. 7 (a), the sub-tile and the Scoreboard unit can be shared by
+the bit-width accordingly to handle the larger number of nodes.                                                multiple TransArray units.
+    Thanks to the Hasse representation, each node is shown to have
+a limited set of prefixes and suffixes. Leveraging this property, we                                           4.3     Dispatch
+propose an efficient encoding and decoding mechanism to map                                                    Next, the TransArray dispatches TransRows along with their corre-
+bitmap representations into prefix and suffix indices. As shown in                                             sponding Scoreboard Information (SI) in Fig. 7 (b) Dispatcher and
+Fig. 6-bottom, the proposed method introduces a Prefix Transla-                                                Fig. 8 2 and 3 . During this dispatch process, TranSparsity is com-
+tor and a Suffix Translator to compress and recover transitive                                                 puted using a simple XOR gate. For example, when the TransArray
+sparsity information effectively. The Prefix Translator derives node                                           receives TransRow 7 (0111), it first retrieves its Prefix 5 (0101)
+

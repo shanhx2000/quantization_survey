@@ -1,0 +1,879 @@
+                                                    To Appear in 2021 ACM/IEEE 48th Annual International Symposium on Computer Architecture (ISCA)
+
+
+
+                                             RingCNN: Exploiting Algebraically-Sparse Ring
+                                                Tensors for Energy-Efficient CNN-Based
+                                                        Computational Imaging
+                                                                                                  Chao-Tsung Huang
+                                                                                         Department of Electrical Engineering
+                                                                                            National Tsing Hua University
+                                                                                              HsinChu, Taiwan, R.O.C.
+                                                                                              chaotsung@ee.nthu.edu.tw
+arXiv:2104.09056v1 [cs.NE] 19 Apr 2021
+
+
+
+
+                                            Abstract—In the era of artificial intelligence, convolutional           tational imaging. The former includes object recognition [18],
+                                         neural networks (CNNs) are emerging as a powerful technique                [43] and detection [55]. The latter involves image denoising
+                                         for computational imaging. They have shown superior quality for            [49], [50], super-resolution (SR) [26], [31], [32], [47], and
+                                         reconstructing fine textures from badly-distorted images and have
+                                         potential to bring next-generation cameras and displays to our             style transfer [24], [56]; in particular, denoising is the key
+                                         daily life. However, CNNs demand intensive computing power for             to enhance low-light photography on mobile phones, and
+                                         generating high-resolution videos and defy conventional sparsity           SR plays an important role for displaying lower-resolution
+                                         techniques when rendering dense details. Therefore, finding new            contents on ultra-high-resolution (UHD) TVs. Although CNNs
+                                         possibilities in regular sparsity is crucial to enable large-scale         can be applied in both application fields, the computation
+                                         deployment of CNN-based computational imaging.
+                                            In this paper, we consider a fundamental but yet well-explored          schemes are quite different and so are their design challenges.
+                                         approach—algebraic sparsity—for energy-efficient CNN accelera-                Recognition and detection CNNs aim to extract high-level
+                                         tion. We propose to build CNN models based on ring algebra that            features and usually process small images with a huge amount
+                                         defines multiplication, addition, and non-linearity for n-tuples           of parameters. In contrast, computational imaging ones need
+                                         properly. Then the essential sparsity will immediately follow,             to generate low-level and high-precision details and often deal
+                                         e.g. n-times reduction for the number of real-valued weights.
+                                         We define and unify several variants of ring algebras into a               with much larger images with fewer parameters. For example,
+                                         modeling framework, RingCNN, and make comparisons in terms                 the state-of-the-art FFDNet for denoising [50] requires only
+                                         of image quality and hardware complexity. On top of that, we               850K weights but can be used to generate 4K UHD videos
+                                         further devise a novel ring algebra which minimizes complexity             at 30 fps. This will demand as high as 106 TOPS (tera
+                                         with component-wise product and achieves the best quality using            operations per second) of computation, and the precision of
+                                         directional ReLU. Finally, we design an accelerator, eRingCNN,
+                                         to accommodate to the proposed ring algebra, in particular                 multiplications could be at least 8-bit for representing suffi-
+                                         with regular ring-convolution arrays for efficient inference and           cient dynamic ranges. Therefore, for computational imaging
+                                         on-the-fly directional ReLU blocks for fixed-point computation.            it is the intensive computation for rendering fine-textured,
+                                         We implement two configurations, n = 2 and 4 (50% and                      high-throughput, and high-precision feature maps to pose
+                                         75% sparsity), with 40 nm technology to support advanced                   challenges for the deployment in consumer electronics.
+                                         denoising and super-resolution at up to 4K UHD 30 fps. Layout
+                                         results show that they can deliver equivalent 41 TOPS using                   Exploiting sparsity in computation is a promising way to
+                                         3.76 W and 2.22 W, respectively. Compared to the real-valued               reduce complexity for CNNs. Many approaches have been
+                                         counterpart, our ring convolution engines for n = 2 achieve                analyzed in detail, but most of them are discussed only for
+                                         2.00× energy efficiency and 2.08× area efficiency with similar             recognition and detection. The most common one is to explore
+                                         or even better image quality. With n = 4, the efficiency gains             natural sparsity for feature maps [3], [34] and/or filter weights
+                                         of energy and area are further increased to 3.84× and 3.77×
+                                         with only 0.11 dB drop of peak signal-to-noise ratio (PSNR).               [16], [38], [54]. Utilizing such sparsity, like unstructured
+                                         The results show that RingCNN exhibits great architectural                 pruning [17], will induce computation irregularity and thus
+                                         advantages for providing near-maximum hardware efficiencies                significant hardware overheads. For example, the state-of-
+                                         and graceful quality degradation simultaneously.                           the-art SparTen [16] only delivers 0.43 TOPS/W on 45 nm
+                                            Index Terms—convolutional neural network, computational                 technology for the dedicated designs to tame irregularity. If,
+                                         imaging, regular sparsity, hardware accelerator
+                                                                                                                    instead, structured pruning [35], [40] is applied to improve
+                                                                I. I NTRODUCTION                                    regularity, model quality will then drop quickly. Thus, natural
+                                                                                                                    sparsity is hard to support high-throughput inference with low
+                                            Convolutional neural networks (CNNs) have demonstrated                  power consumption.
+                                         their superiority in the fields of computer vision and compu-                 Another common approach is to explore the low-rank spar-
+                                           This work was supported by the Ministry of Science and Technology,       sity in over-parameterized CNNs by either decomposition [27],
+                                         Taiwan, R.O.C., under Grant no. MOST 109-2218-E-007-034.                   [30], [37] or model structuring [12], [19], [23], [41]. It aims
+
+
+
+                                                                                                                1
+high compression ratios and approximates weight tensors by              methods mostly adopt the component-wise ReLU for non-
+regular but radically-changed inference structures. This low-           linearity and use the linear transforms in ring multiplication for
+rank approximation works well for recognition CNNs which                information mixing. However, for fixed-point implementation
+extract high-level features. But it could quickly deteriorate           these transforms will increase input bitwidths for the follow-
+the representative power of computational imaging ones for              ing component-wise products and bring significant hardware
+generating local details. For example, merely applying depth-           overheads. Inspired by this, we propose a ring with a novel
+wise convolution can lead to 1.2 dB of peak signal-to-noise             directional ReLU to serve both non-linearity and information
+ratio (PSNR) drop for SR networks [21]. Therefore, low-rank             mixing. Then we can avoid the transforms before the prod-
+sparsity may not be suitable for fine-textured CNN inference.           ucts to eliminate the bitwidth-increasing overheads. Extensive
+   A recent alternative for providing regular acceleration is           evaluations will show that the proposed ring can achieve not
+to enforce full-rank sparsity on matrix-vector multiplications          only the best hardware efficiency for multiplications but also
+[13], [52], [53]. It partitions them into several n × n sub-block       the best image quality for its compact structure for training.
+multiplications and then replaces each one by a component-                 Finally, we design an accelerator—eRingCNN—to utilize
+wise product between n-tuples. This is equivalent to a group            the proposed ring for high-throughput and energy-efficient
+convolution with data reordering [53]; therefore, for restor-           CNN acceleration. For comparison purposes, we adopt eCNN
+ing representative power additional pre-/post-processing is             [21], the state-of-the-art for computational imaging, as our
+required to mix information between components or groups.               architecture backbone. Then we devise highly-parallel ring-
+CirCNN [13] equivalently applies Fourier transform on each              convolution engines for efficient inference and simply replace
+sub-block for this purpose by forcing weight matrices to                the real-valued counterparts in eCNN thanks to their regularity
+be block-circulant. ShuffleNet [52] instead performs global             and similarity in computation. For the directional ReLU which
+channel shuffling, and HadaNet [53] adopts simpler Hadamard             involves two transforms, conventional MAC-based accelera-
+transform. However, the applicability of this approach is               tors may need to perform quantization before each transform
+unclear for computational imaging because CirCNN aims very              and cause up to 0.2 dB of PSNR drop. Instead, we apply an on-
+high compression ratios (66× for AlexNet [29]), and Shuf-               the-fly processing pipeline to avoid unnecessary quantization
+fleNet and HadaNet focus only on bottleneck convolutions.               errors and facilitate fixed-point inference on 8-bit features.
+   Lastly, a fundamental but less-discussed approach is to              With 40 nm technology, we implement two sparsity settings,
+exploit algebraic sparsity. In contrast to using real numbers,          n = 2 and 4, for eRingCNN to show the effectiveness.
+CNNs can also be constructed by complex numbers [44] or                    In summary, the main contributions and findings of this
+quaternions [15], [39], [57]. By their nature, the number of            paper are:
+real-valued weights can decrease two or four times, respec-                • We propose a novel modeling framework, RingCNN, to
+tively. Moreover, their multiplications can be accelerated by                 thoroughly explore algebraic sparsity. The corresponding
+fast algorithms. For example, the quaternion multiplication                   training process, including quantization, is also estab-
+is usually expressed by a 4 × 4 real-valued matrix and can                    lished for in-depth quality comparisons.
+be simplified into eight real-valued multiplications and some              • We propose a novel ring variant with a directional ReLU
+linear transforms [20]. Regarding activation functions, the real-             which achieves better image quality and area saving than
+valued component-wise rectified linear unit (ReLU) is mostly                  complex field, quaternions, the rings alike to CirCNN
+adopted, and its efficiency over complex-domain functions is                  and HadaNet, and all newly-discovered ones. Its image
+demonstrated in [44]. Since this algebraic sparsity can reduce                quality even outperforms unstructured weight pruning and
+complexity with moderate ratios and high regularity, it is a                  sometimes, when n = 2, can be better than real field.
+good candidate for accelerating computational imaging. How-                • We design and implement accelerators with two configu-
+ever, previous work only discusses the two traditional division               rations: eRingCNN-n2 (50% sparsity) and eRingCNN-n4
+algebras and thus poses strict limitations for implementation.                (75%). They can deliver equivalent 41 TOPS using only
+   In this paper, we would like to lay down a more generalized                3.76 W and 2.22 W, respectively, and support high-quality
+framework—RingCNN—for algebraic sparsity to expand its                        computational imaging at up to 4K UHD 30 fps.
+design space for model-architecture co-optimization. Observ-               • Our ring convolution engines achieve near-maximum
+ing that division is usually not required by CNN inference, we                hardware efficiencies (∼= n). Layout results show that for
+propose to construct models by ring, a fundamental algebraic                  n = 2 they have 2.00× energy efficiency and 2.08× area
+structure on n-tuples with definitions of multiplication and                  efficiency compared to the real-valued counterpart. Those
+addition. In particular, we consider a bilinear formulation for               for n = 4 can increase the corresponding efficiency gains
+ring multiplication to have transform-based fast algorithms                   to 3.84× and 3.77×, respectively.
+and thus include full-rank sparsity into this framework. For               • RingCNN models provide competitive image quality.
+constructing CNN models, we also equip non-linearity to the                   Compared to the real-valued models for eCNN, those
+rings. Then several ring variants are defined properly and com-               for eRingCNN-n2 even have an average PSNR gain
+pared systematically for joint quality-complexity optimization.               of 0.01 dB and those for eRingCNN-n4 only drop by
+   This algebraic generalization also brings architectural in-                0.11 dB. When serving Full-HD applications on eR-
+sights on ring non-linearity. We observe that conventional                    ingCNN, they can outperform the advanced FFDNet [50]
+
+
+
+                                                                    2
+     for denoising and SRResNet [31] for SR.
+                        II. M OTIVATION
+   We aim to enable next-generation computational imaging
+on consumer electronics by achieving high-throughput and
+high-quality inference with energy-efficient and cost-effective
+acceleration. However, computational imaging CNNs require
+dense model structures to generate fine-textured details. Thus
+before deploying any complexity-reducing method we need
+to examine the impact of image quality and the gain of
+computation complexity as a whole.
+   Without loss of generality, we demonstrate this quality-
+complexity tradeoff using the advanced model SRResNet as
+an example. In Fig. 1, two conventional sparsity techniques             Fig. 1. Computation efficiency versus image quality. Different complexity-
+are examined. One is unstructured magnitude-based weight                reducing methods are applied to SRResNet for four-times SR tasks (scaling
+pruning for exploring natural sparsity. It shows graceful quality       up by four times for both of image width and height). The models are
+                                                                        trained using the same training strategy. The image quality is measured by
+degradation when compression ratios are up to 2×, 4×,                   the averaged PSNR over test datasets Set5 [7], Set14 [48], BSD100 [36], and
+and 8×. However, its irregular computation will erode the               Urban100 [22].
+performance gain due to induced hardware overheads and load
+imbalance. For example, only 11.7% of power consumption
+and 5.6% of area are spent on MACs in the sparse tensor ac-             where x(l−1) , G(l) , b(l) , and f (l) represent the input feature
+celerator SparTen [16]. The other examined technique is depth-          tensor, weight tensor, bias tensor, and non-linear tensor oper-
+wise convolution (DWC) which exploits low-rank sparsity. The            ation respectively. Conversely, as long as we define the three
+quality drops very quickly and even can be worse than the               operations properly, we can construct neural networks at will
+old-fashioned VDSR [26]. As a result, weight pruning and                using other algebraic structures.
+DWC are unfavourable for computational imaging due to the                  An example for using complex field is shown in Fig. 2. Each
+computation irregularity and the quality distortion respectively.       complex number z can be expressed by either a complex form
+   A more straightforward approach is to reduce the model size          z0 + z1 i or an equivalent 2-tuple ( zz01 ). Then weight storage
+in a compact way, and here we consider two cases: shrinking             can be reduced by a half, and arithmetic computation can be
+either model depth or feature channels. For SRResNet, the               accelerated by the complex multiplication algorithm, i.e. the
+depth reduction causes sharp quality loss. In contrast, the             complexity for each complex multiplication can be reduced
+channel reduction provides a good quality-complexity tradeoff           from four real multiplications to three. In the following, we
+which shows a similar trend as weight pruning and performs              will first consider ring algebras to generalize this idea and
+much better than DWC. In particular, this approach maintains            define proper ring multiplication for discussion. Then we will
+high computation regularity and can be accelerated by energy-           analyze their demands of hardware resources, and, finally,
+efficient dense tensor accelerators, such as eCNN [21] in which         propose a novel ring variant with directional non-linearity to
+94.0% of power consumption and 72.8% of area are spent                  maximize hardware efficiency.
+on convolutions. Therefore, the compact model configurations
+                                                                        A. Ring Algebra
+should also be considered before applying sparsity.
+   In this paper, we would like to explore the possibility of              A ring R is a fundamental algebraic structure which
+having the quality of weight pruning and the regularity of              is a set equipped with two binary operations + and · .
+compact modeling at the same time. We will approach this                Here we consider the set of real-valued n-tuples, i.e. R =
+goal by using ring algebra for the elementary operations in             {x = (x0 , ..., xn−1 )t | xi ∈ R}. For clarity, x is a ring element
+CNNs. In this way, we can achieve local sparsity and assure             and xi is its real-valued component. And we simply use the
+global regularity simultaneously. Our results, RingCNN, for             component-wise vector addition for the ring addition +.
+SRResNet are also shown in Fig. 1 to demonstrate the effec-                As for ring multiplication · , it plays an important role for
+tiveness. The details of our approach will be introduced in the         the properties of different rings. Given
+following.                                                                                              z =g·x                                 (2)
+      III. R ING A LGEBRA FOR N EURAL N ETWORKS
+                                                                        where z, g, x ∈ R, we consider it has a bilinear form to
+   Deep neural networks consist of many feed-forward lay-               have a general formulation for fast algorithms, which will be
+ers. These layers are usually defined over real field R and             discussed in Section III-B. In particular, the components of
+formulated by its three elementary operations: addition +,              the three ring elements are related by
+multiplication · , and non-linearity f . With tensor extensions,
+                                                                                                     n−1
+                                                                                                     X n−1
+we can have a common formulation for each l-th layer:                                                    X
+                                                                                              zi =             Mikj gk xj ,                    (3)
+                x(l) = f (l) (G(l) x(l−1) + b(l) ),          (1)                                     j=0 k=0
+
+
+
+
+                                                                    3
+Fig. 2. A simple neural-network layer for four real-valued inputs (x0 , x1 , y0 , and y1 ) and two real-valued outputs (ẑ0 and ẑ1 ) by (top) real field R, (middle)
+complex field C, and (bottom) a proposed 2-tuple ring (RI2 , fH2 ). For the latter two algebras, the inputs are equivalently two 2-tuples (x and y) and the
+output becomes one 2-tuple (ẑ). Their tensor formulations, z = ( g h ) xy    in C or RI2 , have isomorphic operations in real field: z = Gx + Hy in R. Then
+the degrees of freedom (DoF) in real numbers for each weight sub-matrix, e.g. G, are reduced from four (g00 , g01 , g10 , and g11 ) to two (g0 and g1 ).
+
+
+
+where M is a 3-D indexing tensor with only 1, 0, and                                  for the three m-tuples z̃, g̃, and x̃. If the transform matrices
+−1 as its entries. In other words, the products of input                              involve only simple coefficients, e.g. ±1 or 0, then they can be
+ring components in form of gk xj are distributed to output                            implemented by adders, and the component-wise product will
+components zi through Mikj . With the bilinear form (3), the                          dominate computation complexity. In particular, the number of
+ring multiplication (2) will be isomorphic to a matrix-vector                         real-valued multiplications can be reduced from the general
+multiplication                                                                        n2 for matrix G to m in (7). Therefore, the complexity of
+                                                                                      fast ring multiplication depends on how we decompose the
+                                  z = Gx,                                   (4)
+                                                                                      indexing tensor M or its isomorphic matrix G into (6)-(8).
+                                                                                         When G is diagonalizable over real field, i.e. G = T −1 DT ,
+                                                 Pn−1
+where the matrix G has entries Gij = k=0 Mikj gk . Without
+loss of generality, we will use g for filter weights and x for                        this complexity can be minimized as m = rank(G) for
+feature maps in the following.                                                        g̃ = diag(D). The proof is given in Appendix A. In this
+   After having definitions of + and · , we still need to define                      perspective, a ring RH alike to HadaNet has a full-rank
+a unary non-linear operation f for a ring to construct neural                         G, i.e. rank(G) = n, which is diagonalized by Hadamard
+networks. A conventional choice, which is usually adopted                             transform. Another example is a ring RI equivalent to group
+by previous methods for full-rank or algebraic sparsity, is a                         convolution which applies component-wise products for a
+component-wise ReLU                                                                   diagonal full-rank G, and its invertible T is simply the identity
+                                                                                      matrix I.
+            fcw (x) = (max(0, x0 ), ..., max(0, xn−1 ))t ,                  (5)
+                                                                                         In contrast, if G is not diagonlizable over real field, we can
+where max(0, ·) is the commonly-used real-valued ReLU.                                instead apply the tensor rank decomposition for the indexing
+                                                                                      tensor M as mentioned in [20]. However, the complexity is
+B. Fast Ring Multiplication                                                           usually larger than rank(G) in this case, and the generic rank
+   Now we will integrate transform-based full-rank sparsity                           (grank) represents the lower bound for real-valued multipli-
+into this framework. For the bilinear-form ring multiplication                        cations: m ≥ grank(M ). For example, the rotation matrix for
+(3), from [46] we know that its optimal general fast algorithm                        complex field C leads to three real-valued multiplications as its
+over real field can be expressed by the following three steps                         grank(M ) = 3 while rank(G) = 2, and the circulant matrix in
+           filter/data transform: g̃ = Tg g, x̃ = Tx x,                     (6)       CirCNN also belongs to this category. The related properties
+                                                                                      of C as well as RH and RI with ring dimension n = 2 are
+     component-wise product: z̃ = g̃ ◦ x̃ (on m-tuples),                    (7)       as shown at the top of Table I.
+     reconstruction transform: z = Tz z̃,                                   (8)
+                                                                                      C. Proper Ring Multiplication
+where Tg and Tx are m × n transform matrices for g and
+x respectively, and Tz is n × m for z. And ◦ represents a                              In addition to the rings at hand, we would like to search
+component-wise product, i.e. z̃i = g̃i x̃i for i = 0, 1, ..., m − 1                   more proper variants for in-depth analysis. We make three
+
+
+
+                                                                                  4
+                                                                TABLE I
+                                                     P ROPERTIES OF RING ALGEBRAS .
+
+
+
+
+practical assumptions to confine the scope of discussion. The            grank(M (S 0 ; P )) for all possible S 0 and determined ring
+first one is exclusive sub-product distribution: each input sub-         variants based on the results.
+product gk xj in (3) is distributed to one output component zi              In the following, we consider moderate sparsity for com-
+exclusively. It provides complete and non-redundant informa-             putational imaging with n = 2 and 4. We searched new ring
+tion mixing between ring components for maintaining compact              variants as mentioned above and determined their transform
+model capacity. Then G has full rank and can be formulated               matrices as discussed in Section III-B. Our findings are listed
+by a sign matrix S and a permutation indexing matrix P :                 in Table I where we distinguish ring symbols by indicating n
+                                                                         in the subscripts for clarity. For n = 2, only RH2 and C can
+                          Gij = Sij gPij ,                     (9)       satisfy . For n = 4, we found, by exhaustion, that there are
+where Sij ∈ {1, −1}, and each row or column of P is a                    two such non-isomorphic permutations. After applying (C3),
+permutation of {0, 1, ..., n − 1}. For example, the rotation           the minimum grank(M ) of them is found to be 4 and 5. The
+matrix gg01 −g 1
+                  for C has S = 11 −1
+                                                        
+                                           and P = 01 10 .               grank-4 permutation leads to two ring variants: RH4 and RO4
+            g0                        1
+  Furthermore, given the existence of a ring unity 1, we                 which are diagonalized respectively by Hadamard transform
+consider the following explicit condition:                               H and a reflected Householder matrix O = 2L1 (I − 2vv t )
+                                                                                                            t                     t
+                                                                         where L1 = diag(( 1 −1 −1 −1 ) ) and v = 21 ( 1 1 1 1 ) . On
+                     g0
+                                 !            1
+                     g1 g0                      0                        the other hand, there are four grank-5 ring variants. Two of
+            G=        ..
+                       .
+                             ..
+                               .    and  1  =   ..
+                                                 .
+                                                   .       (C1)          them, RH4-I and RH4-II , have transform matrices related to H,
+                   gn−1         g0               0
+                                                                         and the other two, RO4-I and RO4-II , are similarly connected
+Without loss of generality, the condition on the first column            to O. In particular, RH4-I applies circular convolution as Cir-
+of G and 1 is drawn from the permutation definition of P and             CNN and needs five real multiplications for complex Fourier
+g ·1 = g. The diagonal of G is then derived by 1·g = g which             transform. The details of isomorphic G and fast algorithms
+states that the isomorphic matrix of 1 is the identity matrix,           are summarized in Table II.
+and therefore G = g0 I if g = g0 1.
+   The second assumption is commutativity. It is not necessary
+                                                                         D. Hardware Efficiency
+for constructing neural networks, e.g. quaternions H are not
+commutative. But it is sufficient to enable the demanded                    Now we can systematically examine the benefits of these
+associativity for a ring, together with the exclusive sub-product        rings in terms of hardware resources. For concise hardware
+distribution and an additional condition on commutative per-             analysis, we assume that different algebraic structures have
+mutation. The details are discussed in Appendix B. Then, by              the same bitwidths for layer inputs and parameters. Then
+examining the matrix form Gx = Xg for g · x = x · g, we                  the weight storage is directly proportional to the degrees of
+have a cyclic-mapping condition for reducing candidates:                 freedom (DoF), and the multiplier complexity can be evaluated
+                                                                         on the same basis. Regarding the amount of filter weights,
+         If Pij = j 0 , then Pij 0 = j and Sij = Sij 0 .     (C2)
+                                                                         a real-valued network would require n2 weights for an n-
+  Finally, the last assumption is that a smaller grank(M ) is            tuple pair of input and output features. But using n-tuple rings
+preferred for saving computations and leads to this rule:                instead will only need n real-valued weights to represent the
+                                                                         matrix G, i.e. DoF of G is reduced from n2 to n. Therefore,
+     Consider only S ∈ arg min grank(M (S 0 ; P )).          (C3)        the efficiency of weight storage with respect to the real-valued
+                               S0
+                                                                         networks is n×, e.g. 2× and 4× for 2- and 4-tuple rings
+In practice, for each P satisfying (C1) and (C2) we                      respectively. Similarly, the corresponding efficiency in terms of
+ran the CP-ARLS algorithm [6] in MATLAB to evaluate                      real-valued multiplications can be derived as n2 /m. In Table
+
+
+
+                                                                     5
+                             TABLE II
+          D ETAILS OF ISOMORPHIC G AND FAST ALGORITHMS .
+
+
+                                                                                   Fig. 4. Proposed directional ReLU fH . H: n × n Hadamard transform.
+
+
+
+                                                                                  E. Proposed Ring with Directional ReLU
+
+                                                                                     The above discussions only involve linear operations of
+                                                                                  neural networks. For non-linearity, the component-wise ReLU
+                                                                                  fcw is conventionally adopted even when we actually operate
+                                                                                  on n-tuples. As a result, RI will have the worst model
+                                                                                  capacity, although it has the best hardware efficiency. It is
+                                                                                  because the information between different components of an
+                                                                                  n-tuple is not communicated or mixed, which is the same
+                                                                                  as the discussion on group convolution in [52]. This is also
+                                                                                  the reason why we assumed the complete information mixing
+                                                                                  property for searching ring multiplications in Section III-C.
+                                                                                  In the following, we apply algebraic-architectural co-design
+                                                                                  to have the hardware advantages of RI while recovering the
+                                                                                  model capacity.
+                                                                                     By examining the fast algorithm (6)-(8), we found that the
+                                                                                  information is in fact mixed by the transforms for data, Tx ,
+                                                                                  and reconstruction, Tz . In addition, for neural networks this
+                                                                                  should be required only near non-linearity because cascaded
+                                                                                  linear operations will simply degrade to another single linear
+                                                                                  operator. Based on these two observations, we propose to mix
+                                                                                  information only before and after non-linearity and thus can
+                                                                                  adopt RI for linear operations to have its architectural benefits.
+                                                                                  This proposal leads to a novel algebraic function for ring non-
+                                                                                  linearity: directional ReLU fdir (y) , U fcw (V y), where U
+                                                                                  and V are two n × n matrices for an input n-tuple y. It is
+                                                                                  equivalent to performing non-linearity in the directions of the
+                                                                                  row vectors of V , instead of the conventional standard axes,
+Fig. 3. Fixed-point computation of fast algorithms for ring multiplication.       and then turning the axes to the column vectors of U . Thus
+                                                                                  the components of an n-tuple are considered as a whole, not
+                                                                                  separately, for non-linearity.
+                                                                                     The computation of U and V induces complexity overheads.
+I, only RI , RH , and RO4 can reach the maximum efficiency,                       But they are only linearly proportional to the number of
+n×, for full-rank G.                                                              output channels, unlike the bitwidth-increased products in (7)
+   More importantly, for practical implementation we need to                      which grow quadratically. To further reduce the overhead,
+consider fixed-point computation and include the bitwidths of                     we consider the simple Hadamard transform in Table II and
+the multiplications for precise evaluations. Fig. 3 shows such                    propose a novel ring (RI , fH ) with the directional ReLU as
+an example for the fast algorithm (6)-(8). The main overheads                     shown in Fig. 4:
+brought by the transforms are the increased bitwidths for x̃
+and g̃, e.g. Tx and Tg will transform w-bit x and g into wider                                          fH (y) , Hfcw (Hy).                        (10)
+wx -bit x̃ and wg -bit g̃. The circuit complexity of a multiplier
+can be approximated by the product of its input bitwidths.
+We further consider this factor, wx × wg , for evaluating the                     For n = 4, another similar variant (RI4 , fO4 ) with fO4 (y) ,
+multiplier complexity for 8-bit features and weights as shown                     Ofcw (Oy) is also possible. They have the same hardware
+in the rightmost column of Table I. In this case, only RI can                     advantages as RI and possess better model capacity for addi-
+reach the maximum efficiency for using identity transforms,                       tional information mixing. Note that for constructing neural
+and the other rings all suffer the corresponding overheads                        networks they are different from RH and RO4 , especially
+induced by their transforms. For example, RH4 and RO4                             when skip connections exist or some convolutions are not
+merely achieve 2.6× efficiency which is 1.6× worse than RI4 .                     followed by non-linearity.
+
+
+
+                                                                              6
+                                                                                      effective to apply dynamic quantization with separate per-layer
+                                                                                      Q-formats [1] for real-valued feature maps and parameters
+                                                                                      [21]. We found that this approach also works well for the
+                                                                                      RingCNN models that adopt the component-wise ReLU. But
+                                     (a)                                              when the directional ReLU is applied, image quality is dete-
+                                                                                      riorated in many cases. It is because after this non-linearity
+                                                                                      different ring components have different dynamic ranges, and
+                                                                                      using one single Q-format for them causes large saturation
+                                                                                      errors. Therefore, for the directional ReLU we propose to use
+                                                                                      component-wise Q-formats for feature maps to address this
+                                     (b)                                              issue. In other words, there are n different feature Q-formats
+                                                                                      in one layer, and each component of n-tuple features follows
+                                                                                      its corresponding Q-format.
+                                                                                         Fast algorithm. We use the fast algorithm to formulate a
+                                     (c)
+                                                                                      fast ring convolution (FRCONV):
+Fig. 5. K × K convolution layers with (a) real-valued tensors, (b) n-tuple                                                                                !
+ring tensors, and (c) efficient implementation. Ci , Co : number of real-valued                            X
+input and output channels. f : non-linear tensor operation using element-wise            z[p, q, co ] = Tz      g̃[s, t, ci , co ] ◦ x̃[p − s, q − t, ci ] ,
+f , which could appear or not (dash line) based on model structures. Q: tensor                              s,t,ci
+quantization using element-wise quantization Q.                                                                                                        (12)
+                                                                                      where g̃ and x̃ are the ring tensors after the transforms Tg
+                     IV. R ING CNN M ODELING                                          and Tx respectively. For minimizing overheads, we avoid
+A. Model Construction                                                                 redundant transform operations by applying Tg , Tx , and Tz
+                                                                                      only once for each of weight, input, and output ring elements
+   We propose a unified RingCNN framework to include all                              respectively. Then each RCONV layer can then be efficiently
+the considered rings for in-depth comparisons on quality-                             implemented in hardware by applying FRCONV to its fixed-
+complexity tradeoffs. By extending ring algebra to ring tensors                       point model as shown in Fig. 5(c). Note that for RI FRCONV
+z, g, and x, we formulate a K×K ring convolution (RCONV):                             is the same as RCONV for its identity transform matrices.
+                   X
+    z[p, q, co ] =    g[s, t, ci , co ] · x[p − s, q − t, ci ], (11)
+                     s,t,ci
+                                                                                                      V. E R ING CNN ACCELERATOR
+
+where co and ci are indexes for output and input n-tuple                                 To show the efficiency on practical applications, we further
+channels, p and q for feature positions, and s and t for weight                       design an RingCNN accelerator, named eRingCNN, over
+positions. Then a real-valued convolution layer, either with                          the proposed ring (RI , fH ). For supporting high-throughput
+non-linearity or not, can be converted into an RCONV layer                            computational imaging, we use the highly-parallel eCNN as
+as shown from Fig. 5(a) to (b). In this way, we can convert                           a backbone architecture and simply replace its real-valued
+any existing real-valued model structure into an RingCNN                              convolution engine by a corresponding one for RCONV. This
+alternative.                                                                          portability of linear operations is an advantage of algebraic
+                                                                                      sparsity, but we need a new and specific design for the
+B. Model Training                                                                     directional ReLU. We implement two sparsity settings for
+   An RingCNN model can be treated as a conventional real-                            n = 2 and 4, and the details are introduced in the following.
+valued CNN if we implement it in form of the matrix-                                     System diagram. Fig. 6 presents the overall architecture.
+vector multiplication (4). Then the Backprop algorithm can                            In one cycle, it can compute (32/n)-channel n-tuple output
+flow gradients as usual without any special treatment. For                            features from (32/n)-channel n-tuple inputs for 4×2 spatial
+the completeness of ring algebras, we can also represent                              positions. For both 3×3 and 1×1 convolution engines, the
+the gradients in terms of ring operations and then express                            number of MACs is reduced by 50% and 75% for the settings
+Backprop using only the ring terminology. For example, we                             n = 2 and 4 respectively. Similarly, the size of the weight
+have ∇x L = Gt ∇z L from (4) for a training loss L. Then                              memory can be reduced by the same ratios, e.g. from 1280 KB
+∇x L = g · ∇z L for RI , RH , and RO4 since G is symmetric                            in eCNN to 640 KB for n = 2 and 320 KB for n = 4.
+for them. Similarly, the gradient ∇x L equals to g c · ∇z L for                       However, for simplicity the parameter compression in eCNN
+RH4-I and g ∗ · ∇z L for H, where g c and g ∗ represent circular                      was not implemented; instead, we increase the size by 1.5×
+folding and quaternion conjugate of g respectively. The same                          to 960 KB and 480 KB, respectively, to support large models.
+approach can be applied to express ∇g L in ring operations.                           The rest architectural differences from eCNN are mainly on
+                                                                                      the designs of the RCONV engines and the novel directional
+C. Efficient Implementation                                                           ReLU.
+  Dynamic fixed-point quantization. We prefer fixed-point                                RCONV engine. To have local sparsity while maintaining
+computation for hardware implementation. It has been shown                            global regularity, we increase the computing granularity from
+
+
+
+                                                                                  7
+                                                                                      Fig. 8. On-the-fly directional ReLU for a 4-tuple (dashed box in Fig. 7).
+                                                                                      The input is y = (y0 , y1 , y2 , y3 )t , and the output x = (x0 , x1 , x2 , x3 )t .
+                                                                                      With component-wise Q-formats, their numbers of fractional bits are given
+                                                                                      as ny,i and nx,i , respectively. The numbers of shift bits are then derived as
+                                                                                      si = maxi0 ny,i0 − ny,i and ti = maxi0 ny,i0 − nx,i . Green lines represent
+                                                                                      minus terms of the adders for Hadamard transform.
+   Fig. 6. System architecture of eRingCNN. (BB: image block buffer)
+
+                                                                                      will need to be quantized for the MACs. We found that these
+                                                                                      additional quantizations, e.g. 24-bit to 8-bit for n = 4, would
+                                                                                      cause up to 0.2 dB of PSNR drop for denoising and SR tasks.
+                                                                                         Therefore, we propose an on-the-fly processing pipeline for
+                                                                                      this novel function, and Fig. 8 shows our implementation
+                                                                                      for n = 4. It specifically implements the butterfly structures
+                                                                                      for Hadamard transforms to optimize hardware efficiency and
+                                                                                      keeps full-precision operations to preserve image quality. In
+                                                                                      this case, the internal bitwidths are up to 33-bit, in which
+                                                                                      the component-wise Q-formats contribute 5-bit for aligning
+                                                                                      components (through the left-shifters). This circuit is the
+                                                                                      major overhead for using (RI , fH ) and also appears in the
+                                                                                      inference datapath for the non-linearity after skip or residual
+                                                                                      connections.
+Fig. 7. RCONV engine for 3×3 filters and 4-tuples. It processes eight 4-tuple                                     VI. E VALUATIONS
+input channels and generates eight 4-tuple output channels, which is equivalent
+to 32-channel real-valued inputs and outputs. It has 64 computing units (blue           We show extensive evaluations for (A) ring algebras, (B)
+boxes) in which ~ represents a 2D ring convolution unit which generates a             image quality on eRingCNN, and (C) hardware performance
+4×2-tile in one cycle, i.e. yi represents the 4-tuples without linearity in 4×2
+spatial positions for the i-th output channel.                                        of eRingCNN. For clarity, the two sparsity configurations for
+                                                                                      eRingCNN are denoted by eRingCNN-n2 and eRingCNN-n4.
+
+real numbers to n-tuple rings. Fig. 7 shows such a modification                       A. Ring Algebras
+for the 3×3 convolution engine with n = 4. It is a channel-                              Training setting and test datasets. For quality evaluations,
+wise 2D computation array for 8-channel 4-tuple inputs and                            we use the advanced ERNets for eCNN [21] as the real-valued
+outputs. Each of the 8×8 computing units is responsible for the                       backbone models. Then RingCNN models are converted from
+2D 3×3 ring convolution for the corresponding input-output                            them as shown from Fig. 5(a) to (b). To fairly compare
+pair with ring tensor weights gco ci , g[ : , : , ci , co ]. Thanks                   RingCNNs and real-valued CNNs, we evaluate their best
+to (RI , fH ), it simply computes component-wise 2D convolu-                          performance by increasing their initial learning rates as high as
+tions for saving complexity. Finally, a novel directional ReLU                        possible before training procedures become unstable. Note that
+block, including dynamic quantization with component-wise                             the real-valued ERNets in this paper will therefore perform
+Q-formats, is devised to replace their real-valued counterparts.                      better than those in [21] because of using higher learning
+   Directional ReLU unit. It mixes information for RCONV                              rates. The models are trained using the lightweight settings
+outputs to recover model capacity; however, the mixing de-                            as summarized in Table III if not mentioned. Finally, we
+mands Hadamard transforms on high-bitwidth accumulated                                test denoising networks on datasets Set5 [7], Set14 [48],
+outputs, e.g. 24-bit for n = 4. This induces two issues for                           and CBSD68 [36], and super-resolution ones on Set5, Set14,
+conventional accelerator architectures. Firstly, the two trans-                       BSD100 [36], and Urban100 [22].
+forms for fH are likely to be implemented by the same fixed-                             Quality comparison for different rings. Fig. 9 compares
+point MACs for convolutions to meet the high computation                              image quality in PSNR for the rings in Table I. When the
+throughput. But since the weights are only −1 and 1, the hard-                        component-wise ReLU is used, RI performs the worst due to
+ware efficiency would be low for the multipliers. Secondly and                        the lack of information mixing. The two traditional algebra
+more importantly, the features before the Hadamard transforms                         alternatives C and H also do not perform well, considering
+
+
+
+                                                                                  8
+                               TABLE III
+                          T RAINING SETTINGS .
+
+
+
+
+                                                                                                    (a)                                    (b)
+                                                                                 Fig. 10. Ablation study for (RI , fH ). (a) Equivalent residual block structures
+                                                                                 for using (top) (RI , fH ) and (bottom) RH . (b) PSNR for two SR4ERNet
+                                                                                 model structures (n=4).
+
+
+
+
+Fig. 9. PSNR comparison of different rings with (top) denoising model
+structure DnERNet-PU (PU: pixel unshuffle) and (bottom) four-times super-
+resolution (SR×4) SR4ERNet. The configurations are the same as the real-
+valued ERNets: ERModule number B, base pumping ratio R, and additional
+pumping layer number N . (Hatch pattern: 2-tuples; solid color: 4-tuples.)       Fig. 11. Algebraically-sparse RingCNN versus unstructured weight pruning.
+                                                                                 (RI , fH ): n=2, 4, and 8 for 2×, 4×, and 8× compressions. We use 200 more
+                                                                                 epochs for fine-tuning the weight-pruned models and, for fair comparisons,
+                                                                                 100 more epochs for the original (1×) CNN and RingCNNs.
+more real-valued multiplications are required. Between the
+two grank-4 variants for n = 4, the newly-discovered RO4
+performs better than the HadaNet-alike RH4 . Similar results                     are trained directly, real-valued CNNs are first pre-trained, then
+can be found for their corresponding grank-5 variants, e.g.                      pruned, and finally fine-tuned. Fig. 11 shows the comparison
+the newly-discovered RO4-I better than the CirCNN-alike                          results, and RingCNNs over (RI , fH ) can deliver better image
+RH4-I . However, by using the directional ReLU, the proposed                     quality than the weight pruing for compression ratios 2×,
+(RI , fH ) can give better quality and constantly outperform the                 4×, and 8×. In particular, the 2-tuple networks can even
+others. Since (RI4 , fO4 ) shows inferior quality, we therefore                  outperform the original (1×) real-valued networks in many
+focus on (RI , fH ) and adopt it for our implementation.                         cases. This shows that the algebraic sparsity can serve strong
+   Ablation study between (RI , fH ) and RH . They share                         prior for CNN models. As a result, (RI , fH ) not only provides
+similar structures but have two major differences. First,                        more regular structures but also achieves better quality for
+(RI , fH ) multiplies input features by weights g directly while                 computational imaging. A case for recognition tasks, though
+RH does that after applying the filter transform. Second,                        not the focus of this paper, is also studied in Appendix C,
+(RI , fH ) applies Hadamard transform only when non-linearity                    where convolutions and corresponding non-linear functions
+is required, but RH always does that and results in a redundant                  are implemented with (RI , fH ), and batch normalization is
+structure. Therefore, RH can imitate (RI , fH ) by making up                     remained as real-valued operations.
+the differences: first training on transformed weights g̃ and                       Fixed-point implementation. For comparisons in hardware
+then modifying model structures accordingly. Fig. 10(a) shows                    efficiency, we implemented highly-parallel FRCONV engines,
+an example for modifying a residual block, and Fig. 10(b)                        as depicted in Fig. 5(c) with non-linearity, for different rings.
+illustrates typical PSNR results using two SR×4 networks as                      Their RTL codes are synthesized with 40 nm CMOS tech-
+examples. Training on g̃ is occasionally helpful, but struc-                     nology. For quality comparison, the models are quantized in
+ture modification improves image quality most of the time.                       8-bit and then fine-tuned using the setting at the bottom of
+Therefore, the compact model structure is the main reason                        Table III. The quality loss due to quantization is similar for
+why (RI , fH ) outperforms RH for computational imaging.                         each ring, and Fig. 12 shows the comparison results. The area
+   Comparison with weight pruning. We also compare image                         efficiencies are very close to the estimated 8-bit complexity in
+quality between the proposed algebraic sparsity and the un-                      Table I because convolutions dominate the areas. The proposed
+structured magnitude-based weight pruning. While RingCNNs                        (RI , fH ) can provide the smallest area and the best quality
+
+
+
+                                                                             9
+Fig. 12. Area efficiency after logic synthesis versus PSNR for 8-bit fixed-
+point implementation. These engines can compute one 3×3 convolution layer
+in one cycle for 32 input and 32 output channels of 8-bit real-valued features.
+Area efficiencies are calculated with respect to the real-valued engine, and
+PSNR is evaluated on SR4ERNet-B17R3N1.
+                                                                                       Fig. 13. Average PSNR results for six application targets: (top) PSNR
+                                 TABLE IV                                              degradation of 8-bit quantized ERNet models from float-point ones and
+ PSNR PERFORMANCE AND COMPARISON FOR MODELS ON E R ING CNN.                            (bottom) PSNR differences of quantized models for eRingCNN from those
+                                                                                       for eCNN. The test datasets for denoising (Dn) are Set5, Set14, and CBSD68,
+                                                                                       and those for super-resolution (SR) are Set5, Set14, BSD100, and Urban100.
+
+
+
+                                                                                          Dynamic fixed-point quantization. On the top of Fig. 13,
+                                                                                       we show the effect of the 8-bit dynamic quantization which is
+                                                                                       used to save area. The quality degradation for ring tensors
+                                                                                       is around 0.11-0.12 dB of average PSNR drops, which is
+                                                                                       similar to the case of using real numbers. We also show the
+                                                                                       effect of applying sparse ring algebras (eCNN⇒eRingCNN)
+                                                                                       at the bottom of Fig. 13. The degradation is not obvious for
+                                                                                       n = 2, and the models for eRingCNN-n2 even outperform
+                                                                                       those for eCNN by 0.01 dB on average. For n = 4, those for
+                                                                                       eRingCNN-n4 only suffer small PSNR degradation in 0.11 dB.
+at the same time. Compared to the CirCNN-alike RH4-I and
+HadaNet-alike RH4 , it has nearly 0.1 dB PSNR gain for                                 C. Hardware Performance of eRingCNN
+the SR×4 task and provides 1.8× and 1.5× area efficiencies
+                                                                                          Implementation and CAD tools. We developed RTL codes
+respectively. In summary, RI can save area efficiently, and fH
+                                                                                       in Verilog and verified the functional validity based on bit- and
+can recover image quality significantly.
+                                                                                       cycle-accurate simulations. Then the verified RTL codes were
+                                                                                       synthesized using Synopsys Design Compiler with TSMC
+B. Image Quality on eRingCNN
+                                                                                       40 nm CMOS library. And SRAM macros were generated
+   Training setting and model selection. To show competitive                           by ARM memory compilers. We used Synopsys IC Compiler
+image quality, we further train models using the polishment                            for placement and routing and generating layouts for five
+setting in Table III with two large datasets, DIV2K [2]                                well-pipelined macro circuits which constitute eRingCNN
+and Waterloo Exploration [33]. We consider two throughput                              collectively. Finally, we performed time-based power con-
+targets for hardware acceleration: HD30 for Full HD 30 fps                             sumption using Synopsys Prime-Time PX based on post-layout
+and UHD30 for 4K Ultra-HD 30 fps. For each throughput                                  parasitics and dynamic signal activity waveforms from RTL
+target and application scenario, we adopt the compact ERNet                            simulation.
+configuration for the real-valued eCNN in [21]. It has been                               Hardware performance. We show the design configu-
+optimized over model depth and width in terms of PSNR, and                             rations and layout performance in Table V. The areas of
+we build its corresponding RingCNN models with (RI , fH ).                             eRingCNN-n2 and eRingCNN-n4 are 33.73 and 23.36 mm2
+   Floating-point models. The PSNR results are shown in                                respectively, and the corresponding power consumptions are
+Table IV. The RingCNN models show significant gains over                               3.76 and 2.22 W. They mainly differ in the ring dimension,
+the traditional CBM3D [11] for denoising and VDSR for                                  and eRingCNN-n4 uses only a half number of MACs and a
+SR×4. Compared to the advanced FFDNet and SRResNet, the                                half size of weight memory compared to eRingCNN-n2.
+models for eRingCNN-n2 can outperform them with PSNR                                      Area and power breakdown. The details are shown in
+gains up to 0.15 dB at HD30 and have similar quality at                                Table VI. For eRingCNN-n2, the convolution engines con-
+UHD30. With 75% sparsity, the models for eRingCNN-n4                                   tribute 57.42% of area and 86.51% of power consumption for
+still give superior quality and only show noticeable PSNR                              the highly-parallel computation. And for eRingCNN-n4 their
+inferiority for denoising at UHD30 due to the shallow layers.                          contributions go down to 45.63% and 76.56%, respectively,
+
+
+
+                                                                                  10
+                          TABLE V
+D ESIGN CONFIGURATIONS AND LAYOUT PERFORMANCE OF E R ING CNN.
+
+
+
+
+                                                                                         Fig. 14. Area (left) and power (right) comparison with eCNN.
+                              TABLE VI
+                    A REA AND POWER BREAKDOWNS .
+
+
+
+
+                                                                                   Fig. 15. Quality-energy comparison with eCNN: (left) denoising and (right)
+                                                                                   SR×4. The energy is normalized for generating one image pixel. Each
+because of the saving of MACs. In addition, for a larger                           accelerator forms its own curve with compact model configurations over
+n the directional ReLU uses more adders and causes wider                           different throughput targets.
+bitwidths. Therefore, for the RCONV-3×3 engines it occu-
+pies only 3.4% of area for eRingCNN-n2 but up to 8.9%
+for eRingCNN-n4. Accordingly, the inference datapath in                            sity approaches: SparTen (natural) [16], TIE (low-rank) [12],
+eRingCNN-n4 is also 0.53 mm2 larger than that in eRingCNN-                         and CirCNN (full-rank). Here we compare synthesis results
+n2.                                                                                because only such numbers are reported for SparTen and
+   Comparison with eCNN. As shown in Fig. 14, the RCONV                            CirCNN. For comparing over different compression ratios,
+engines reach near-maximum hardware efficiencies (∼     = n).                      we consider an equivalent throughput which corresponds to
+Those in eRingCNN-n2 achieve 2.08× area efficiency and                             the computing demand of the target uncompressed or real-
+2.00× energy efficiency. And those in eRingCNN-n4 further                          valued model. With only 2-4× compression, our eRingCNN
+increase the efficiency gains of area and energy to 3.77× and                      accelerators already provide competitive energy efficiencies as
+3.84×. The numbers for the whole accelerator are as high as                        equivalent 19.1-28.4 TOPS/W. In contrast, SparTen merely
+1.64× and 1.85× for eRingCNN-n2, and 2.36× and 3.12× for                           achieves 2.7 TOPS/W due to significant overheads for han-
+eRingCNN-n4. In addition, we compare their quality-energy                          dling irregularity. Although TIE is very efficient for highly-
+tradeoff curves in Fig. 15. The eRingCNN accelerators show                         compressed fully-connected (FC) layers, it shows inefficiency
+clear advantages over eCNN; in particular, the low-complexity                      for the CONV layers with lower compression ratios. Finally,
+eRingCNN-n4 is preferred when less energy is allowed to                            CirCNN only provides 10.0 TOPS/W using as high as 66×
+be consumed for generating one pixel. Finally, as eCNN, the                        compression. The potential of algebraic sparsity is therefore
+eRingCNN accelerators demand only 1.93 GB/s of DRAM                                demonstrated, in particular on moderately-compressed CNNs
+bandwidth for high-quality 4K UHD applications.                                    for computational imaging.
+   Comparison with Diffy. Table VII compares the hardware                                                 VII. R ELATED W ORK
+performance of Diffy1 [34], another state-of-the-art accel-
+                                                                                      Low-rank sparsity. This line of research also provides
+erator for computational imaging, along with eCNN. Diffy
+                                                                                   regular structure for efficient hardware acceleration. One ap-
+applies optimization on bit-level computation which is hard
+                                                                                   proach is low-rank approximation, including tensor-train (TT)
+to compare with eRingCNN directly; therefore, we perform
+                                                                                   [37], canonical polyadic (CP) [30], and Tucker [27]. Another
+comparison based on the same application target: FFDNet-
+                                                                                   one is building networks using low-rank structures, such as
+level inference at Full-HD 20fps. In this case, the energy
+                                                                                   MobileNet (v1/v2) [19], [41] and SqueezeNet [23]. However,
+efficiencies of eRingCNN-n2 and eRingCNN-n4 over Diffy
+                                                                                   this sparsity mainly aims to provide high compression ratios,
+are 2.71× and 4.59× respectively by running at 167 MHz.
+                                                                                   and the effect for computational imaging need further explo-
+   Comparison with SparTen, TIE, and CirCNN. Table
+                                                                                   ration.
+VIII compares with the state-of-the-arts for different spar-
+                                                                                      Natural sparsity. Exploiting such sparsity in features has
+   1 We project the silicon area and power consumption of Diffy under 40 nm
+                                                                                   been well-studied, e.g. in Cnvlutin [3], Cambricon-X [51],
+technology based on the scaling comparison of 65 nm in [45]: 2.35× gate            and Diffy [34]. And the sparsity in filter weights is usually
+density and 0.5× power consumption under the same operation speed.                 explored by pruning [17], [35]. They can be further combined
+
+
+
+                                                                              11
+                         TABLE VII                                          efficiency and the best image quality simultaneously. We
+ C OMPARISONS OF E CNN AND D IFFY FOR COMPUTATIONAL IMAGING .               also design two high-performance eRingCNN accelerators
+                                                                            for verifying practical effectiveness. They can provide high-
+                                                                            quality computational imaging at up to 4K UHD 30 fps while
+                                                                            consuming only 3.76 W and 2.22 W, respectively. Based on
+                                                                            these results, we believe that RingCNN exhibits great poten-
+                                                                            tials for enabling next-generation cameras and displays with
+                                                                            energy-efficient and high-performance computational imaging.
+                                                                                                     ACKNOWLEDGMENT
+                                                                               The author would like to thank the anonymous reviewers
+                                                                            for their feedback and suggestions. I also would like to thank
+                                                                            Chi-Wen Weng for his help on layout implementation.
+
+                             TABLE VIII
+                                                                                                         R EFERENCES
+ C OMPARISON OF S PART EN , TIE, AND C IR CNN ( SYNTHESIS RESULTS ).         [1] “Q-format,” in ARM Developer Suite—AXD and armsd Debuggers
+                                                                                 Guide. ARM Limited, 2001, ch. 4.7.9.
+                                                                             [2] E. Agustsson and R. Timofte, “NTIRE 2017 challenge on single image
+                                                                                 super-resolution: Dataset and study,” in IEEE Conference on Computer
+                                                                                 Vision and Pattern Recognition Workshops (CVPRW), 2017.
+                                                                             [3] J. Albericio, P. Judd, T. Hetherington, T. Aamodt, N. E. Jerger, and
+                                                                                 A. Moshovos, “Cnvlutin: Ineffectual-neuron-free deep neural network
+                                                                                 computing,” in Proceedings of the 43rd Annual ACM/IEEE International
+                                                                                 Symposium on Computer Architecture (ISCA), 2016.
+                                                                             [4] M. Alwani, H. Chen, M. Ferdman, and P. Milder, “Fused-layer CNN ac-
+                                                                                 celerators,” in Proceedings of the 49th Annual IEEE/ACM International
+                                                                                 Symposium on Microarchitecture (MICRO), 2016.
+                                                                             [5] A. Azizimazreah and L. Chen, “Shortcut Mining: Exploiting cross-layer
+                                                                                 shortcut reuse in DCNN accelerators,” in IEEE International Symposium
+                                                                                 on High Performance Computer Architecture (HPCA), 2019.
+                                                                             [6] C. Battaglino, G. Ballard, and T. G. Kolda, “A practical randomized
+                                                                                 CP tensor decomposition,” SIAM Journal on Matrix Analysis and
+                                                                                 Applications, vol. 39, 2018.
+                                                                             [7] M. Bevilacqua, A. Roumy, C. Guillemot, and M.-L. A. Morel, “Low-
+                                                                                 complexity single-image super-resolution based on nonnegative neighbor
+                                                                                 embedding,” in British Machine Vision Conference (BMVC), 2012.
+                                                                             [8] Y.-H. Chen, J. Emer, and V. Sze, “Eyeriss: a spatial architecture for
+as in SCNN [38], SparTen [16], and SmartExchange [54].                           energy-efficient dataflow for convolutional neural networks,” in Pro-
+However, the natural irregularity could lead to high overheads                   ceedings of the 43rd Annual ACM/IEEE International Symposium on
+for indexing circuits and load imbalance.                                        Computer Architecture (ISCA), 2016.
+                                                                             [9] Y.-H. Chen, T.-J. Yang, J. Emer, and V. Sze, “Eyeriss v2: A flexible
+   Dense CNN accelerators. There are many accelerators                           accelerator for emerging deep neural networks on mobile devices,” IEEE
+proposed for general-purpose inference with high parallelism,                    Journal on Emerging and Selected Topics in Circuits and Systems, vol. 9,
+such as TPU [25], DNPU [42], ShiDianNao [14], and Eye-                           2019.
+                                                                            [10] T.-W. Chin, R. Ding, C. Zhang, and D. Marculescu, “Towards efficient
+riss (v1/v2) [8], [9]. However, the computation sparsity for                     model compression via learned global ranking,” in IEEE/CVF Confer-
+computational imaging were seldom exploited.                                     ence on Computer Vision and Pattern Recognition (CVPR), 2020.
+   Block-based inference flows. They eliminate huge external                [11] K. Dabov, A. Foi, V. Katkovnik, and K. Egiazarian, “Image denoising by
+                                                                                 sparse 3-D transform-domain collaborative filtering,” IEEE Transactions
+memory bandwidth for feature maps, and two approaches were                       on Image Processing, vol. 16, 2007.
+proposed to handle the boundary features across neighboring                 [12] C. Deng, F. Sun, X. Qian, J. Lin, Z. Wang, and B. Yuan, “TIE: Energy-
+blocks. One is feature reusing, such as fused-layer [4] and                      efficient tensor train-based inference engine for deep neural network,”
+                                                                                 in Proceedings of the 46th Annual ACM/IEEE International Symposium
+Shortcut Mining [5], and the other one is recomputing, like                      on Computer Architecture (ISCA), 2019.
+eCNN [21]. In this paper, we adopt the latter only for the                  [13] C. Ding, S. Liao, Y. Wang, Z. Li, N. Liu, Y. Zhou, C. Wang, X. Qian,
+purpose of implementation and comparison.                                        Y. Bai, G. Yuan, X. Ma, Y. Zhang, J. Tang, Q. Qiu, X. Lin, and B. Yuan,
+                                                                                 “CirCNN: Accelerating and compressing deep neural networks using
+                                                                                 block-circulant weight matrices,” in Proceedings of the 50th Annual
+                      VIII. C ONCLUSION                                          IEEE/ACM International Symposium on Microarchitecture (MICRO),
+                                                                                 2017.
+   This paper investigates the fundamental but seldom-                      [14] Z. Du, R. Fasthuber, T. Chen, P. Ienne, L. Li, T. Luo, X. Feng, Y. Chen,
+explored algebraic sparsity for accelerating computational                       and O. Temam, “ShiDianNao: Shifting vision processing closer to the
+imaging CNNs. It can provide local sparsity and global                           sensor,” in Proceedings of the 42nd Annual ACM/IEEE International
+                                                                                 Symposium on Computer Architecture (ISCA), 2015.
+regularity at the same time for energy-efficient inference. We              [15] C. J. Gaudet and A. S. Maida, “Deep quaternion networks,” in Interna-
+lay down the general RingCNN framework by defining proper                        tional Joint Conference on Neural Networks (IJCNN), 2018.
+ring algebras and constructing corresponding CNN models.                    [16] A. Gondimalla, N. Chesnut, M. Thottethodi, and T. N. Vijaykumar,
+                                                                                 “SparTen: A sparse tensor accelerator for convolutional neural net-
+By extensive comparisons with several rings, the proposed one                    works,” in Proceedings of the 52nd Annual IEEE/ACM International
+with the directional ReLU achieves near-maximum hardware                         Symposium on Microarchitecture (MICRO), 2019.
+
+
+
+
+                                                                       12
+[17] S. Han, H. Mao, and W. J. Dally, “Deep compression: Compressing deep                  IEEE/ACM International Symposium on Microarchitecture (MICRO),
+     neural networks with pruning, trained quantization and Huffman cod-                   2018.
+     ing,” in International Conference on Learning Representations (ICLR),            [35] H. Mao, S. Han, J. Pool, W. Li, X. Liu, Y. Wang, and W. J. Dally,
+     2016.                                                                                 “Exploring the regularity of sparse structure in convolutional neural
+[18] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for                      networks,” in IEEE Conference on Computer Vision and Pattern Recog-
+     image recognition,” in IEEE Conference on Computer Vision and Pattern                 nition Workshops (CVPRW), 2017.
+     Recognition (CVPR), 2016.                                                        [36] D. Martin, C. Fowlkes, D. Tal, and J. Malik, “A database of human
+[19] A. G. Howard, M. Zhu, B. Chen, D. Kalenichenko, W. Wang, T. Weyand,                   segmented natural images and its application to evaluating segmentation
+     M. Andreetto, and H. Adam, “MobileNets: Efficient convolutional neural                algorithms and measuring ecological statistics,” in IEEE International
+     networks for mobile vision applications,” arXiv:1704.04861, 2017.                     Conference on Computer Vision (ICCV), 2001.
+[20] T. D. Howell and J.-C. Lafon, “The complexity of the quaternion                  [37] I. V. Oseledets, “Tensor-train decomposition,” SIAM Journal on Scien-
+     product,” in TR 75-245. Cornell University, 1975.                                     tific Computing, 2011.
+[21] C.-T. Huang, Y.-C. Ding, H.-C. Wang, C.-W. Weng, K.-P. Lin, L.-W.                [38] A. Parashar, M. Rhu, A. Mukkara, A. Puglielli, R. Venkatesan,
+     Wang, and L.-D. Chen, “eCNN: A block-based and highly-parallel CNN                    B. Khailany, J. Emer, S. W. Keckler, and W. J. Dally, “SCNN: An
+     accelerator for edge inference,” in Proceedings of the 52nd Annual                    accelerator for compressed-sparse convolutional neural networks,” in
+     IEEE/ACM International Symposium on Microarchitecture (MICRO),                        Proceedings of the 44th Annual ACM/IEEE International Symposium
+     2019.                                                                                 on Computer Architecture (ISCA), 2017.
+[22] J.-B. Huang, A. Singh, and N. Ahuja, “Single image super-resolution              [39] T. Parcollet, M. Morchid, and G. Linarès, “Quaternion convolutional
+     from tranformed self-exemplars,” in IEEE Conference on Computer                       neural networks for heterogeneous image processing,” in IEEE In-
+     Vision and Pattern Recognition (CVPR), 2015.                                          ternational Conference on Acoustics, Speech and Signal Processing
+[23] F. N. Iandola, S. Han, M. W. Moskewicz, K. Ashraf, W. J. Dally,                       (ICASSP), 2019.
+     and K. Keutzer, “SqueezeNet: AlexNet-level accuracy with 50x fewer               [40] A. Renda, J. Frankle, and M. Carbin, “Comparing rewinding and fine-
+     parameters and <0.5MB model size,” arXiv:1602.07360, 2017.                            tuning in neural network pruning,” in International Conference on
+[24] J. Johnson, A. Alahi, and L. Fei-Fei, “Perceptual losses for real-                    Learning Representations (ICLR), 2020.
+     time style transfer and super-resolution,” in European Conference on             [41] M. Sandler, A. Howard, M. Zhu, A. Zhmoginov, and L.-C. Chen,
+     Computer Vision (ECCV), 2016.                                                         “MobileNetV2: Inverted residuals and linear bottlenecks,” in IEEE/CVF
+[25] N. P. Jouppi, C. Young, N. Patil, D. Patterson, G. Agrawal, R. Bajwa,                 Conference on Computer Vision and Pattern Recognition (CVPR), 2018.
+     S. Bates, S. Bhatia, N. Boden, A. Borchers, R. Boyle, P.-l. Cantin,              [42] D. Shin, J. Lee, J. Lee, and H.-J. Yoo, “DNPU: An 8.1TOPS/W reconfig-
+     C. Chao, C. Clark, J. Coriell, M. Daley, M. Dau, J. Dean, B. Gelb,                    urable CNN-RNN processor for general-purpose deep neural networks,”
+     T. V. Ghaemmaghami, R. Gottipati, W. Gulland, R. Hagmann, C. R.                       in IEEE International Solid-State Circuits Conference (ISSCC), 2017.
+     Ho, D. Hogberg, J. Hu, R. Hundt, D. Hurt, J. Ibarz, A. Jaffey,                   [43] K. Simonyan and A. Zisserman, “Very deep convolutional networks for
+     A. Jaworski, A. Kaplan, H. Khaitan, D. Killebrew, A. Koch, N. Kumar,                  large-scale image recognition,” in International Conference on Learning
+     S. Lacy, J. Laudon, J. Law, D. Le, C. Leary, Z. Liu, K. Lucke,                        Representations (ICLR), 2015.
+     A. Lundin, G. MacKean, A. Maggiore, M. Mahony, K. Miller, R. Na-                 [44] C. Trabelsi, O. Bilaniuk, Y. Zhang, D. Serdyuk, S. Subramanian,
+     garajan, R. Narayanaswami, R. Ni, K. Nix, T. Norrie, M. Omernick,                     J. F. Santos, S. Mehri, N. Rostamzadeh, Y. Bengio, and C. J. Pal,
+     N. Penukonda, A. Phelps, J. Ross, M. Ross, A. Salek, E. Samadiani,                    “Deep complex networks,” in International Conference on Learning
+     C. Severn, G. Sizikov, M. Snelham, J. Souter, D. Steinberg, A. Swing,                 Representations (ICLR), 2018.
+     M. Tan, G. Thorson, B. Tian, H. Toma, E. Tuttle, V. Vasudevan, R. Wal-           [45] TSMC, 40nm Technology.           [Online]. https://www.tsmc.com/english/
+     ter, W. Wang, E. Wilcox, and D. H. Yoon, “In-datacenter performance                   dedicatedFoundry/technology/logic/l 40nm, Retrieved 20 Nov 2020.
+     analysis of a tensor processing unit,” in Proceedings of the 44th Annual         [46] S. Winograd, Arithmetic Complexity of Computations.           Cambridge
+     ACM/IEEE International Symposium on Computer Architecture (ISCA),                     University Press, 1980.
+     2017.                                                                            [47] J. Yu, Y. Fan, and T. Huang, “Wide activation for efficient image and
+[26] J. Kim, J. K. Lee, and K. M. Lee, “Accurate image super-resolution using              video super-resolution,” in British Machine Vision Conference (BMVC),
+     very deep convolutional networks,” in IEEE Conference on Computer                     2019.
+     Vision and Pattern Recognition (CVPR), 2016.                                     [48] R. Zeyde, M. Elad, and M. Protter, “On single image scale-up using
+[27] Y.-D. Kim, E. Park, S. Yoo, T. Choi, L. Yang, and D. Shin, “Compression               sparse-representations,” in Proceedings of the International Conference
+     of deep convolutional neural networks for fast and low power mobile                   on Curves and Surfaces, 2010.
+     applications,” in International Conference on Learning Representations           [49] K. Zhang, W. Zuo, Y. Chen, D. Meng, and L. Zhang, “Beyond a
+     (ICLR), 2016.                                                                         Gaussian denoiser: Residual learning of deep CNN for image denoising,”
+[28] A. Krizhevsky and G. Hinton, “Learning multiple layers of features from               IEEE Transactions on Image Processing, vol. 26, 2017.
+     tiny images,” 2009.                                                              [50] K. Zhang, W. Zuo, and L. Zhang, “FFDNet: Toward a fast and flexible
+[29] A. Krizhevsky, I. Sutskever, and G. E. Hinton, “ImageNet classification               solution for CNN-based image denoising,” IEEE Transactions on Image
+     with deep convolutional neural networks,” in Proceedings of the 25th                  Processing, vol. 27, 2018.
+     International Conference on Neural Information Processing Systems                [51] S. Zhang, Z. Du, L. Zhang, H. Lan, S. Liu, L. Li, Q. Guo, T. Chen, and
+     (NIPS), 2012.                                                                         Y. Chen, “Cambricon-X: An accelerator for sparse neural networks,” in
+[30] V. Lebedev, Y. Ganin, M. Rakhuba, I. Oseledets, and V. Lempit-                        Proceedings of the 49th Annual IEEE/ACM International Symposium on
+     sky, “Speeding-up convolutional neural networks using fine-tuned CP-                  Microarchitecture (MICRO), 2016.
+     decomposition,” in International Conference on Learning Representa-              [52] X. Zhang, X. Zhou, M. Lin, , and J. Sun, “ShuffleNet: An extremely
+     tions (ICLR), 2015.                                                                   efficient convolutional neural network for mobile devices,” in IEEE
+[31] C. Ledig, L. Theis, F. Huszár, J. Caballero, A. Cunningham, A. Acosta,               Conference on Computer Vision and Pattern Recognition (CVPR), 2018.
+     A. Aitken, A. Tejani, J. Totz, Z. Wang, and W. Shi, “Photo-realistic             [53] R. Zhao, Y. Hu, J. Dotzel, C. D. Sa, and Z. Zhang, “Building efficient
+     single image super-resolution using a generative adversarial network,” in             deep neural networks with unitary group convolutions,” in IEEE Con-
+     IEEE Conference on Computer Vision and Pattern Recognition (CVPR),                    ference on Computer Vision and Pattern Recognition (CVPR), 2019.
+     2017.                                                                            [54] Y. Zhao, X. Chen, Y. Wang, C. Li, H. You, Y. Fu, Y. Xie, Z. Wang, and
+[32] B. Lim, S. Son, H. Kim, S. Nah, and K. M. Lee, “Enhanced deep residual                Y. Lin, “SmartExchange: Trading higher-cost memory storage/access for
+     networks for single image super-resolution,” in IEEE Conference on                    lower-cost computation,” in Proceedings of the 47th Annual ACM/IEEE
+     Computer Vision and Pattern Recognition Workshops (CVPRW), 2017.                      International Symposium on Computer Architecture (ISCA), 2020.
+[33] K. Ma, Z. Duanmu, Q. Wu, Z. Wang, H. Yong, H. Li, and L. Zhang,                  [55] Z.-Q. Zhao, P. Zheng, S.-T. Xu, and X. Wu, “Object detection with
+     “Waterloo Exploration Database: New challenges for image quality                      deep learning: A review,” IEEE Transactions on Neural Networks and
+     assessment models,” IEEE Transactions on Image Processing, vol. 26,                   Learning Systems, 2019.
+     2017.                                                                            [56] J.-Y. Zhu, T. Park, P. Isola, and A. A. Efros, “Unpaired image-to-
+[34] M. Mahmoud, K. Su, and A. Moshovos, “Diffy: a déjà vu-free differen-                image translation using cycle-consistent adversarial networks,” in IEEE
+     tial deep neural network accelerator,” in Proceedings of the 51st Annual              International Conference on Computer Vision (ICCV), 2017.
+
+
+
+
+                                                                                 13
+                                                                                P
+[57] X. Zhu, Y. Xu, H. Xu, and C. Chen, “Quaternion convolutional neural           k ak Ek Ej b. Then, we have C = AB by (iii) and thus the
+     networks,” in European Conference on Computer Vision (ECCV), 2018.         associative property of multiplication by Lemma B.1.
+                            A PPENDICES                                         Corollary B.3.1. The multiplication of R is associative if R
+A. Minimal Algorithm for Diagonalizable G over R                                has the properties (i) and (ii) and the isomorphic matrix is
+                                                                                diagonalizable over R.
+Theorem A.1. Let m be the number of real-valued multipli-
+cations in a fast algorithm for an isotropic matrix G. Then                     Proof. By Lemma B.2 and (i), for a ∈ R we considerP its iso-
+ (a) The lower bound of m is rank(G).                                           morphic matrix A which is diagonalizable: A = k ak Ek =
+ (b) If G is diagonalizable over R, there exists a minimal                      T −1 DT where D is a diagonal matrix in form of indeter-
+     algorithm such that m = rank(G).                                           minates ak as D(a). We can diagonalize each permutation
+                                                                                matrix Ej by setting a = ej and have Ej = T −1 D(ej )T .
+Proof. (a) m ≥ rank(Tz ) by the dimension theorem and (8),                      Then the commutative property of permutation matrices holds
+and rank(Tz ) = rank(G) by (8) and (4). Therefore, we have                      since the multiplication of diagonal matrices is commutative:
+m ≥ rank(G).                                                                    Ek Ej = T −1 D(ek )T T −1 D(ej )T = T −1 D(ek )D(ej )T =
+   (b) Suppose G = T −1 DT with an invertible matrix T over                     T −1 D(ej )D(ek )T = Ej Ek . By Theorem B.3, the multiplica-
+real field and a diagonal matrix D which has entries with                       tion of R is thus associative.
+indeterminates gj . We have
+                                                                                   Among the proper rings found in Section III-C, RH and
+                            T −1 |{z}
+                   z = Gx = |{z}  D |{z}
+                                      T x,                       (A-1)          RO4 directly have the associative property of multiplication
+                                 =Tz =g̃◦ =Tx                                   by Corollary B.3.1 since they are diagonalizable over R. The
+                                          P                                     rest of them (C, RH4-I , RH4-II , RO4-I , and RO4-II ) all possess
+and Tg can be derived by examining g̃i = j (Tg )ij gj = Dii                     the commutative property of permutation matrices and thus
+for i = 0, ..., m − 1. This ring multiplication achieves the                    have the associative property as well by Theorem B.3.
+minimum complexity for m = rank(D) = rank(G).
+                                                                                C. Comparison with Weight Pruning for Recognition
+B. Associativity from Commutativity
+Lemma B.1. Let R be a ring with a bilinear-form multiplica-
+tion, and a, b, c ∈ R with corresponding isomorphic matrices
+A, B, and C. The the multiplication associativity of R is
+equivalent to
+                    C = AB if c = a · b, ∀a, b.
+Proof. Given c = a · b, it is clear because ∀h ∈ R, a · (b · h) =
+(a · b) · h ⇐⇒ ∀h ∈ R, ABh = Ch ⇐⇒ C = AB.
+Lemma B.2. Let R follow the exclusive sub-project distribu-                     Fig. C-1. Computation efficiency (left) and weight compression efficiency
+tion. Then                                                                      (right) versus test accuracy for ResNet-56 on CIFAR-100 [28]. Note that
+                                                                                ResNet-56 for CIFAR-100 has smaller-size feature maps for deeper layers, so
+ (a) ∀a ∈P  R, its isomorphic matrix A can be formulated by                     the efficiencies of computation and compression are not the same for LeGR.
+      A = k ak Ek where Ek is a signed permutation matrix.
+ (b) For each standard-basis vector ek = I:,k , Ek is its                          Recent pruning techniques for image recognition have
+      isomorphic matrix: ek · x = Ek x, ∀x ∈ R.                                 mainly focused on structured pruning for their practical ef-
+                                                    P                           ficiency. In Fig. C-1, we compare RingCNN models to LeGR
+Proof. (a) From (9), we equivalently have A = S ◦( k ak Fk )                    [10] which is the state-of-the-art for structured filter pruning.
+where Fk are permutation
+               P           matrices with (Fk )ij = δPij k . Then                RingCNN models show their potential by outperforming LeGR
+we have A = k ak Ek where Ek = S ◦ Fk . Note that from                          for high computation efficiency (left) and for a wide range
+(3) Ek can be directly derived from the indexing tensor M as                    of compression efficiency (right). The study on hardware
+(Ek )ij = Mikj .                                                                accelerators in this aspect will be our future work.
+   (b) Let a = ek . Then A = Ek since aj = δjk .
+Theorem B.3. The multiplication of R is associative if R has
+(i) the exclusive sub-product distribution, (ii) the commutative
+property of multiplication, and (iii) a commutative property of
+permutation matrices Ek such that Ek Ej = Ej Ek , ∀j, k.
+Proof. Let a, b, c ∈ R and c = a · b. By Lemma B.2, (i),
+and (ii), we have the j-th column of the isomorphic
+                                              P       C as
+C:,j = Cej = (a·b)·ej = ej ·(a·b) = Ej Ab = k ak Ej Ek b.
+Similarly, (AB):,j = ABej = a·(b·ej ) = a·(ej ·b) = AEj b =
+
+
+
+                                                                           14
+

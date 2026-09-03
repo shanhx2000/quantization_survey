@@ -1,0 +1,66 @@
+   Challenge 2: Efficient unified hardware architecture for
+                                                                          E3M0      Subnormal
+bit-width scalability. Existing FPMA-based accelerators such                        Normal
+as AxCore [50] use fixed datapaths optimized for a single                 E2M1
+mode (e.g., W4A16) and cannot be adapted to other precisions.             E1M2
+Supporting multiple bit-widths within one GEMM engine                    E3M2
+                                                                                             −1                 0                   1
+requires a reconfigurable FPMA fabric that can scale exponent                           10                 10                  10
+and mantissa handling while incorporating lightweight cor-                                           Numerical Value
+rection across modes. Without such architectural unification,            Fig. 4: Subnormal numbers from diverse FP4 variants are
+multi-precision support would require duplicating hardware for           losslessly remapped to the normal range of a wider FP format.
+each format, undermining the efficiency benefits of FPMA.
+                                                                         to zero. To avoid this abrupt underflow, IEEE-754 introduces
+                 IV. U NI C ORE OVERVIEW
+                                                                         subnormal numbers, encoded with:
+   U NI C ORE addresses these challenges by incorporating three
+key techniques that together enable a unified, multi-precision                        vsubnormal = (−1)S · 21−B · (0 + M )              (5)
+GEMM engine.                                                             This gradually extends the representable range toward zero,
+   Technique 1: Lightweight Accuracy Preservation. To mit-               providing smooth underflow. However, without the leading 1
+igate FPMA’s approximation error and stabilize computation               for mantissa, their logarithmic behavior no longer satisfies
+under low-bit quantization, U NI C ORE introduces a lightweight          FPMA’s approximation (i.e., log2 (1 + Mx ) ≈ Mx ). This is
+format-conversion and compensation pipeline. All inputs are              particularly problematic in low-bit formats (FP4/FP3), where
+first normalized into an expanded floating-point domain to               up to 25–50% of representable values may be subnormals. As
+eliminate subnormals and ensure consistent exponent align-               a result, FPMA can generate large, systematic inaccuracies for
+ment. Within the compute path, U NI C ORE applies dual-path              these inputs. Prior work, such as AxCore [50], mitigates this
+compensation: fine-grained mantissa reconstruction restores              issue by remapping subnormals to nearby values in the normal-
+low-order detail, while coarse-grained adjustment corrects               number domain. However, this conversion is itself approximate
+high-order approximation error. These mechanisms enable                  and inevitably introduces additional numerical noise.
+FPMA-based GEMM to maintain high numerical fidelity even                    2) Normalizing Subnormals via Bit-Width Expansion: To
+in aggressive 4-bit configurations.                                      eliminate subnormal-induced FPMA errors, we convert low-
+   Technique 2: Unified Bit-Width Scalable Architecture.                 bit floating-point operands into a wider format in which every
+U NI C ORE builds a unified GEMM engine on S-FPMA, a                     representable value becomes a normal number. For example,
+dynamically fusible FPMA primitive composed of uniform                   a subnormal in any FP4 variant (E3M0, E2M1, E1M2) has a
+adder slices. Each slice handles a fixed low-bit segment (e.g.,          mantissa of the form (0 + M ). We normalize these values by
+4 bits), and wider precisions are formed by cascading slices             left-shifting their mantissas until they fall within [1, 2), while
+with simple carry propagation. Because each additional bit               reducing the exponent by the same amount. This bit-width
+contributes only one slice, the hardware cost and delay grow             expansion preserves the exact numerical value but requires
+strictly linearly, O(n), with precision. This directly resolves          that the target format must keep at least as many mantissa bits
+the architectural unification challenge: a single datapath now           as the source (M ′ ≥ M ) and provide enough exponent range
+supports diverse formats without redundant hardware.                     to absorb up to M normalization shifts (B ′ ≥ B + M ).
+   Technique 3: Distribution-Adaptive Quantization with                     Figure 4 illustrates this process using FP4 variants (E3M0,
+DynFP. U NI C ORE strengthens numerical fidelity in low-bit              E2M1, E1M2) and the target E3M2 format. The red crosses
+quantization through DynFP, a distribution-adaptive low-bit              indicate subnormal values across several FP4 variants. Be-
+floating-point format. DynFP improves representational ex-               cause these formats use short mantissas and narrow exponent
+pressiveness by adjusting exponent–mantissa allocation and               ranges, many of their smallest values fall below the nor-
+removing redundant encodings to match the asymmetric,                    mal range. When projected into the expanded E3M2 format,
+heavy-tailed distributions in LLM layers. By improving the               each of these subnormals maps to a unique, exact normal
+numerical quality of low-bit data, DynFP reinforces U NI -               representation, shown by the blue dots. E3M2 provides two
+C ORE’s accuracy goals and complements the FPMA correction               additional mantissa bits and a larger exponent bias, ensuring
+pipeline—further addressing Challenge 1, while supporting                that normalization never causes re-underflow and that all
+stable multi-bit-width execution (Challenge 2).                          significant bits are preserved. As shown in the figure, the entire
+                                                                         subnormal region of FP4 lies squarely within the normal range
+      V. ACCURACY-P RESERVED S CALABLE FPMA
+                                                                         of E3M2. Even the smallest FP4 subnormal (0.5 in E1M2)
+A. Eliminating Subnormals with Format Conversion                         shifts cleanly into E3M2’s normal range after normalization.
+   1) Subnormals break FPMA: In the IEEE floating-point                     This bit-expanded representation removes all subnormals
+standard, normal numbers (as shown in Equation 1) have a                 before the FPMA computation begins, guaranteeing that every
+hidden leading 1 (i.e., 1+M ) for the mantissa, which imposes            operand satisfies the assumptions of FPMA’s logarithmic ap-
+a minimum representable magnitude: vmin,normal = 21−B . As a             proximation. Importantly, all weights and activations remain
+result, values smaller than this threshold would jump directly           stored and transferred in their original low-bit formats; the
+
+
+
+
+                                                                  2523
+

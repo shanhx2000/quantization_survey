@@ -1,0 +1,62 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                            Cheng, et al.
+
+
+4 Ecco Architecture                                                      once and used for the subsequent decompression of the loaded com-
+                                                                         pressed block. The decompression of a block begins with feeding
+4.1 Overview
+                                                                         the per-group scale factor, Huffman-coded shared k-means pattern
+Ecco is designed to enhance memory system performance through            choice (𝐼𝐷_𝐾𝑃), and Huffman codebook choice (𝐼𝐷_𝐻 𝐹 ) into the
+advanced compression techniques, with a specific focus on GPU            pattern retriever, as illustrated in 1 . The corresponding k-means
+architectures. Figure 1 illustrates the structural components of our     pattern and Huffman codebook used by the group are retrieved and
+approach, highlighting the seamless integration of compression           the per-group FP8 scale factor is converted back to FP16 by adjust-
+and decompression mechanisms within the memory hierarchy. To             ing the exponent, leveraging the constraint that the FP16-to-FP8
+optimize data transfer and storage efficiency, we have implemented       scale factor is a power-of-two.
+a sophisticated compression system capable of operating at ratios            In the next phase, the chosen k-means pattern is multiplied by
+of 2× and 4×. This system comprises two key components: high-            the scale factor to obtain the actual values of the k-means centroids
+throughput low-latency parallel decompressor and compressor. The         used for group quantization. Simultaneously, the Huffman-coded
+decompressor is strategically placed between the L1 data cache and       data undergoes decoding. To address the inherent sequential nature
+the L2 cache, ensuring that compressed data retrieved from higher        of Huffman decoding while maintaining efficiency, we propose a
+memory levels is effectively decompressed before being utilized          novel parallel Huffman decoder. This design incorporates 64 Huff-
+by the streaming multiprocessors (SMs). Conversely, the compres-         man decoders operating in parallel on overlapping sections of the
+sor is positioned between the L2 cache and the high bandwidth            sequence, as shown in 2 . By limiting the code length to 2-8 bits, we
+memory (HBM), in close proximity to the L2 cache. This arrange-          enable efficient decoding. Each decoder processes 8 bits of its group
+ment follows the same high-level architecture employed in modern         ensuring decoding of at least one and at most four data points per
+NVIDIA GPUs [47, 49, 52, 53], such as Compute Data Compression           group (𝐷_𝐷𝑎𝑡𝑎), plus a 7-bit overlap with the subsequent segment,
+[48], making it extremely easy to integrate our compressor and           ensuring the last data is correctly decoded and knowing the cor-
+decompressor into existing GPU architectures. By performing com-         rect position of where the next segment should start (𝐸𝑂𝑃). The
+pression and decompression on-the-fly, the system significantly          decoders each contain 8 sub-decoders, processing the same 15-bit
+reduces memory bandwidth demands and optimizes both DRAM                 data chunk but starting at different positions (0 to 7), converting
+and L2 cache capacity utilization.                                       Huffman codes to indices, as illustrated in 2 . These sub-decoders
+   The use of Ecco incorporates both software and hardware con-          operate independently in parallel until reaching the boundary of
+trol. Users must explicitly declare compression related properties       their segment’s responsibility. In this case, each decoder outputs all
+in CUmemAllocationProp, including whether the allocated mem-             eight possible decoding results (𝐷_𝑂𝑢𝑡) corresponding to its seg-
+ory is compressed and the compression ratio, prior to memory             ment, ensuring comprehensive coverage of all potential decoding
+allocation. To support this system, the page table and translation       paths.
+lookaside buffers (TLBs) are augmented with additional bits: one bit         The result aggregation process follows, where the data concate-
+indicates whether a page is compressed, and another bit identifies       nator in 3 merges the outputs of every two neighboring decoders
+the compression ratio. This modification incurs no extra overhead        over six stages in a tree-like manner. To merge the results from two
+as NVIDIA GPUs have unused bits in page table entries (PTEs). All        neighboring decoders, each 𝐷_𝑂𝑢𝑡 in the left decoder’s output uses
+explicitly declared compressible memory allocations in HBM are           its 𝐸𝑂𝑃 indicator to determine which 𝐷_𝑂𝑢𝑡 from the right decoder
+stored in a compressed format. When loading, data is fetched in          should be combined with it. Once the appropriate pairing is iden-
+its compressed form from HBM to the L2 cache; the L2 memory              tified, the selected data from both decoders are concatenated and
+controller then directs the block to the decompressor, which de-         written to the next stage. After completing six stages of merging,
+compresses the data before serving it to the SMs. Conversely, when       only a single result remains, representing the decoding sequence
+writing, uncompressed data is temporarily stored in its original         starting from a specific position. Besides that, the concatenator also
+format. Once all the uncompressed data required to build a com-          generates a mask to indicate the number of outliers padded. In the
+pressed block is available, the L2 controller immediately directs it     final step, the decoded sequence, along with the padded outliers, is
+to the compressor, which then converts the data into compressed          mapped to the actual centroids corresponding to each index. The
+blocks. By implementing this compression strategy, Ecco aims to          outliers are first scaled to FP16 by multiplying them with the scale
+address the critical challenges of data movement and storage during      factor. This mapping process is managed by 128 parallel mappers in
+LLM inference in modern GPU architectures, leading to substantial        the data mapper module, as depicted in 4 . Each mapper translates
+improvements in overall system performance and energy efficiency.        indices in the decoded sequence and outliers to their corresponding
+                                                                         real centroids. The outlier address, combined with the outlier mask
+4.2     Decompressor Design                                              generated in the previous stage, acts as a selector. This selector
+High Compression Ratio (4×) Decompressor. The decompres-                 determines whether a given position should use the value from
+sion process for our high compression ratio (4×) scheme involves         the k-means pattern (mapped via Huffman decoding) or the scaled
+several key steps, optimized for low-latency and high-throughput         outlier, ensuring accurate reconstruction of the original data. This
+parallel processing. The details of the decompressor is depicted in      parallel and pipelined approach enables efficient decompression of
+Figure 8. Initially, prior to a compressed load operation, all tensor-   high-ratio compressed data, balancing parallelism with the sequen-
+wise metadata—including shared k-means patterns, Huffman code-           tial nature of Huffman coding to achieve optimal performance.
+books, and FP16-to-FP8 scale factor is loaded into the decompres-        Low Compression Ratio (2×) Decompressor. The 2× decompres-
+sion module’s buffer. This preloaded information is only loaded          sor employs a straightforward yet efficient approach to decompress
+

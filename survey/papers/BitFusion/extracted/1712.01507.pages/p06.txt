@@ -1,0 +1,68 @@
+                     TABLE I: Bit Fusion Instruction Set.
+    OpCode      Operand Specification     Loop Identifier   Immediate             microarchitecture can readily support it by using multiple instruction
+     5-bits            6-bits                 5-bits          16-bits             blocks for an individual layer. The setup instruction marks the
+       setup    op0.bitwidth op1.bitwidth                X               X        beginning of an instruction block and configures the Fusion Units
+      ld-mem                                                                      and its data delivery logic to the specified bitwidth for the operands.
+                               mem.bitwidth                         num-words
+      st-mem
+                scratchpad-                                                       This instruction effectively defines the logical fusion of the BitBricks
+       rd-buf
+                    type             X                                   X        into Fused-PEs for all the instructions in the block. The block-end
+       wr-buf                                         loop-id
+     gen-addr                      ld/st                              stride      instruction signifies the end of a block and provides the address to
+     compute                 fn                                          X        the next instruction in the next-inst field.
+        loop     X         loop-level                              num-iterations Concise expression of DNN layers. DNNs consist of a large
+     block-end                         Address of next instruction                number of simple operations like multiply-accumulate and max,
+bitwidths for the other. We provide a head-to-head comparison to repeated over a large number of neurons (over 2600 million
+Stripes in Section V-B4 and provide a qualitative comparison to multiply-adds in AlexNet. See Table II). Thus, the von Neumann
+Loom below. As the results from Figure 10 indicate, for the same overhead of instruction fetch and decode can limit performance
+throughput, a fully-temporal design, such as the one used in Loom, due to the large number of operations required by a DNN. To
+would consume significantly larger area and power compared to minimize the number of instruction fetches/decodes required, we
+our spatially composable Fusion Unit. Furthermore, a fully-temporal leverage the following insight. Each layer in a DNN is a series
+design iterates in the form of a nested loop over the bits the two of simple mathematical operations over hyper-dimensional arrays.
+operands; hence, requiring more number of accesses to the SRAM. How the operations walk through the array elements and the type
+   The next section discusses the Bit Fusion-ISA, that exposes the of mathematical operation (multiply-add/max) uniquely defines a
+bit-level flexibility of Bit Fusion to software.                                  layer. As such, the ISA provides loop instructions that enable a
+                                                                                  concise way of defining the walks and operations in a DNN layer.
+               IV. INSTRUCTION SET ARCHITECTURE                                   Each loop instruction has a unique ID in the block. As shown
+   To leverage the unique bit-level flexibility of Bit Fusion, we need in Table I, the num-iterations field in the loop instruction
+to design a new hardware-software interface that exposes those defines iteration count. The compute instruction specifies the type
+capabilities in an abstract manner. Furthermore, the abstraction must of operation, while the gen-addr instruction dictates how to walk
+be flexible to enable a wide range of DNN models so as to exploit through the elements of the input/output hyper-dimensional arrays.
+bit-level fusion. The following lists the requirements for an ISA that The stride field in the gen-addr instruction specifies how to
+provides this abstraction and enables efficient use of Bit Fusion for walk through the array elements in the loop, which is identified by
+various categories of DNNs.                                                       the loop-id field. The words after the setup instruction define
+1) Amortize the cost of bit-level fusion by grouping operations. the memory base address for the data that fills the three buffers of
+    The operations in a DNN are organized into groups, called layers, input, output, and weights. The gen-addr instruction generates the
+    wherein the same mathematical operation repeats a large number addresses that walk through the memory data and fill the buffers.
+    of times (often hundreds of thousands). To avoid the overhead                          Address=base+∑(loop_iterator[id]×stride[id])                (4)
+    of fine-grained control over the operations at such a scale, the                                          id
+    abstraction needs to amortize the cost of bit-level fusion across                In Equation (4), id is the loop-id field of all the gen-addr in-
+    blocks of instruction that implement the layers.                              struction in the block and the loop_iterator is the current iteration of
+2) Enable a flexible data-path for Bit Fusion. Both the number the corresponding loops and their strides. The fundamental assump-
+    of words and the bitwidth of each word that feeds the Fused-PEs tion is that multiple gen-addr instructions repeated by correspond-
+    varies depending on how the BitBricks are composed as discussed ing loop instructions define the complex multi-dimensional walks
+    in Section II. Thus, the semantics of instructions for data accesses that expresses various kinds of DNN layers from LSTM to CNN. In
+    must vary according to the fusion configuration to enable a the evaluated benchmarks, blocks with 30-86 instructions are enough
+    flexible data-path.                                                           to cover LSTM, CNN, pooling, and fully connected. These blocks
+3) Provide a concise expression for a wide range of DNN layers. use a combination of loop, compute, and gen-addr instructions
+    As research in DNNs is still volatile, it is necessary to devise to define these DNN layers nested loops. These statistics show that
+    an ISA that is general enough to express a wide range of DNN our ISA can concisely express various DNN layers while providing
+    operations/layers. Yet, minimizes the von Neumann overhead bit-level fusion capabilities. Note that these instructions are fetched
+    of instruction handling and require a small footprint.                        and decoded once at the beginning of an instruction block, amortizing
+                                                                              the von Neumann overhead over the entire execution of the block.
+A. Fusion-ISA for Bit-Flexible Acceleration
+                                                                              Managing memory accesses for Fused-PEs. The ld-mem/st-
+   Table I summarizes the Bit Fusion-ISA that aims to satisfy these
+                                                                              mem instructions exchange data between the on-chip buffers (IBUF,
+requirements. The rest of this section discusses the instruction
+                                                                              OBUF, and WBUF) in Figure 3–and the off-chip memory. Similarly,
+formats and provides the insight that drives them.
+                                                                              the rd-buf/wr-buf instructions read/write data from the on-chip
+Block-structured ISA for DNN layers. To leverage the                          buffers specified by the scratchpad-type field as shown in
+commonalities in the operations of a layer, the Bit Fusion ISA is             Table I. In these four instructions, the size of the operands, which are
+block structured. As such, the fusion configuration of the BitBricks          variable-bitwidth arrays, depends on the number of array elements
+is fixed across each block of instructions that implement a specific          and their bitwidths. These parameters, which control the logic
+layer. In this work, we did not explore within layer bitwidth                 that feeds the Fused-PEs, are dependent on the bit-level fusion
+variations. Nevertheless, the Bit Fusion ISA and this incarnation of its
+

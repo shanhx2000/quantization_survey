@@ -1,0 +1,135 @@
+      1 GEMV                          N            Inefficiency     Online                          4       Conflict-Free Epilogue
+                                                                                             2n Entries                N                                 Weight Codebook &
+
+
+
+
+                                                                                                                                       Ctrl
+                                                                                        1
+                                                                                                                                                           Weight Buffer
+           K                                              N                                                                                                                           Reuse
+                                                                              ∑
+  1                            K    FP16       =   1                      =                    OC                    WI        V
+
+                      +
+          Input                                        Output                                                                                                GEMM Unit                                    New
+                                    Weight                                                                          Output
+
+
+
+
+                                                                                                                                                                                                                          Vector Processing Unit
+          FP16                                                        Add-only                                                                          PE   PE        PE   PE
+
+
+
+
+                                                                                                                                                                                      Output Codebook &
+                                                                                                                    Lookup
+
+
+
+
+                                                                                                                                                                                                                                                   DRAM
+                                                                                                                                                                                                          Epilogue Unit
+                                                                                                                                                                                        Output Buffer
+                                                                                                                                       Input Buffer
+   2 Offline VQ                                                               d                         3      Efficient VQ-GEMM                        PE   PE        PE   PE
+                                                                                    K FP16
+                                                                      1
+
+
+
+
+                                                                                                                                                                        …
+                                                                                                                                                                                 32
+           N
+                      d-D K-means
+
+
+
+  d                                  On-Chip N           2n                         d                            2n Entries                             PE   PE        PE   PE
+      1                                   K                                                    2n                                                                 …
+
+
+
+
+                                                         ……
+          FP16    K                    V=                      d
+                                                                                                                                   K
+                                           d                                      K                                           V=
+
+
+
+
+                                                                                              ……
+                                                       Weight                       ……                  =        FP16                                   PE   PE        PE   PE
+                                                                                                                                   d
+
+
+
+
+                                                                                        +
+                                      Weight Index    Codebook                    d
+                                                                                            WC FP16 Output Codebook                                               32             3                            4
+                                         (WI)    n-bit (WC)
+   Offline Off-Chip                                                 Online Input                         (OC)
+               (a) Vector Quantization                                    (b) GEMV-to-GEMM Recasting                                                  (c) Efficient VQ Architecture (EVA)
+
+                                                        Fig. 3.    Overview of the EVA computation flow and architecture.
+
+vector that is replaced by an index referencing a shared weight                                              B. Recasting GEMV to GEMM
+codebook (WC) B. The codebook contains 2n representative                                                        While conventional VQ increases codebook dimensionality
+d-dimensional centroids (where n is the index bit-width),                                                    and lookup complexity, its multi-dimensional centroids also
+each learned from the distribution of weights using k-means                                                  expose an opportunity for computation reorganization. By
+clustering [15], [22]. All K ×N weight elements are therefore                                                exploiting this property, we reformulate the LLM decoding
+represented as V × N indices, where V = K/d. The weight                                                      computation so that the original GEMV can be recast as a
+index (WI) matrix I stores these compact indices, while the                                                  GEMM operation, thereby improving compute efficiency. The
+codebook B stores the learned centroids.                                                                     detailed process is described below.
+   During inference, the quantized model no longer loads the                                                    Dot product between input and centroids. As illustrated
+original full-precision weights. Instead, each weight vector                                                 in Fig. 3 (b) 3 , we first reshape the input token vector
+is reconstructed on demand by fetching its corresponding                                                     x ∈ R1×K into a two-dimensional matrix X ∈ R(K/d)×d
+centroid from the codebook. This process replaces bandwidth-                                                 by grouping every d consecutive elements into a vector.
+intensive FP16 weight loading with lightweight index-based                                                   According to matrix multiplication rules, each d-dimensional
+lookups, significantly reducing the storage and memory access                                                row vector of X performs a dot product with the corresponding
+cost of LLM layers.                                                                                          d elements from each column of the weight matrix W ∈
+   In this study, we adopt d = 8 for the vector dimension                                                    RK×N . After applying VQ, these d elements are replaced
+and n = 8 for the index bit-width, resulting in a codebook                                                   by the centroids referenced by the weight index (WI) matrix
+of 2n = 256 centroids. This corresponds to an average                                                        I ∈ [0, 2n )(K/d)×N . Therefore, each input vector interacts with
+quantization rate of approximately nd = 1 bit per element for                                                the corresponding centroids across all output channels. This
+one codebook, which, however, is too low to preserve model                                                   means that, regardless of the output dimension N , the number
+accuracy. To achieve higher precision while maintaining com-                                                 of possible weight values for each input vector is bounded by
+pression efficiency, we adopt the additive vector quantization                                               the codebook size 2n .
+strategy AQLM [15] and use multiple codebooks for hierarchi-                                                    VQ GEMM. This observation enables a key simplification.
+cal refinement. Specifically, we employ C codebooks to obtain                                                We can directly multiply the reshaped input matrix X with
+                                                                                                                                         n
+an effective average quantization precision of q = C×n     bits.                                             the codebook B ∈ Rd×2 to obtain an intermediate result
+                                                       d
+EVA supports C = 2, 3, and 4 codebooks, corresponding to                                                     called the output codebook (OC). Each element in the output
+                                                                                                                                       n
+2-bit, 3-bit, and 4-bit quantization for LLM decoding.                                                       codebook O ∈ R(K/d)×2 represents the dot product between
+                                                                                                             one input vector and one centroid, which can be reused across
+   Computation and Memory Inefficiencies. After dequan-
+                                                                                                             multiple output channels. This operation effectively converts
+tization, conventional VQ-based methods continue with the
+                                                                                                             the token-level GEMV into a compact GEMM between X and
+GEMV operation as shown in step 1 [15], [58]. This offline
+                                                                                                             B:
+VQ process significantly reduces memory footprint and data
+                                                                                                                                        O = XB,
+movement. However, it does not change the fundamental LLM
+decoding computation pattern, since each token still performs                                                where O is the output codebook. This formulation bridges
+a GEMV using the reconstructed weights. Furthermore, the                                                     vector quantization and matrix multiplication, paving the way
+lookup-based reconstruction introduces irregular memory ac-                                                  for efficient GEMM-based LLM decoding on modern accel-
+cess patterns that cause frequent bank conflicts and degrade                                                 erators.
+parallel efficiency. Compared with 1D k-means quantization,                                                     Advantages. This reformulation provides several key ben-
+VQ demands higher bandwidth and larger codebooks. These                                                      efits for efficient LLM decoding:
+characteristics increase the memory access complexity of VQ,                                                    1) Regularized memory access. Converting LLM decoding
+but they also reveal an inherent structural regularity that can                                                     into GEMM avoids direct lookups on the weight code-
+be exploited for more efficient computation.                                                                        book, which are irregular. The number of lookups is
+
+
+
+
+                                                                                                    1355
+

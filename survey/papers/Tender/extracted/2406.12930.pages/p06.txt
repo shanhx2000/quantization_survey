@@ -1,0 +1,60 @@
+   Thus, for a group with a large absolute maximum, we need              the partial products with a proper rescaling factor without
+to minimize the number of channels in the group. Intuitively,            clipping values due to limited bit width. In this way, we
+this can be viewed as isolating quantization errors due to the           requantize accumulated partial products without involving
+large scale factor to only a few number of channels. Similarly,          explicit floating-point operations. We use a shifter residing
+for a group with a large number of channels, we need to                  next to the accumulated sum for requantization since we use
+minimize the absolute maximum of the group. As Figure 2                  2 as a rescaling factor. Figure 5(b) illustrates our runtime
+shows, only a few channels have large magnitude values, and              requantization approach. We perform matrix multiplication
+most of the channels have values near zero in the activation             with a channel group that has the larger scale factor first.
+tensor. Thus, using coarse-grained thresholds (i.e., a large             Then, before computing matrix multiplication of the next
+absolute maximum) for the channels with large magnitude                  group, Tender shifts the accumulated integer value by 1-bit.
+values does not hurt the overall accuracy because the group              After finishing the matrix multiplication of all the groups, we
+includes only a few channels. Meanwhile, using fine-grained              dequantize the final result using the smallest scale factor. This
+thresholds (i.e., a small absolute maximum) for the channels             approach incurs a negligible latency overhead for rescaling
+with small magnitude values can effectively minimize the ac-             with a small hardware extension. To reduce the overhead of
+curacy drop by using the small threshold near the value range            determining a scale factor at runtime, we further optimize our
+of the channels. Thus, our approach can efficiently classify the         scheme to use calibration to pre-compute the scale factors and
+channels with a minimum accuracy drop. Note that, of course,             biases of each channel offline. We also classify each channel
+it is possible to achieve better accuracy by using fine-grained          into a group at calibration time and only apply the metadata
+thresholds for both the channels with large magnitude values             to perform quantized matrix multiplications at runtime.
+and channels with small magnitude values. However, dividing              A Walking Example. We explain how our decomposed quan-
+more channels incurs a computation overhead, whereas using               tization algorithm works with an example in Figure 4, where
+a fine-grained threshold for the channels with large magnitude           there are six channels (channel IDs 1-6). After subtracting the
+values has a minimal increase in accuracy due to the small               bias, each point represents the absolute maximum value of
+number of channels that are included in the group.                       each channel (CMax). In the example, the 2nd channel has the
+   3) Why use 2?: Setting scale factors by dividing the maxi-            largest CMax value among the channels. Thus, we set the first
+mum scale factor with the power of 2 has two key advantages.             (and largest) scale factor (S1) as the absolute maximum value
+First, we can guarantee the lower bound of the quantization              of the 2nd channel (i.e., 22.4) divided by k = 2b−1 − 1 (e.g.,
+level. When a channel is assigned to a quantization group,               127 and 7 for INT8 and INT4 quantization), where b is the
+the absolute maximum of the channel is at least larger than              quantization bit width. We then set the subsequent quantization
+half of the threshold of the group. Thus, even for the worst             boundaries by dividing S1 by power of 2. For simplicity, we
+case, n − 1 bits are utilized for n-bit quantization. Second,            only consider three groups in the example, so S2 and S3
+when the ratio between the scale factors is a power of 2,                would be 11.2 and 5.6 divided by k = 2b−1 − 1, respectively.
+we can efficiently compute the matrix multiplication involving           Now, we classify each channel into one of the three groups.
+decomposed quantized activation tensors with a negligible la-            In the example, the 1st, 3rd, and 5th channels are assigned to
+tency overhead, which we discuss in the following paragraph.             the same group (A3), sharing the same scale factor (S3). The
+In summary, the benefit of the “power of 2” is that it not only          4th and 6th channels are also classified into the same group
+enables rescaling with integer arithmetic but also considers the         (A2). The 2nd channel is assigned to another group (A1) with
+alignment with the channel distribution in activations.                  the largest scale factor (S1). After classification, six different
+Runtime Requantization. Although tensor decomposition can                channels are decomposed, so we can minimize the quantization
+effectively reduce the quantization error, naively employing it          error while making the runtime requantization viable.
+requires an additional computation step to retain functionality          Optimization. We apply the Tender algorithm to large lan-
+(Figure 5(a)). In a naive implementation, we must decompose              guage models and achieve similar or better model performance
+channels to generate multiple separate matrices and compute              compared to the existing quantization works [20], [21], [65]
+the partial product of each group. Each partial product is               on INT8 quantization. We achieve this while keeping the algo-
+dequantized using the scale factor of each matrix and added up           rithm hardware-friendly and the required hardware minimal.
+to the final result. This incurs an additional overhead due to the       However, for INT4 quantization, the proposed algorithm in-
+increased number of floating-point operations. Furthermore,              evitably leads to some drops in model performance compared
+decomposing the channels and computing the partial product               to FP16 due to its simplicity, most of which can be easily
+of each channel group lead to a shortened reduction axis.                recovered with conventional row-chunking techniques.
+This results in underutilization of compute cores especially in             For example, we can divide the rows of the activation tensor
+the systolic array architecture. To alleviate these inefficiencies       into several chunks and calibrate the bias and scale factor for
+and fully utilize the compute cores, we propose Runtime                  each row chunk. Figure 2 shows that there exist not only inter-
+Requantization.                                                          channel variances but also intra-channel variances. Thus, we
+  Our intuition is that the systolic array accumulator has               may consider intra-channel variances as well as inter-channel
+a sufficiently large bit width, and we can safely requantize             variances to group values more effectively. We observe that
+
+
+
+                                                                     6
+

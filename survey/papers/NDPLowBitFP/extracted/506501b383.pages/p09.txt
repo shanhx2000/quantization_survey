@@ -1,0 +1,80 @@
+                                                                                                       TABLE I
+            #ElementRemain
+                    PU
+                                     Remain
+                           = ⌈GK /P UQGroup ⌉.               (15)
+                                                                                    S UPPORTED DATA F ORMAT IN D OT-P RODUCT U NIT
+Then the padding can be calculated as:                                             Data Format          fp4      fp8     fp16      fp32
+                                                                                      Ex My            E2M1     E4M3    E5M10     E8M23
+ #ElementP U = #ElementRemain
+                       PU    +GK×#QGroupComplete
+                                        PU       ,           (16)                  Mantissa Bits         2        4       11        24
+                                                                              #Values/DRAM Column       64       32       16         8
+           P adding = #ElementP U − ⌈K/P artK ⌉.             (17)
+                                                                                                       TABLE II
+                                                                              T RADE -O FFS BETWEEN FP32 P ERFORMANCE AND PU OVERHEAD
+A partition strategy will be pruned if the padding exceeds 50%
+of original partitioned size.                                                    FP32 Cycle / Other Format       1        2        4
+                                                                                      PU Area(mm2 )           0.0185   0.0167   0.0152
+   2) Pruning for Loop Tiling and DRAM Mapping: Given a                               PU Power(mW)             8.72     7.21     6.04
+T ileCol , we can calculate the corresponding number of scales
+in the K inner loop. As mentioned in Sec. VI-B, the DRAM
+                                                                             The second stage derives the final performance estimation
+columns corresponding to the scale region within an itBlock
+                                                                           by applying analytical formulas to these aggregated metrics:
+may differ from the theoretical number, as shown in Equ. 6.
+Therefore, we compute the DRAM column utilization based on                    Lat = tCCDL ∗ N umcol + LatRowChange ∗ N umrow
+                                                                                                                                          (18)
+the loop tiling size and the number of actually used columns,                     + LatDequant ∗ (1 − RatioOverlap )
+and set a utilization threshold to prune compilation strategies
+with lower utilization.                                                    where N umcol represents the total number of accessed DRAM
+                                                                           columns, including accessing weight value for dot-product,
+D. Cost Model-based Design Space Exploration (DSE)                         fetching input to the value and scale buffers, and maintaining
+                                                                           the partial sum result. N umrow and LatRowChange represents
+    With the pruning technique, we can reduce the size of
+                                                                           the counted number of row changes and the extra latency of a
+compilation space by 4 ∼ 5×. For each strategy in the pruned
+                                                                           row change, and LatRowChange can be calculated from tim-
+space, we use the cost model to predict the optimal ones,
+                                                                           ing parameters. LatDequant and RatioOverlap represents the
+avoiding costly cycle-accurate simulation. For the DSE of a
+                                                                           dequantization time and the ratio of dequantization operations
+MVM operator, we can limit the search time from three hours
+                                                                           that overlap with column access and row change.
+to one minute for a batched MVM operator. And we can finish
+the DSE for LLaMA2-7B within 10 minutes, considering the                                IX. E VALUATION M ETHODOLOGY
+operator structure of different transformer blocks is same.                A. Multi-precision PU Implementation
+    The cost model consists of two stages. The first stage
+performs coarse-grained metric estimation based on the                        Table I summarizes the FP formats supported by each
+compilation strategy. While the value dot-product latency can              PU, including effective mantissa precision and the number
+be derived analytically, we leverage parameters such as loop               of values that fit into a single DRAM column. To reduce
+tiling sizes, value and scale buffer capacities, and DRAM row              hardware overhead, the PU datapath is designed to reuse
+size to count key events, including buffer misses, dequantiza-             resources across multiple precisions, as shown in Fig. 2(c).
+tion operations, and DRAM row changes. Furthermore, we can                    Dot-product PU. Each PU consists of a set of FP multipli-
+also count dequantization operations that overlap with buffer              ers followed by an FP adder tree. For the multiplier array, ex-
+miss and row changes. However, precisely characterizing                    isting multi-precision FP units [24] reuse mantissa multipliers
+DRAM row changes presents a key challenge. We observe                      by composing small multiplier blocks. In our design, mantissa
+that DRAM row changes consist of (i) natural row changes                   multiplication for FP32 originally requires a 24-bit multiplier.
+incurred while streaming weight data for computation, and (ii)             We decompose it into four 12-bit multipliers to enable higher
+row changes triggered by misses in the value or scale buffer.              parallelism at lower precisions. Similarly, 12-bit multiplier can
+For (i), as weights are mapped following the loop iteration                be further decomposed into four 6-bit multipliers. However,
+order, data are accessed column by column sequentially during              the datapath shows that only a small portion of the multipliers
+traversal. The natural row change is considered after accessing            are utilized for FP4 and FP8 operations. As a result, we
+the last column in each row. For (ii), we notice that buffer miss          trade-off between the resource overhead and the computational
+contributes to different extra row change numbers. Assuming                power for FP32, as shown in Table II.
+we cache the activation in the buffer and read the weight from                For characterizing the area and power overhead of different
+DRAM for computation, if an activation buffer miss occurs,                 PU designs, we synthesize the modules using Synopsys DC
+two extra row changes are required: one to read the activation             Compiler at 14 nm, aligned with the 1y-nm DRAM process
+and another to return to the previous weight row. However,                 used in GDDR6-AiM [33]. To complete one MAC within
+if the activation buffer miss coincides with a natural weight              bank access interval (tCCDL × tCK ), the PU frequency is
+row change, only one extra row change is incurred. One extra               set to 0.4 GHz, following GDDR6 timing parameters in
+row change also happens when two buffer refills (e.g., for data            DRAMSim3 [38]. The single-cycle FP32 design provides ac-
+and scale buffers) happen at the same moment. Based on this                ceptable overhead and avoids excessively slow dequantization,
+observation, we can obtain a more accurate estimation of the               so we adopt this design point in our implementation. However,
+total row-change overhead.                                                 our proposed compilation and dequant-hiding techniques are
+
+
+
+
+                                                                    1391
+

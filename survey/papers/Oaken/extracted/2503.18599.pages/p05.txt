@@ -1,0 +1,94 @@
+   Oaken: Fast and Efficient LLM Serving with Online-Offline Hybrid KV Cache Quantization                                                               ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                    450                                                            2500
+
+
+
+
+                                                          Throughput (token/sec)
+                           KV Size                                                            w/o Quant.            Limitations of existing KV cache quantization solutions. Re-
+Memory Usage (GB)
+
+
+
+
+                           Model Size                                              2000       Weight Quant.
+                                                                                              KV Quant.
+                                                                                                                    cently, a large body of prior works has explored the KV cache quanti-
+                    300                                                                                             zation methods [5, 35, 41, 43, 86]. While these works have pioneered
+                    256                                                            1500
+                                                                                                                    a novel research direction, they are constrained by substantial run-
+
+
+
+                                                    94%
+                                                                                   1000                       OOM   time overhead to enable quantization, compromises in accuracy
+                    150
+                                                                                                              OOM
+                                              89%                                   500                             for faster quantization, or a combination of both. QServe [41] and
+                                        80%
+
+
+                                                                                                                    Atom [86] reorder key-value channels by applying the transfor-
+                     0 1                                                              0
+                            8 16 32 64 128 256                                            1    8 16 32 64 128 256   mation matrix adopted in RPTQ [78], while QServe also handles out-
+                               Batch Size                                                      Batch Size           liers by applying the scaling matrix introduced by SmoothQuant [71].
+                      (a) Memory Requirement                                        (b) Quantization Comparison     Tender [35] performs channel reordering via indirect indexing and
+                                                                                                                    groups key-value channels with similar magnitude. These solutions
+   Figure 5: (a) Memory usage breakdown to KV cache and                                                             have a limitation in that they come with accuracy degradation due
+   model parameters of Llama2-13B model as batch size sweeps                                                        to their low quantization granularity and suffer from additional run-
+   from 1 to 256. (b) Throughput comparison among no quan-                                                          time overhead of channel reordering. KIVI [43] and KVQuant [22]
+   tization, weight and KV cache quantization of Llama2-13B                                                         propose to use per-vector mixed-precision quantization based on
+   model inference. Experiment is conducted with LPDDR-NPU.                                                         the insight that each KV channel exhibits a distinct pattern in the
+                                                                                                                    magnitude of its values. These methods minimize accuracy loss by
+                                                                                                                    isolating outlier channels from the rest, but they incur substantial
+      To summarize, while high memory bandwidth is crucial for
+                                                                                                                    overhead from sorting operations or mixed-precision computations,
+   achieving high throughput, sufficient memory capacity is also es-
+                                                                                                                    which largely offsets the performance gains of quantization.
+   sential to efficiently serve LLMs, particularly with larger models and
+                                                                                                                       These limitations in existing solutions emphasize the need for
+   batches. Several recent studies also emphasize the importance of
+                                                                                                                    a KV cache quantization technique that achieves low bitwidth
+   memory capacity in LLM inference and suggest introducing large-
+                                                                                                                    without compromising accuracy. Furthermore, such low bitwidth
+   capacity memory into the LLM accelerators [53, 83]. Despite the
+                                                                                                                    must translate into tangible throughput improvements at the hard-
+   industry’s growing demand for large-scale LLM inference, current
+                                                                                                                    ware level. To meet these demanding requirements, we propose an
+   memory technologies struggle to meet both capacity and bandwidth
+                                                                                                                    algorithm-hardware co-designed acceleration solution for efficient
+   requirements, necessitating a choice. We explore this trade-off by
+                                                                                                                    batched LLM inference, Oaken.
+   evaluating our solution, equipped with either LPDDR or HBM mem-
+   ory, across various batched inference scenarios.
+                                                                                                                    4     Oaken’s KV Quantization Algorithm
+   3.3                    KV Cache Quantization                                                                     Our quantization algorithm is driven by three primary empirical
+  Leveraging the memory that offers either sufficient bandwidth or                                                  properties we obtain from observing the value distribution of the KV
+  capacity, combined with scaling out the system, can help address                                                  cache during LLM inference. Building upon the three observed prop-
+  the bottlenecks in batched inference. However, this approach incurs                                               erties, we incorporate three algorithmic techniques into Oaken’s
+  substantial system-building costs and severe resource underutiliza-                                               KV cache quantization. Below, we will first discuss the empirical
+  tion, making it neither a fundamental nor a sustainable solution.                                                 analysis results for KV cache distribution and then describe the
+  Algorithmic approach to the memory wall. To tackle the mem-                                                       three techniques one by one.
+  ory wall challenge, the community has explored algorithmic ap-
+  proaches to reduce the demands on both conflicting resources fun-                                                 4.1    Observations in KV Distribution
+  damentally. Quantization is one such direction, widely recognized                                                 Existing LLM quantization methods often suggest that dealing with
+  for its ability to alleviate both capacity and bandwidth bottlenecks                                              large values has a significant impact on model accuracy [15, 19,
+  simultaneously. As discussed in Section 2.3, many efforts focus on                                                22, 33, 71, 80, 86]. Moreover, other prior works suggest that small
+  weight quantization and reducing the computation workload to                                                      values near zero can vanish due to underflow during quantization,
+  accelerate LLM inference [15, 17, 33, 51, 71, 78]. However, our ex-                                               leading to larger error [2, 13, 27, 34]. These observations underscore
+  perimental results show that weight-only quantization has a limited                                               the importance of analyzing the distribution and characteristics of
+  impact on addressing the memory wall in the batched scenarios.                                                    the quantization targets. We examine the value distribution of the
+  Limitations of weight-only quantization techniques. Figure 5(a)                                                   KV cache across several LLMs and datasets and derive key insights
+  illustrates the memory capacity requirements for model weights                                                    for designing effective quantization techniques.
+  and KV cache as batch size increases. While the memory usage                                                      Observation 1. Figure 6(a) presents the minimum and maximum
+  for weights remains constant, the KV cache size grows, eventu-                                                    range of KV cache values for each decoder layer across various
+  ally dominating the entire device memory. Figure 5(b) compares                                                    LLMs using the Wikitext2 dataset. Notably, the magnitude of keys
+  the performance between 4-bit weight quantization and 4-bit KV                                                    and values varies across models and among decoder layers within
+  cache quantization. The result shows a minimal performance im-                                                    each model. These variations are distinctive properties of each
+  provement from weight quantization, showing its ineffectiveness in                                                model and decoder layer, driven by differences in their model
+  addressing the memory wall for batched LLM inference. However,                                                    weights. From this observation, we gain the insight that the quanti-
+  KV cache quantization delivers larger performance gains, demon-                                                   zation factor should be determined separately for each model and
+  strating its effectiveness in relieving memory pressure.                                                          its individual decoder layers.
+

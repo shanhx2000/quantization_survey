@@ -1,0 +1,72 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                                                                       Cheng, et al.
+
+
+                1   Reshape                    128                                                   128                                                            512b                     9   Padding            512b
+                                                                                                                              8   Huffman                                                            &
+          128                         0.82 -1.6    …      0.56          5   Quantization      12    15    …       8                coding                   00 01    … 101                       clipping   00 01    … 101
+
+                       …              1.2   0.75   …      -0.2   MN/128                       15    13    …       0   MN/128                                011 1111       …    101   MN/128                011 1111       …        MN/128
+  M       …                …                   …                                                         …                                                          …                                               …
+                N
+                       2   Normalization
+                                                                                                                                    6   Statistical                                                                 FP16         FP8
+ gsf1   0.51 -1.0          …   0.35                -0.5   …      0.86
+                                                                                                                                        Frequency
+                                                                                                                                                                                                                    K-means Pattern #1
+                                                                                             -0.6   …    0.79
+ gsf2   1.0     0.63       …   -0.2   MN/128       -0.7   …      0.72 MN/128                        …           S << MN/128                                                     … 1111                              K-means Pattern #2
+ …                   …                                       …                 4   K-means                                              0   1   2   3
+                                                                                                                                                                           00
+                                                                                                                                                                                …       S*H << MN/128               Huffman Codebook
+                                                                                                  15                                                                       10         1101
+                    128                                   15                                                                                                                                                        Padded Outliers
+                                                                                              Quantization                                                                      16
+                                 3     K-means                                                 codebook                                     0   1   2   3
+                                                                                                                                                                                                                    Mapping
+
+                                                                                                     7   Get Huffman codebook based on Statistical Frequency                                                   gsf: Group Scale factor
+                                                                                                                  (Higher frequency -> Shorter bits)
+
+                                                                        Figure 4: Overview of Ecco compression algorithm.
+
+and normalized using a per-tensor FP16-to-FP8 scale factor, with                                                        with 𝐻 clusters to the frequency distributions of indices obtained af-
+the resulting normalized FP8 value serving as the group scale factor.                                                   ter quantization. This clustering yields 𝐻 representative frequency
+Subsequently, the values in each group are normalized to the range                                                      distributions, which are then converted into 𝐻 Huffman codebooks.
+(−1, 1) using this FP8 scale factor. In Step 3 , excluding the abso-                                                    Finally, as depicted in Step 8 , each quantized group selects the
+lute maximum value, activation-aware k-means clustering with 15                                                         Huffman codebook that provides the optimal compression ratio,
+clusters is performed on the remaining 127 values in each group.                                                        ensuring efficient encoding of the group data. After compression,
+The sorted centroids obtained from this process are stored, forming                                                     each group consists of four components: a fixed-length scale factor,
+a structure referred to as the k-means pattern. Moving to Step 4 , a                                                    a fixed-length Huffman codebook choice, a variable-length shared
+second k-means clustering with 𝑆 clusters is applied to the k-means                                                     k-means pattern index, and variable-length Huffman-coded quan-
+patterns across all groups, producing 𝑆 shared k-means patterns,                                                        tized data, as shown in Figure 6a. To ensure that the compressed
+where 𝑆 ≪ 𝑀𝑁   128 . Afterwards, in Step 5 , quantization is performed.                                                 data fits within the designated block size, we employ a clipping
+The data in each group is rounded to the nearest value within each                                                      and padding strategy, as depicted in Step 9 . If the compressed data
+shared k-means pattern, and the pattern minimizing the output                                                           exceeds the block size, we simply clip the excess. Conversely, if
+mean squared error (MSE) is selected. The index of the selected                                                         the data is smaller than the block size, we pad the values from the
+shared k-means pattern, along with the indices of the centroids to                                                      second largest absolute value (largest absolute value is stored as
+which the data is rounded, are recorded. Notably, the scale factor                                                      scale factor) to smallest until the block is filled. Each padded value
+(i.e., the absolute maximum value in each group) is assigned index                                                      occupies 15 bits, with 7 bits for location information and 8 bits for
+15. With 15 centroids per k-means pattern, there are 15 indices for                                                     the FP8 value, quantized using the same per-tensor FP16-to-FP8
+the group’s data and a unique index for the scale factor, resulting in                                                  scale factor.
+a total of 16 unique indices per group. This method offers several                                                         To optimize our compression methodology, we conducted a com-
+advantages over previous approaches like AWQ and SqueezeLLM.                                                            prehensive design space exploration using the LLAMA2-7B model
+It retains only a scale factor per group and shared k-means patterns                                                    as our benchmark. This exploration aimed to determine the opti-
+per tensor, eliminating the need for a zero point at the group level                                                    mal values for two key parameters: the number of shared k-means
+compared to AWQ. It also maintains far fewer k-means patterns                                                           patterns (𝑆) and the number of Huffman codebooks per k-means
+than SqueezeLLM while preserving superior performance.                                                                  pattern (𝐻 ).
+    To further optimize our compression scheme, we employ clipped                                                          Figure 5 illustrates the results of our design space exploration,
+and padded Huffman coding to compress all information within                                                            showing the impact of varying 𝑆 and 𝐻 on model perplexity. The
+each group. We observed that the index distribution within each                                                         exploration reveals several key insights: first, increasing 𝑆 gener-
+group after quantization is highly imbalanced, with certain indices                                                     ally improves perplexity, with diminishing returns beyond 𝑆 = 64.
+being selected significantly more frequently than others. Interest-                                                     Second, the impact of 𝐻 is less pronounced, with minimal improve-
+ingly, even among groups that utilize the same shared k-means                                                           ments beyond 𝐻 = 4 for most 𝑆 values. Based on these observations,
+pattern for quantization, the index distribution varies considerably                                                    we chose 𝑆 = 64 and 𝐻 = 4 as our optimal configuration. This se-
+between groups. To address this variability and enhance compres-                                                        lection balances performance improvement with implementation
+sion efficiency, we introduce 𝐻 Huffman codebooks, each contain-                                                        efficiency. 𝑆 = 64 provides substantial perplexity reduction com-
+ing 16 codes corresponding to the unique indices per group after                                                        pared to lower values, while avoiding the increased complexity
+quantization. This method incurs minimal overhead, requiring an                                                         and potential overfitting risk of larger 𝑆 values. 𝐻 = 4 offers a
+additional 𝑙𝑜𝑔2 𝐻 bits to record the specific Huffman codebook used                                                     good trade-off between compression efficiency and codebook stor-
+for compressing each group. The derivation of these Huffman code-                                                       age overhead, as higher 𝐻 values show minimal additional benefit.
+books follows a two-step process, as illustrated in Steps 6 and 7 .                                                     Furthermore, this configuration (𝑆 = 64, 𝐻 = 4) achieves perplex-
+First, for each shared k-means pattern, we apply k-means clustering                                                     ity better than the AWQ baseline, indicating that our method can
+

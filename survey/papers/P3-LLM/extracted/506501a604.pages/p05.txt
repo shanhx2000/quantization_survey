@@ -1,0 +1,48 @@
+ Fig. 5: KV-cache distribution (in absolute value) of Wikitext-2 dataset from representative layers and heads of Llama-2-7B and Llama-3.1-8B. The context
+ length is 4K. (a)(e) The value cache shows no outlier pattern. (b)(f) The pre-RoPE key cache shows distinct outlier channels. (c) The post-RoPE key cache of
+ Llama-2-7B contains much less structured outlier pattern. (g) The post-RoPE key cache of Llama-3.1-8B still exhibits distinct outlier channels. (d)(h) P3 -LLM
+ employs dynamic per-channel smoothing to eliminate the outlier channels of key cache.
+
+to FP16 for computation, leading to considerable hardware                           after RoPE is applied. In Llama-2-7B, the post-RoPE key
+overhead. Thus, although Ecco achieves high accuracy, its                           cache has much less structured outlier patterns. In contrast,
+idea cannot be applied to designing low-precision PCUs for                          the key cache of Llama-3.1-8B shows little difference before
+more effieicnt LLM decoding. On the other hand, Pimba [44]                          and after RoPE. The reason is that Llama-3 supports a much
+introduces a low-precision PIM architecture that exploits the                       longer sequence length than Llama-2 (128K vs. 4K tokens).
+8-bit microscaling format [79] to mitigate the area overhead                        As described in Section II-A, RoPE encodes positional infor-
+of PCUs. However, it leaves the linear layer unquantized,                           mation into the key cache via matrix rotation — specifically,
+and the FP32 accumulation pipeline in the microscaling data                         by multiplying each key vector with a rotation matrix whose
+path limits the overall hardware efficiency gain. Unlike these                      angle is proportional to the token’s position index. When the
+proposals, P3 -LLM seeks to strike a balanced trade-off among                       maximum supported sequence length is long (e.g., 128K in
+memory footprint, model accuracy, and hardware efficiency.                          Llama-3), the rotation angles are very small for typical input
+By assigning a dedicated precision and efficient numerical                          context lengths (e.g., 4K) targeting edge scenarios [16], [50],
+format to each LLM operand, P3 -LLM minimizes both quan-                            and RoPE has minimal impact on the key-cache distribution.
+tization error and memory usage. Our careful choice of hybrid                       Given these insights, we adopt pre-RoPE and post-RoPE key-
+numerical formats allows to co-design low-precision PIM that                        cache quantization for Llama-2 and Llama-3, respectively, to
+significantly boosts the computation throughput under iso-                          take the advantage of structured outlier channels.
+compute-area constraints.                                                           Dynamic Key-Cache Smoothing. To suppress outlier chan-
+          IV. P 3 -LLM Q UANTIZATION F RAMEWORK                                     nels in the key cache (K), we propose a dynamic input-aware
+                                                                                    smoothing strategy. Assume K is of size NT × H, where NT
+   This section details the P3 -LLM quantization framework,                         is the input context length and H is the hidden dimension size,
+the core of which is a mixed-precision W4A8KV4P8 scheme                             the smoothed key cache KS can be expressed as:
+employing hybrid numerical formats. Furthermore, P3 -LLM                                                      K[:, c]
+introduces a dynamic input-aware smoothing strategy to ef-                                   KS [:, c] =                   ; for c ∈ [0, H)     (2)
+fectively suppress KV-cache outliers without overfitting.                                                 Max( |K[:, c]| )
+                                                                                    Here, every key channel is divided by a smoothing factor,
+A. KV-Cache Quantization                                                            which is the per-channel absolute maximum, to lie in the
+Profiling of KV-cache Distribution. Fig. 5 illustrates the                          numerical range of [−1, 1]. Consequently, the outlier channels
+KV-cache distribution from representative layers and heads of                       are effectively suppressed as illustrated in Fig. 5(d, h). To
+Llama-2-7B and Llama-3.1-8B, using Wikitext-2 dataset [63]                          apply dynamic smoothing to both prefilling and decoding
+with a context length of 4K. Fig. 5(a, e) show that the value                       stages, we calculate the smoothing factors by taking the per-
+cache has no outlier pattern, whereas Fig. 5(b, f) reveal that                      channel absolute maximum of the key cache generated during
+the key cache contains distinct outlier channels that pose                          prefilling. The smoothing factors are then saved and reused in
+significant challenges to quantization. These observations align                    the decoding stage to scale the newly generated key vectors.
+with previous findings that certain fixed channels in activations                   This approach provides two benefits. First, since every channel
+exhibit large outliers [12], [88]. However, our profiling uncov-                    stores a smoothing factor shared by all tokens, the additional
+ers an additional important insight: the key cache of Llama-                        memory required is inversely proportional to the context
+2-7B and Llama-3.1-8B exhibit drastically different patterns                        length. Given that the context length can easily reach several
+
+
+
+
+                                                                              608
+

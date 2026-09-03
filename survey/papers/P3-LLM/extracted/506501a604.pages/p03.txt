@@ -1,0 +1,88 @@
+                        Weight / KV-cache         Activation / Attention-Score                         27% of the DRAM die area [48], [49], primarily because the
+    Bank Group 0                   Bank Group 1                      Samsung HBM-PIM
+                                                                                                       DRAM process has roughly 10× lower transistor density and
+  Bank 0       Bank 1           Bank 4       Bank 5
+                                                              16-b        Reg File       16-b          fewer metal layers for routing compared to CMOS at the same
+  PCU 0        PCU 1            PCU 4        PCU 5
+                                                                16-b
+                                                                from Bank
+                                                                                 16-b
+                                                                                 from Bank
+                                                                                                       technology node [13]. This overhead significantly constrains
+                                                                             ..×.
+                                                                            16                         the achievable compute throughput of PIM, restricting its
+  PCU 2        PCU 3            PCU 6        PCU 7          FP16 Mul                 FP16 Mul
+                                                                             SIMD                      performance benefits mainly to single-batch inference and
+  Bank 2       Bank 3           Bank 6       Bank 7          FP32 Acc                 FP32 Acc         multi-head attention that do not exhibit data reuse.
+           Peripheral & Global Buffer (GB)                                                             C. LLM Quantization
+                                                                       SK Hynix AiM
+                                                           16-b    16-b      16-b    16-b
+                                                           from GB from Bank from GB from Bank
+ Bank 10      Bank 11          Bank 14       Bank 15
+                                                                                                          Quantization is a widely used technique for cost-effective
+                                                                            ..×.
+                                                                           16
+  PCU 10      PCU 11            PCU 14       PCU 15
+                                                            BF16 Mul                 BF16 Mul          LLM acceleration. Consider a group of operands X and a
+                                                                      +              +                 list of quantization values Q, the quantized operand XQ and
+  PCU 8        PCU 9            PCU 12       PCU 13         Adder Tree       +
+                                                                                                       dequantized operand X  e can be calculated as follows:
+  Bank 8       Bank 9          Bank 12       Bank 13                         FP32 Acc                                                          
+    Bank Group 2                   Bank Group 3                                                                 |X|max                   X          e = XQ · ∆ (1)
+                                                                                                          ∆=           ; XQ = Round         ,Q ; X
+ Fig. 2: Illustration of PIM architectures for LLM decoding acceleration.
+                                                                                                                 Qmax                    ∆
+                                                                                                       where ∆ is the scaling factor, and Round (x, Y) is a function
+are passed through a linear layer (WO ) to produce the attention                                       that rounds a value x to the closest value in a set Y.
+output states. The MLP module contains three linear layers                                             This rounding process inevitably introduces error between the
+(Wgate , Wup , Wdown ) to produce the MLP output states.                                               original and quantized operands. Numerous techniques have
+   Considering the KV-cache needs to be stored for every                                               been proposed to reduce quantization error, such as mixed-
+token, its capacity can become significant for long-context                                            precision quantization and custom numerical formats.
+scenarios [4]. To mitigate this storage overhead, recent LLMs                                             In mixed-precision domain, SoTA algorithmic solutions on
+have adopted the GQA mechanism. As shown in Fig. 1(b),                                                 weight-only [17], [52] and KV-cache-only [28], [61] quan-
+conventional multi-head attention has the number of attention                                          tization have demonstrated near-lossless accuracy at 4-bit
+heads equal to the number of key-value heads, i.e., NA = NKV .                                         precision. To further alleviate the computation and memory
+On the other hand, GQA partitions the NA attention heads into                                          demands of LLMs, several studies have explored weight-
+G = NA / NKV groups (two in this example), and different                                               activation quantization [2], [15], [53], [82]. Meanwhile, recent
+groups share the same key-value vectors, effectively reducing                                          literature in the architecture community has explored custom
+the KV-cache capacity by G×.                                                                           numerical formats that can better adapt to the tensor distribu-
+                                                                                                       tion of LLMs [6], [16], [21], [29], [32], [47], [56], [69], [78],
+B. Processing In-Memory (PIM) for LLM Acceleration                                                     [79], [89]. In addition to research efforts, custom quantization
+                                                                                                       formats have been widely adopted by industry. For instance,
+   DRAM-based PIM has become a promising solution to
+                                                                                                       NVIDIA and AMD support the 8-bit floating-point format with
+accelerate the decoding stage of LLM inference given its
+                                                                                                       two variants: 4-bit exponent 3-bit mantissa (FP8-E4M3) and
+higher internal bandwidth tailored for memory-bound oper-
+                                                                                                       5-bit exponent 2-bit mantissa (FP8-E5M2) [69].
+ations [27], [44], [48], [49], [51], [77], [81]. Fig. 2 illustrates
+the architectures of two commercially available PIM devices:                                                                  III. M OTIVATION
+Samsung’s HBM-PIM [49] and SK Hynix’s Accelerator-in-
+                                                                                                       A. Memory Footprint vs. Quantization Sensitivity
+Memory (AiM) [48]. The left part of Fig. 2 shows a PIM
+channel consisting of 16 banks organized into 4 bank groups.                                              Fig. 3(a) shows the memory breakdown of various LLMs at
+One PIM compute unit (PCU) is placed near each DRAM                                                    FP16, including Llama-2-7B [67], Llama-3.1-8B [64], Llama-
+bank to perform efficient GEMV operations by leveraging                                                3.2-3B [66], and Mistral-7B [38]. The batch size varies from
+the abundant bank-level parallelism. Depending on area con-                                            1 to 8 and the input context length is 4K, reflecting typical
+straints, two banks may share the same PCU to amortize                                                 edge LLM inference scenarios [16], [20], [44], [50]. While
+the area overhead [49]. During LLM decoding, the DRAM                                                  model weights dominate the memory footprint at very low
+bank transfers weights / KV-cache data to the PCU in 256-bit                                           batch sizes, the KV-cache capacity significantly grows with
+granularity (i.e., 16×16-bit operands). Meanwhile, the input                                           increasing batch sizes. Conversely, activations and attention-
+vector is sent from the host to either the PCU register file in                                        scores have a smaller impact on memory footprint, since
+HBM-PIM or the global buffer in AiM.                                                                   their memory can be released immediately after the associated
+   As shown in the right part of Fig. 2, HBM-PIM and AiM                                               GEMM/GEMV modules complete. Furthermore, Llama-2-7B
+have different implementations of the PCU microarchitecture.                                           requires much larger KV-cache than other LLMs, due to its
+In HBM-PIM, the PCU contains a 16-way single-instruction-                                              usage of multi-head attention.
+multiple-data (SIMD) MAC unit, and allows to exploit input                                                Fig. 3(b) demonstrates the impact of quantizing individual
+reuse during GEMV by multiplying the same input element                                                operands to low precision using the standard integer format,
+with 16 weights. On the other hand, the PCU of AiM uses                                                while maintaining other operands at FP16. We quantify the
+the brain floating-point (BF16) format for data representation,                                        model performance of Llama-3.1-8B and Llama-3.2-3B on the
+and adopts an adder-tree-based design to exploit output reuse                                          C4 dataset [14] using the perplexity metric, where lower per-
+during GEMV. Despite their simplicity, the high-precision                                              plexity indicates better performance. Unlike the trend observed
+PCUs incur considerable area overhead, ranging from 20% to                                             in memory footprint, activations and attention-scores exhibit
+
+
+
+
+                                                                                                 606
+

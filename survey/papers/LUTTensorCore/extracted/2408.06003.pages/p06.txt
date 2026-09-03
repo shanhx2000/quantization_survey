@@ -1,0 +1,134 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                                                                 Mo et al.
+
+
+                                                            W0 W1 W2        W3
+                                                                                                                              Conventional method                                                     LUT Tensor Core's method
+                                                            Eliminated
+                          Index    Act Bit widths            Negation                                                                                                              Mul                             Fused (Mul+
+                                                               Circuit                          FSM SHIFTER                                   Mul
+                          0000 -A-B-C-D                                                                                        Low-bit                         Low-bit                                Low-bit      Precompute)
+                                                                                                 << (0,1,2,3)                                                                   Precompute
+                          0001 -A-B-C+D                                                                                         LLM                             LLM                                    LLM
+         Halved Entries
+
+
+
+
+                                                                                                                                             GEMM
+                          0010 -A-B+C-D                                                                                         DFG                             DFG             LUT-mpGEMM             DFG         LUT-mpGEMM
+
+
+
+
+                                                            MUX
+                                                                       EN                      D Q
+                          0011 -A-B+C+D                                 NEG.
+                                                                                                                                            + DFG Trans., Weight Reint.               + Operator Fusion
+                          0100 -A+B-C-D                                LOGIC
+                          0101 -A+B-C+D                                                                                        LUT-mpGEMM with LMMA instruction
+                          0110 -A+B+C-D                                                                                        on LUT-based Tensor Core
+                          0111 -A+B+C+D
+                                                                                                                                               ...
+                          Figure 8: Optimized LUT unit with bit-serial.
+                                                                            N
+                                                                                                                                               ...
+
+
+
+
+                                                                                                                                                                                                                   ...
+         111 000 011 000
+                                                     1         1                 1        0
+         011 111 111 000                                                                           Grouped
+                                                     0         1                 1        0
+         111 000 000 111                K                                                       Binary Weights
+                                                     1         1                 0        0
+         000 111 000 111
+                                                     0         0                 1        1
+                  ……                                                                                                                     Blocked GEMM       Thread Block Tile             Warp Tile       LMMA Instruction
+       Reinterpreted                                                                                                                     Global Memory      Shared Memory                Register File LUT-based Tensor Core
+         Weights                                010                                     001
+                             -A-B-C-D
+                             -A-B-C+D                      1                                         0   Table Shared       Figure 10: Compilation for LUT-mpGEMM. Overall dataflow
+                             -A-B+C-D
+                                                                                         MUX
+                                                    MUX
+
+
+
+
+                            -A-B+C+D
+2k-1 Entries                 -A+B-C-D
+                                                          NEG.                                   NEG.
+                                                                                                          Parallelism       is cutlass-like [50]. Elongated tile for better data reuse.
+                            -A+B-C+D
+                            -A+B+C-D
+
+                                                                       MUX
+                            -A+B+C+D
+
+      M                                                                                                                     and the size for grouped binary weights is given by:
+                             -W-X-Y-Z
+                                                                       PEs
+                             -W-X-Y+Z
+                             -W-X+Y-Z                                                                    Table Shared                 Grouped Binary Weights Size = 𝐾 × 𝑁 × W_BIT                                                (8)
+                                                                                         MUX
+                                                    MUX
+
+
+
+
+                            -W-X+Y+Z                      NEG.                                    NEG.
+                             -W+X-Y-Z
+                            -W+X-Y+Z
+                                                                                                          Parallelism
+                            -W+X+Y-Z
+                            -W+X+Y+Z
+                                                                                                                            where LUT_BIT is the bit width of the LUT entries, and W_BIT is
+                            Tables          Query Shared                             Query Shared
+                                                                                                                            the bit width of the weights.
+                                             Parallelism                              Parallelism                              An LUT-based Tensor Core benefits from an elongated tiling
+                                                                                                                            shape. When 𝐾 is large, the number of table entries grows expo-
+                                                                                                                            nentially, whereas 𝑁 determines how many MUX units can reuse
+Figure 9: Elongated 𝑀𝑁 𝐾 tiling of LUT-based Tensor Core.                                                                   each table entry. An optimal configuration requires a balanced
+LUT-based Tensor Core requires a larger 𝑁 (e.g., 64/128) to                                                                 𝐾, a larger 𝑁 , and a smaller 𝑀, unlike conventional GPU Tensor
+maximize table reuse, along with a suitably sized 𝐾 (e.g., 4)                                                               Cores. Additionally, the tiling shape affects I/O traffic, where a more
+for a cost-efficient table size.                                                                                            square-like tiling configuration reduces data movement overhead.
+3.2                LUT-based Tensor Core Microarchitecture                                                                  In §4.2.2, we explore the design space for 𝑀𝑁 𝐾 tiling, confirming
+                                                                                                                            that elongated tiling shapes yield higher efficiency.
+3.2.1 Simplified LUT unit design with bit-serial. By leverag-
+ing software-based precompute fusion and weight reinterpretation,
+the hardware cost for customizing each individual LUT unit is re-
+                                                                                                                            3.3     Instruction and Compilation
+duced. Figure 8 illustrates our LUT unit design. Compared to a                                                              To integrate LUT Tensor Core into existing GPU architectures
+straightforward design, the registers required for storing the LUT                                                          and ecosystems, we introduce a new instruction set and develop a
+and the costs associated with table broadcasting and multiplexers                                                           compilation stack based on tile-based DNN compilers [5, 62, 84].
+are reduced by half. As shown in Equation 6, the bit-level negation
+                                                                                                                            3.3.1 LUT-based MMA instructions. To enable programming
+circuit can be eliminated from each LUT unit to further improve
+                                                                                                                            with LUT-based Tensor Core, we define a set of LMMA instructions
+efficiency. To support flexible bit-widths for weights, we employ a
+                                                                                                                            as an extension of the MMA instruction set in GPU.
+bit-serial circuit architecture [27, 74]. This design maps the weight
+bit-width to W_BIT cycles, enabling the processing of various bit-                                                                lmma.{M}{N}{K}.{𝑨dtype }{𝑾dtype }{𝑨𝒄𝒄𝒖𝒎 dtype }{𝑶 dtype }
+widths in a serialized manner.                                                                                              The above formula shows the format of LMMA instructions, which
+                                                                                                                            resemble MMA. Specifically, the 𝑀, 𝑁 , and 𝐾 indicate the shape
+3.2.2 Elongated LUT tiling. The selection of dimensions 𝑀, 𝑁 ,
+                                                                                                                            of the LUT-based Tensor Core. 𝐴𝑑𝑡 𝑦𝑝𝑒 , 𝑊𝑑𝑡 𝑦𝑝𝑒 , 𝐴𝑐𝑐𝑢𝑚𝑑𝑡 𝑦𝑝𝑒 , and
+and 𝐾 is crucial for the performance of the LUT-based Tensor Core,
+                                                                                                                            𝑂𝑑𝑡 𝑦𝑝𝑒 indicate the data types of the inputs, accumulation and the
+as traditional choices for MAC-based Tensor Cores may result in
+                                                                                                                            output, respectively. Similar to MMA instructions, each LMMA in-
+suboptimal performance. As illustrated in Figure 9, a 𝑀𝑁 𝐾 Tile’s
+                                                                                                                            struction is scheduled to a warp of threads for execution. Each warp
+LUT Array comprises 𝑀 tables, 𝑁 sets of weights, and 𝑀 ∗ 𝑁 MUX-
+                                                                                                                            calculates the formula 𝑂𝑑𝑡 𝑦𝑝𝑒 [𝑀, 𝑁 ] = 𝐴𝑑𝑡 𝑦𝑝𝑒 [𝑀, 𝐾] ×𝑊𝑑𝑡 𝑦𝑝𝑒 [𝑁 , 𝐾]
+based units. Each table contains 𝑀 × 2𝐾 −1 entries, with each entry
+                                                                                                                            + 𝐴𝑐𝑐𝑢𝑚𝑑𝑡 𝑦𝑝𝑒 [𝑀, 𝑁 ].
+broadcast to 𝑁 MUX units. Each set of Grouped Binary Weights
+includes 𝐾 bits, which must be broadcast to 𝑀 MUX units to act                                                              3.3.2 Compilation support and optimizations. We implemented
+as select signals for the MUX. The total table size is given by the                                                         the LUT-mpGEMM kernel generation and end-to-end LLM compila-
+equation:                                                                                                                   tion with LUT-based Tensor Core on top of TVM [5], Roller [84] and
+             Total Table Size = 𝑀 × 2𝐾 −1 × LUT_BIT              (7)                                                        Welder [62]. Specifically, the compilation stack encompasses the
+                                                                                                                        6
+

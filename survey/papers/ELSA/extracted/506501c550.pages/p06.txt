@@ -1,0 +1,75 @@
+                             ‫ܭ‬濐2                ‫ܭ‬濐2 ܹ:Weight                               Token1            Token2             Token3
+            ܵଵ ܵଶ ܵଷ ܵସ                              ‫ܭ‬:Kernel Size
+            ܵହ ܵ଺ ܵ଻ ଼ܵ             ܵଵ ܵଶ ܵଷ
+            ܵଽ ܵଵ଴ ܵଵଵ ܵଵଶ          ܵସ ܵହ ܵ଺           ܵଵ ܵଶ
+            ܵଵଷ ܵଵସ ܵଵହ ܵଵ଺         ܵ଻ ଼ܵ ܵଽ            ܵଷ ܵସ
+                                                                                        Layer1         Layer2
+                                                                                                       L              Layer3
+              Layer1         ࢃ૚     Layer2        ࢃ૛ Layer3                                      ࢃ૚             ࢃ૛
+       Layer1 ܵଵ ܵହ ܵ଺ ܵଶ ܵଽ ܵଵ଴ ܵଵଵ ܵ଻ ܵଷ ܵଵଷ ܵଵସܵଵହܵଵ଺ ܵଵଶ ଼ܵ ܵସ             Layer1     Token1 Token2 Token3
+       Layer2               ܵଵ ܵସ ܵହ ܵଶ ܵ଻ ଼ܵ ܵଽ ܵ଺ ܵଷ                         Layer2            Token1 Token2 Token3
+       Layer3                                  ܵଵ        ܵଷ        ܵସ ܵଶ       Layer3                    Token1 Token2 Token3
+                         (a) Spine-wise Pipeline                     Time                        (b) Token-wise Pipeline             Time
+    Fig. 13: Details of ﬁne-grained spine/token-wise pipelines. (a) Spine-wise pipeline in convolution layers. The data dependence
+    of the 1st spine (S1 ) in layer-3 is highlighted in dark orange. (b) Token-wise pipeline in a multi-layer perceptron.
+
+ Algorithm 1: The control algorithm in Output                                 than the conventional top-to-bottom, left-to-right sequence.
+ Scheduler for spine-wise pipeline in CNN.                                    The calculation order is indicated by the arrows in Fig. 13(a).
+1  Input: kernel height Hk , kernel width Wk , convolution stride             For example, we present a timeline showing the computation
+     S, convolution padding P , height and width of input                     times of three convolution layers in Fig. 13(a). In the timeline,
+     feature HI , WI , position (row, column) of input spine i, j.            layer 3 starts to calculate spine S1 after spine S2 in layer 2
+ 2 Output: list L storing the position of output spines.                      ﬁnishes the calculation, as the S1 in layer 3 is data-dependent
+ 3 i ← i + P ; j ← j + P ; // considering padding
+                                                                              on S1 , S2 , S4 , S5 in layer 2, which is illustrated by the dark
+ 4 // If all the data-dependent spines arrive.
+ 5 if i < j and (j − i + 1) ≥ Hk and i, j ≡ 0 (mod S) then
+                                                                              orange regions in Fig. 13. A more general formulation of
+ 6      // The processing order is from right to left.                        the control algorithm in Output Scheduler for spine-wise
+ 7      L ← L ∪ {(i/S, (j − Wk + 1)/S)};                                      pipeline is provided in Algorithm 1, where the padded spine
+ 8 end                                                                        is excluded from the input spine. Therefore, the calculation
+ 9 if i > j and i ≥ 0 and i, j ≡ 0 (mod S) then
+                                                                              of padded spines is skipped (line 1). Then, ELSA generates
+10      // The processing order is from bottom to top.
+11      L ← L ∪ {((i − Hk + 1)/S, (j − Wk + 1)/S)};                           the position of output spines with the order shown by the
+12 end                                                                        blue arrows in Fig. 13 (lines 4-12). Finally, the calculation
+13 // If the last spine arrives, process padding.                             of output spines that are data-dependent to padded spines is
+14 if i = P and j = P + WI − 1 then                                           delayed until the last input valid spine arrives (lines 14-18).
+15      for p ← 0 to P do
+16            L ← L ∪ {(ii/S, (j + p − Wk + 1)/S)}i+p  ii=0 ;
+                                                                              B. Token-Wise Pipeline for Transformer
+17            L ← L ∪ {((i + p)/S, (jj − Wk + 1)/S)}j+p   jj=0 ;                 Fig. 13(b) displays the token-wise pipeline in ELSA. Since
+18      end                                                                   the data dependence only exists within the same token,
+19 end
+                                                                              ELSA processes spikes token by token, making the token-
+                                                                              wise pipeline among SNN layers. In detail, ELSA executes
+                                                                              spike operators (listed in Tab. I) token-wise, triggering the
+inter-core transmission. The type (2-bit) is the position (i.e.,              next operator immediately after completing the ﬁrst token of
+beginning, body, and ending) of the ﬂit within a spine/token.                 the current operator. Since generating a single token in the
+Spine/Token ID (12-bit) is the index for each spine/token.                    ssoftmax requires all query and key tokens to be available,
+Position (12-bit) is the spike position within a spine/token.                 ELSA stalls the pipeline to wait for QK spike-attention.
+Sign (1-bit) is the polarity of the spike. Check (15-bit) records             C. Data Storage, Transfer and Management
+error correcting code for NoC communication. Last but not
+least, our BAER naturally aligns with the computation and                        To enable spine/token-wise pipelining, ELSA employs a
+pipelining granularity in ELSA.                                               hierarchical data management strategy: 1) Intra-core storage.
+                                                                              Partial sums are accumulated in membrane buffers attached to
+         V. SPINE / TOKEN - WISE P IPELINE S CHEDULE                          each ST-BIF neuron, serving as local state registers across
+                                                                              time-steps. When a neuron ﬁres, the control module reads
+  By using mini-batch spiking Gustavson-product (Sec. III-C)
+                                                                              the membrane and spike tracer and forwards them to the ST-
+and bundled AER (Sec. IV-B), ELSA explores a spine/token-
+                                                                              BIF circuit for spike generation and state update. 2) Inter-
+wise pipeline scheduling to further enhance elastic inference.
+                                                                              core transfer. Spikes delivered to spines/tokens in the next
+A. Spine-Wise Pipeline for CNN                                                layer are packed into ﬂits and temporarily stored in FIFO
+                                                                              Queues, which act as pipeline registers between adjacent
+  Fig. 13(a) illustrates the spine-wise pipeline in ELSA.                     cores to enable non-blocking, in-order transmission.
+Spines within a convolution are data-independent of each
+other, allowing their computations to be performed concur-                                VI. SNN M APPING O PTIMIZATION
+rently. To start the computation of the next layer as early                      As shown in Fig. 14, ELSA maps SNN into neural cores
+as possible, spines are processed in a speciﬁc order, rather                  through a three-stage mapping algorithm, including partition,
+
+
+
+
+                                                                       2555
+

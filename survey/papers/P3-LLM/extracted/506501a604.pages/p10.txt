@@ -1,0 +1,68 @@
+TABLE V. Accuracy (↑) of reasoning tasks under different quanti-
+zation methods. Oaken and the top P3 -LLM use KV4 quantization.
+QuaRot and QoQ use W4A8KV4 quantization, while the bottom
+P3 -LLM uses W4A8KV4P8 quantization.
+ Model        Llama-3.1-8B            Llama-3.2-3B
+                                                            Avg.
+Dataset MMLU ARC-C GSM8K MMLU ARC-C GSM8K
+ FP16   72.30    84.38    84.50 63.26    76.71    76.64     76.30
+ Oaken  67.31    83.70    81.80 59.93    76.79    75.66     74.20
+P3 -LLM 71.04    83.87    83.02 61.57    76.02    75.89     75.24
+QuaRot 67.95     81.65    79.98 56.11    72.35    68.69     71.12
+  QoQ   67.46    81.31    79.53 54.11    72.18    69.22     70.64
+P3 -LLM 69.22    81.74    82.03 60.05    75.01    74.09     73.69
+
+TABLE VI. Ablation study on the quantization techniques of P3 -LLM
+(gray-shaded). The evaluation metric is Wikitext-2 perplexity (↓).
+ Quantization Method                  Llama-2-7B     Llama-3.1-8B          Fig. 8: Normalized layer-wise key-cache quantization error of Llama-2-7B
+ Baseline FP16                      5.47            6.24                   on Wikitext-2 and C4 datasets. Oaken and QoQ use Wikitext-2 and Pile as
+  + Pre-RoPE INT4 KV-cache quant    5.58 (↑ 0.11)   6.52 (↑ 0.28)          calibration datasets, respectively.
+  + Post-RoPE INT4 KV-cache quant   5.61 (↑ 0.03)   6.52 (·)
+    → Dynamic key-cache smoothing   5.51 (↓ 0.10)   6.35 (↓ 0.17)          C. Hardware Performance
+  + INT4 weight quant               5.64 (↑ 0.13)   6.79 (↑ 0.44)
+    → 4-bit BitMoD weight quant     5.63 (↓ 0.01)   6.72 (↓ 0.07)          Speedup. Fig. 9 depicts the normalized decoding speed of
+  + FP8-E4M3 attn-score quant       5.67 (↑ 0.04)   6.81 (↑ 0.09)          P3 -LLM against three baseline accelerators with batch sizes
+    → FP8-S0E4M4 attn-score quant   5.63 (↓ 0.04)   6.73 (↓ 0.08)          varying from 1 to 8. The HBM-PIM system outperforms NPU
+  + INT8 activation quant           5.72 (↑ 0.09)   6.84 (↑ 0.11)          at low batch sizes of 1 and 2 across all models, primarily due
+    → FP8-E4M3 activation quant     5.65 (↓ 0.07)   6.75 (↓ 0.09)          to its higher internal bandwidth. However, as the batch size
+                                                                           reaches 4, the performance advantage of HBM-PIM gradually
+Algorithm Ablation Study. We conduct ablation studies on                   diminishes for Llama-2 and even disappears for Llama-3 and
+Llama-2-7B and Llama-3.1-8B to evaluate the accuracy gain of               Mistral. This is because the linear layer exhibits more data
+different quantization techniques used in P3 -LLM. As shown                reuse with increasing batch sizes, which NPU can exploit
+in Table VI, we start with pre-RoPE and post-RoPE KV-cache                 to boost performance. Additionally, the GQA mechanism of
+quantization, and observe noticeable perplexity degradation.               Llama-3 and Mistral offer inherent data reuse opportunities
+This is because both cases do not address the outlier issue of             that HBM-PIM fail to exploit. Furthermore, both NPU and
+key cache. The proposed dynamic key-cache smoothing sig-                   HBM-PIM deliver lower performance than Ecco that leverages
+nificantly improves the perplexity of Llama-2-7B and Llama-                quantization to reduce the demand of memory bandwidth.
+3.1-8B by 0.10 and 0.17, respectively. Then, adopting BitMoD               On the other hand, P3 -LLM offers substantial performance
+for 4-bit weight quantization recovers some perplexity loss                gains over all baseline accelerators, yielding average speedups
+of INT4 weights. Subsequently, quantizing attention-scores to              of 7.8×, 4.9×, and 2.0× over NPU, HBM-PIM, and Ecco,
+the proposed FP8-S0E4M4 format has negligible impact on                    respectively. These performance gains of P3 -LLM stem from
+perplexity. However, applying per-token activation quantiza-               its careful algorithm-hardware co-design of mixed-precision
+tion with INT8 brings another major perplexity degradation,                quantization and efficient PCU architecture. Interestingly,
+which is finally recovered by the adopted FP8-E4M3 acti-                   P3 -LLM demonstrates its highest speedup at a batch size of 2,
+vation quantization. To summarize, P3 -LLM explores optimal                owing to its throughput-enhanced PCU that allows processing
+numerical formats that better adapt to different operands, thus            two input vectors within the same tCCD L window.
+minimizing their quantization error. In the presence of key-               Energy Consumption. Fig. 10 depicts the breakdown of
+cache outliers, P3 -LLM employs a novel smoothing technique                energy consumption for attention and linear layers across
+to mitigate their impact.                                                  different accelerators and batch sizes. On average, P3 -LLM
+Analysis of Key-cache Quantization Error. Fig. 8 presents                  yields 6.3×, 3.5×, and 2.1× better energy efficiency over
+the normalized key-cache quantization error of Oaken, QoQ,                 NPU, HBM-PIM, and Ecco, respectively. These energy sav-
+and P3 -LLM on the Wikitext-2 and C4 datasets across all                   ings are attributed to the reduced memory footprint offered
+layers of Llama-2-7B. For each layer, we normalize the error               by the W4A8KV4P8 quantization scheme, as well as a PIM
+to the average magnitude of all samples in the dataset. Oaken              architecture co-design that allows most layers to be accelerated
+and QoQ rely on Wikitext-2 and Pile [18] as calibration                    by the low-precision PCU. As the batch size increases, NPU
+datasets to address the key-cache outliers. Although Oaken                 can take advantage of data reuse by loading the model weights
+has similar quantization error as P3 -LLM on Wikitext-2, its               only once and processing all input requests within a batch
+error becomes more pronounced on C4 due to overfitting. QoQ                simultaneously. In contrast, the PIM accelerator of HBM-PIM
+has the highest error since the calibration statistics obtained            only supports GEMV, requiring the model weights to be
+from Pile does not generalize well to both Wikitext-2 and C4.              repetitively fetched from the DRAM bank for processing each
+In contrast, the dynamic input-aware smoothing of P3 -LLM                  input request. Thus, the energy consumption of linear layers
+yields the lowest quantization error, as it does not overfit to            in HBM-PIM increases significantly with larger batch sizes.
+any calibration dataset.                                                   Compared to HBM-PIM, the throughput-enhanced PCU in
+
+
+
+
+                                                                     613
+

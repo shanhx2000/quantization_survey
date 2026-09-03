@@ -1,0 +1,147 @@
+   Through this process, the converter produces block-level                                E5M2                 E4M3                 MXFFP               E3M2                    E2M3             MXFFP                    E2M1               MXFFP              BF16
+                                                                                   20                                                           20                                                           20
+
+
+
+
+                                                                      Perplexity
+                                                                                                                                                                                                                  30 24 28 25 89                                      38
+results that match the configuration chosen by the selector. The                   15                                                           15                                                           15
+                                                                                   10                                                           10                                                           10
+configuration bit is extracted from the Config Selector, while                      5                                                            5                                                            5
+                                                                                    0                                                            0                                                            0
+the shared exponent value is derived in the Normalization
+
+
+
+
+                                                                                                                                            Vicuna
+
+
+
+
+                                                                                                                                                                                                         Vicuna
+
+
+
+
+                                                                                                                                                                                                                                                                      Vicuna
+                                                                                                                                     Qwen
+
+
+
+
+                                                                                                                                                                                                  Qwen
+
+
+
+
+                                                                                                                                                                                                                                                               Qwen
+                                                                                        Llama3
+                                                                                                 Llama2
+
+
+
+
+                                                                                                                                                     Llama3
+                                                                                                                                                              Llama2
+
+
+
+
+                                                                                                                                                                                                                  Llama3
+                                                                                                                                                                                                                           Llama2
+                                                                                                          Mistral
+
+
+
+
+                                                                                                                                                                       Mistral
+
+
+
+
+                                                                                                                                                                                                                                    Mistral
+                                                                                                                               OPT
+
+
+
+
+                                                                                                                                                                                            OPT
+
+
+
+
+                                                                                                                                                                                                                                                         OPT
+                                                                                                                    Deepseek
+
+
+
+
+                                                                                                                                                                                 Deepseek
+
+
+
+
+                                                                                                                                                                                                                                              Deepseek
+& Rounding unit. Importantly, the Max and Normalization
+& Round units are already employed in the baseline MXFP                                                   (a) 8-bit                                                    (b) 6-bit                                                     (c) 4-bit
+design. Therefore, the MXFFP converter only requires minor
+                                                                          Fig. 13: Perplexity of MXFP and MXFFP across seven models
+extensions to support dynamic configuration selection.
+                                                                          at 8-, 6-, and 4-bit precisions.
+E. Large Block Support
+                                                                          conversion rule [47], and MXFFP builds on this pipeline
+   The MXFFP Tensor Core naturally supports large blocks                  with block- and sub-block-level bit configuration selection. All
+using a sub-block structure. When executing a large block                 tensors involved in MMA operations during LLM inference
+with N = 256, each sub-block follows the same dataflow as                 are converted to MX formats.
+the standard block described in Fig. 11. Because a large block               For hardware performance evaluation, we extend Accel-
+requires only a single configuration set and a single shared              Sim [25] using a configuration derived from the NVIDIA RTX
+exponent, these parameters are loaded into registers at the               5090 GPU [46]. We use the CUTLASS library [45] to generate
+beginning of execution and reused across the four compute                 GEMM kernels and extract their instruction traces for simula-
+steps. During computation, each sub-block is processed by a               tion. We also model the additional memory accesses required
+single threadgroup, following the same mapping and execution              to fetch the shared exponent (for both MXFP and MXFFP)
+pattern as in the base block set.                                         and the configuration bits (for MXFFP only), ensuring that the
+   After computation, however, sub-blocks require two addi-               performance impact of metadata traffic is accurately captured.
+tional mechanisms during the conversion stage. As discussed               For hardware cost evaluation, we implement both the baseline
+in Section IV-B, although each sub-block selects its own                  MXFP Tensor Core and our MXFFP-enhanced design in RTL
+configuration bit, all sub-blocks must share a single unified             and synthesize them using Synopsys Design Compiler with
+scale because they belong to the same large block. To support             the FreePDK 45nm technology library.
+this requirement, the converters first synchronize the maximum
+exponent across the entire block. Each threadgroup locally                B. Numerical Accuracy
+determines the maximum exponent (EbMAX ) of its sub-block,                   Fig. 13 presents the numerical accuracy results across all
+and these local maximum exponents are then synchronized                   models and bit-width settings. Across both 8-bit and 6-bit
+across threadgroups to obtain the global EbMAX .                          configurations, MXFFP consistently achieves slightly lower
+   Once synchronization completes, each threadgroup indepen-              perplexity compared to MXFP. In the 8-bit setting, the perplex-
+dently selects its configuration bit using the same exponent-             ity of Llama3-8B decreases from 5.55 with MXFP (E4M3) to
+distribution–based rule as in the standard MXFFP block.                   5.50 with MXFFP, and the perplexity of OPT-6.7B decreases
+Although configuration bits may differ across sub-blocks, the             from 10.12 to 9.89. A similar trend is observed in the 6-bit
+shared exponent for the entire block is computed assuming                 configuration. The gain is relatively small at these bit widths
+that all sub-blocks use the E2Mx configuration. For sub-                  since MXFP already approaches BF16 level accuracy, leaving
+blocks adopting the E1Mx configuration, the difference in                 limited room for further gains.
+representable exponent range is compensated by adjusting the                 By contrast, the advantage of MXFFP becomes much more
+effective shared exponent, subtracting one from the shared                significant in the ultra-low 4-bit setting. MXFP significantly
+exponent, before it is used in the dot-product pipeline. This             raises perplexity across all models, mainly due to the fixed
+mechanism enables all sub-blocks to share a consistent scale              E2M1 bit configuration, whose limited resolution and dynamic
+while retaining per–sub-block configurability.                            range under 4-bit quantization make it unable to represent
+                      VI. E VALUATION                                     the diverse value distributions across blocks. For example,
+                                                                          the perplexity of Llama3-8B increases to 30.98 with MXFP4,
+A. Evaluation Methodology
+                                                                          whereas MXFFP reduces it to 10.23. The difference is even
+   We evaluate MXFFP across four axes: numerical accuracy,                larger for OPT-6.7B: MXFP yields a perplexity of 88.81,
+block scalability, hardware efficiency, and dynamic conver-               while MXFFP reduces it to 16.32. MXFFP also provides
+sion sensitivity. We evaluate accuracy using perplexity on                substantial perplexity reduction on larger models. For instance,
+WikiText-2 [43] and three zero-shot tasks: ARC-easy [11],                 on Qwen2.5-14B, perplexity decreases from 15.90 to 6.93,
+ARC-challenge [11], and Lambada [48] we use seven repre-                  and on Vicuna-13B, from 38.13 to 13.31. This significant
+sentative LLMs, Llama3-8B [16], Llama2-7B [57], Mistral-                  improvement arises from the ability of MXFFP to dynamically
+7B-v0.3 [23], Deepseek-llm-7b-chat [5], OPT-6.7B [69],                    select the exponent–mantissa configuration that best matches
+Qwen2.5-14B [56], and Vicuna-13B [10]. We compare per-                    the value distributions across blocks, enabling more accurate
+plexity BF16 baseline with MXFP and MXFFP quantized                       representation even under a strict 4-bit budget.
+to 8-bit, 6-bit, and 4-bit, using post-training quantization.                Fig. 14 reports the accuracy on three zero-shot tasks, ARC-
+MXFP values are converted following the OCP-compliant                     easy, ARC-challenge, and Lambada, across seven models. At
+
+
+
+
+                                                                   2513
+

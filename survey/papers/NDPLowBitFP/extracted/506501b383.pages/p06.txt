@@ -1,0 +1,98 @@
+frequency. We choose a DRAM column as the minimal gran-                  stored in ColS DRAM columns QGroup by QGroup. Values
+ularity for the scale region in an itBlock. This can avoid over          will be stored in the original order of inner loop to minimize
+fine-grained mixing of scale and value. Assuming that the scale          row change, and the logical DRAM column id is:
+region contains ColS DRAM columns, ColS is constrained by
+                                                                                           idK
+                                                                                                                                 
+the allocated scale buffer size, which can be explored in the                id                                       #QGroupK ∗ GK
+                                                                          Collocal =         InBlock
+                                                                                                       +idM
+                                                                                                          InBlock ×
+compilation space. Then, the number of QGroups in the data                                 #V al/Col                    #V al/Col     (8)
+                                                                             id           id                      V alue+Scale
+region of an itBlock should be:                                           Collogical = Collocal + iditBlock × #ColitBlock
+                                ColS × len
+                 #QGroup =                   ,              (2)          Finally, we can convert the logical DRAM column id into the
+                               P rec.(Scale)
+                                                                         physical DRAM column and row id:
+where len is the bitwidth of one DRAM column. As shown
+in the case in Fig. 6(b), if one DRAM column can store                           DRAM-Rowid = ⌊Collogical
+                                                                                                  id
+                                                                                                          / #ColDRAM row ⌋,
+                                                                                                                                         (9)
+four scales, there will be eight QGroups in the itBlock when                     DRAM-Colid = Collogical
+                                                                                                 id
+                                                                                                         % #ColDRAM row .
+assigning two DRAM columns to scale buffer.
+   Step 3: Determine which QGroups should be mapped to the               Furthermore, to avoid runtime re-layout of the intermediate
+same itBlock. As shown in Fig. 6(c), assuming the compiler               results between operators, we prioritize applying this technique
+performs loop tiling on the K dimension with the tiled loop              to the quantized weight matrix, which can be scheduled offline.
+size of KT ile , our mapping should ensure that the data in the
+tiled inner loop is stored together in DRAM to reduce row                        VII. D EQUANTIZATION -H IDING T ECHNIQUE
+change overhead. As a result, we will select the QGroups for
+an itBlock following the iteration order of inner loop. For the          A. Discovering the Opportunity for Dequant Optimization
+Case-1 in Fig. 6(c), each itBlock contains eight QGroups.                   As discussed in Sec. IV-A, weight-activation FP quantiza-
+If the tiled inner loop size equals to four QGroups, we will             tion FlexQ-NDP’s dequantization-hiding technique is inspired
+map 2×4 QGroups along the (M, K) dimension of the weight                 by an interesting phenomenon:
+matrix into a single itBlock. To be general, this number can
+be calculated as:                                                         Interesting observation: In the motivation experiments,
+                                                                          when the QGroup size increases to 128, the dequantization
+                 #QGroupK = ⌈KT ile /GK ⌉.                  (3)
+                                                                          contributes zero additional latency.
+   However, if the tiled loop size changes and makes
+                                                                         A closer examination of these zero-overhead dequantization
+#QGroupK become three in Case-2 in Fig. 6(c), the last two
+                                                                         instructions reveals that they all occur between accesses to
+QGroups cannot fully cover the inner loop in the K dimension.
+                                                                         two different DRAM rows. For example, after the PU finishes
+As a result, extra access to data region in other itBlocks will
+                                                                         processing the weight data in the DRAM row-1 and before
+be triggered when the inner loop iterates over the boundary. In
+                                                                         it begins processing the next row, the DRAM must precharge
+this case, we will reduce the number of QGroups in itBlock
+                                                                         row-1 and activate row-2, as shown in Fig. 7(a). During this
+to six. Although this may lead to under-utilization in some
+                                                                         time window, the PU remains idle for a relatively long interval
+DRAM columns storing scales, it avoids reloading much larger
+                                                                         (i.e., tRP + tRCD = 48 cycles based on DRAMSim3 timing
+QGroup. To be general, the actual number of QGroups in an
+                                                                         parameters [38]). Since a dequantization operation here costs
+itBlock, and the corresponding DRAM column number are:
+                                                                         only 8 cycles (i.e., 2 · tCCDL ) and requires no DRAM access,
+   #QGroup′ = #QGroupK × ⌊#QGroup/#QGroupK ⌋,               (4)          it can execute within this idle window and therefore incurs no
+           V alue
+                      
+                                    #QGroup′
+                                              
+                                                                         extra latency. Similar opportunities arise when a row-change is
+      #ColitBlock  = ColS × Ratio ×             ,           (5)          triggered by a buffer refill. We refer to the instruction positions
+                                    #QGroup
+                                                                         where a dequantization operation can be executed within a PU
+                                 #QGroup′
+                                         
+                Scale
+          #ColitBlock   = ColS ×            .               (6)          idle window without adding latency as free slots.
+                                 #QGroup
+                                                                            We then revisit the case with smaller QGroup sizes, where
+C. Mapping itBlocks to DRAM                                              dequantization occurs more frequently, and leads to critical
+   After mapping multiple QGroups into one itBlock, the next             latency. Two observations emerge: (1) only about 10% of
+step is to assign the physical DRAM address for itBlocks.                dequantization instructions naturally fall into free slots; (2)
+Firstly, we split the entire matrix into multiple itBlocks and           the latency of a dequantization operation is determined by the
+calculate the itBlock id (iditBlock ) and the value id within            number of partial results it processes, which is constrained by
+each itBlock (idInBlock ). For example, in the K dimension:              the buffer size allocated to partial results. These observations
+            idK
+                                                                         indicate that the total PU idle time can be exploited to hide de-
+              itBlock (k) = ⌊k/(#QGroupK × GK )⌋
+                                                            (7)          quantization latency, allowing dequantization to overlap with
+            idK
+              InBlock (k) = k%(#QGroupK × GK )
+                                                                         DRAM row changing or access. However, the dequantization
+Then, the scale region will be mapped in DRAM before the                 latency is tightly coupled to the buffer size reserved for partial
+value region so that scales can be buffered before usage. Once           results. Without careful design, we may fail to fully utilize the
+the value and scale in an itBlock are determined, scales are             available idle window, leading to suboptimal overlap.
+
+
+
+
+                                                                  1388
+

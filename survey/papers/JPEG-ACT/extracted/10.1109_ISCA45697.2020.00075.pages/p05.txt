@@ -1,0 +1,103 @@
+Crossbar
+                                                                                     Naive casting to integers can cause large errors on activations
+
+
+
+
+                                                                  Collector
+  GPU
+                               BRC                                            128B
+           32B    SFPR                                                               with a dissimilar range to the target integer format. Thus,
+                         64B                                                         we develop SFPR to normalize the activation scale, while
+                   8B          8x8                   ZVC
+
+
+
+
+                                                                               DMA
+                               DCT          64B
+                                                                                     converting them to integers.
+ Compr.                                SH          DQT (64B)
+
+
+
+
+                                                                  Splitter
+                 Alignment      8x8                         72B                        SFPR involves a channel-wise max-scaling of a 4D input
+                   Buffer                            ZVD
+Decompr.                       iDCT                                           128B   activation tensor, x ∈ RN ×C×H×W , followed by clipping to
+                  (32x8B)                    64B
+                               BRD                                                   an 8-bit signed integer:
+
+Fig. 8: The JPEG-ACT CDU. SH: Shift unit, BRD: Binary                                                             sc = S/maxnhw (|xnchw |)                         (4)
+ReLU Decompression, ZVD: Zero Value Decompression                                                                    m−1                  m−1        m−1
+                                                                                                                                                             
+                                                                                                ynchw = clip [2            sc xnchw ], −2       ,2         −1      (5)
+
+7b). cDMA and cDMA+ have identical CDUs, and differ only                             where m is the integer bit width (i.e., 8), [...] denotes the
+in their CDU location and number.                                                    round-to-nearest function, and clip(..., A, B) trims values
+   We will start by giving a brief high-level overview of the                        outside of the range [A, B] to the nearest value within the
+JPEG-ACT CDU which operates in either compression or                                 range. xnchw and ynchw are the original and scaled activations,
+decompression mode (Figure 8). Scaled Fix-point Precision                            with n, c, h, w (< N, C, H, W ) indicating the batch, channel,
+Reduction (SFPR) is introduced to convert 32-bit floating-                           height, and width index, respectively. The global scaling factor,
+point values to 8-bit integers while keeping quantization error                      S, is a hyper-parameter specifying how much of the range of
+low (Section III-B). SFPR is located between the GPU cross-                          the activation should be clipped to the integer max. The per-
+bar and a 256B alignment buffer, allowing four JPEG blocks                           channel scaling factor, sc , is dependent on the maximum of
+to be loaded from GPU cache for simultaneous processing                              the channel over all batches, maxnhw . We compute sc on a
+(Section III-C). The DCT and iDCT units are pipelined units                          per-layer basis during training.
+composed of eight 8-point DCT units to operate on all 64                                 The SFPR global scaling factor, S is selected by minimizing
+values in a block at once (Section III-D). The last two stages                       the recovered activation error, both when compressing with
+of the JPEG-ACT compression pipeline are shift quantization                          SFPR alone, and when combining it with JPEG with different
+(SH) and ZVC/ZVD (Section III-F). In compression mode, the                           DQTs (Figure 10). By definition, S = 1 results in no
+result is sent to the collector, which combines the output from                      activations being clipped. Two effects increase activation error
+multiple CDUs for sending through the DMA unit (Section                              with varying S, clipping and truncation. A high value of S
+III-G). In decompression mode, the compressed input is read                          results in high magnitude activations being clipped to the
+from the splitter output (Section III-G).                                            integer min or max (S → ∞, Figure 10). A low value of
+   We find that JPEG standard DQTs (jpeg80 and jpeg60)                               S results in low magnitude activations being truncated to zero
+lead to poor results and that DQT coefficient selection has                          (S → 0, Figure 10). SFPR compression has a low sensitivity to
+a large impact on training accuracy. We tune the JPEG DQT                            the value of S, with an average increase in recovered activation
+for activation compression, by optimizing over the compressed                        error of 5.0 × 10−5 across the range [0.5, 1.25]. When SFPR
+entropy and recovered activation error on ResNet50 (Figure                           is combined with JPEG (SFPR+DCT+...), truncation error
+9). From this procedure, we select optimized low and high                            (S → 0) increases due to quantization following the DCT.
+compression DQTs, optL, and optH. Finally, we introduce                              We select a value of S = 1.125, which minimizes the overall
+a piece-wise DQT that trains in two stages (optL5H). The                             error of SFPR, JPEG-BASE (...+DIV+RLE), and JPEG-ACT
+selection of these DQTs is discussed in Section IV.                                  (...+SH+ZVC). A single value of S is used across all networks
+
+B. Scaled Fix-point Precision Reduction (SFPR)
+   We propose Scaled Fix-point Precision Reduction (SFPR),                                              SFPR                           SFPR+DCT+SH+ZVC (optH)
+a technique to cast from the 32-bit floating-point activations to                                       SFPR+DCT+SH+ZVC (optL)         SFPR+DCT+DIV+RLE (jpeg80)
+8-bit integers to reduce both hardware costs and compression                                          0.100
+                                                                                     Avg. Recovered
+
+
+
+
+                                                                                                      0.075
+                                                                                      Act. L2 Error
+
+
+
+
+error. Activations are generally represented by floating-point
+                                                                                                                           S = 1.125
+
+
+
+
+values, however, JPEG compression operates on integers.
+                                                                                                      0.050
+                                                                                                      0.025
+CIFAR10 Inputs Trained ResNet50                        JPEG Image DQTs:
+                                                         jpeg80, jpeg60                               0.000
+Simulated JPEG Compr. / Decompr.            DQT
+                                                                                                           0.0    0.5       1.0      1.5       2.0         2.5     3.0
+                                                       Optimized DQTs:
+                                                         optL, optH
+                                                                                                                              Scaling factor (S)
+Recovered Act.           Compr. Act.                                                 Fig. 10: Scaling factor landscape for ResNet50/CIFAR10 at
+                                        Optimizer      Piece-wise DQT:
+   L2 Error                Entropy
+                                                         optL5H                      epoch 5 with conv and sum activations. Each line represents
+                                                                                     a compression method, with optL, optH, and jpeg80 being
+                 Fig. 9: JPEG DQT optimization procedure.                            DQTs.
+

@@ -1,0 +1,130 @@
+Phi: Leveraging Pattern-based Hierarchical Sparsity for High-Efficiency Spiking Neural Networks                                                                                      ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+current cycle, with the remaining rows processed in the subsequent                                                                 Table 1: Phi Architecture Setup.
+cycle. To enable parallel PWP access across partitions, the PWP
+                                                                                              Parameter                                           Value
+buffer is organized into 16 banks, with each partition’s PWP stored
+in a separate bank. A 16-to-8 crossbar connects this buffer to the                            Tile Size                                           𝑚 = 256, 𝑘 = 16, 𝑛 = 32
+adder tree, facilitating the sparse skipping mechanism.                                       On-chip Buffer Size                                 4KB Pack; 16KB Weight;
+    Memory Traffic Optimization. A challenge in L1 processing is                                                                                  64KB PWP, 28 KB Pattern ID, 128 KB PSum
+the heavy memory traffic induced by PWPs. Employing 128 patterns
+per K-dimension tile strains the on-chip buffer capacity, making                              Computation Array                                   L1 & L2: 8 channels 32 SIMD adder tree
+it difficult to store all PWPs for a layer and resulting in additional                        DDR4 DRAM                                           8Gb × 8, 2133R, 4 Channels, 64GB/s
+off-chip memory traffic. Fortunately, our analysis shows that only
+27.73% of precomputed PWPs are utilized within a L1 pattern matrix                        Table 2: Comparison of Phi with Baselines. * indicate depen-
+tile on average, which indicates redundant memory transfers for                           dence of specific SNN algorithm.
+PWPs. Moreover, the patterns utilized by the L1 processor are                                                                   Freq.     Tech.     Area                     Throughput                           Energy Efficiency            Area Efficiency
+known in advance, thanks to our K-dimension first processing                                                                   (MHz)      (nm)     (mm2 )                      (GOP/s)                                (GOP/J)                   (GOP/s/mm2 )
+                                                                                             Eyeriss [9]                           500       28    1.068                         9.10 (1.00×)                           5.16 (1.00×)               8.52 (1.00×)
+order which generates spike activation and patterns for subsequent
+                                                                                             SpinalFlow* [44]                      500       28        2.09                      57.23 (6.29×)                         95.77 (18.575×)             27.38 (3.22×)
+layers during current layer computation. Therefore, we implement                             SATO [39]                             500       28        1.13                      36.01 (3.96×)                         53.22 (10.32×)              31.86 (3.74×)
+a PWP prefetcher, which reads the pattern index and selectively                              PTB [35]                              500       28         -                        18.12 (1.99×)                          10.65 (2.06×)                      -
+loads necessary PWPs from DRAM, realizing significant off-chip                               Stellar* [42]                         500       28    0.768                         58.11 (6.39×)                         61.71 (11.96×)              75.67 (8.89×)
+
+memory reduction.                                                                            Phi                                   500       28    0.662             242.80 (26.70×)                               285.81 (55.41×)             366.70 (43.06×)
+
+
+                                                                                          in a 28nm process. We use DRAMsim3 [37] to simulate the off-chip
+5     Evaluation                                                                          DRAM power. Tbl. 1 shows the setup of the Phi architecture.
+                                                                                             Baselines. We compare with the spiking version of Eyeriss [9]
+In this section, we first detail our evaluation methodology. Next,
+                                                                                          adapted by [44] as a dense baseline and SNN accelerators SpinalFlow [44],
+we explore the design space to justify our configuration. We then
+                                                                                          PTB [35], SATO [39], and Stellar [42] which we discussed in Sec. 2.2.
+evaluate Phi’s performance, energy, and area overhead when ap-
+                                                                                             We compare their configuration and performance on VGG-16
+plied to SNN models. Additionally, we report the improvement of
+                                                                                          with CIFAR100 in Tbl. 2. For a fair comparison, we keep the fre-
+our PAFT technique and illustrate the effect of reducing memory
+                                                                                          quency and technology the same for all baselines and Phi. We define
+traffic.
+                                                                                          operations (OP) consistently across all baselines and Phi, where
+                                                                                          each OP corresponds to an accumulation for a ‘1’ element in the
+5.1     Methodology                                                                       bit sparsity activation. We simulate Spiking Eyeriss, SpinalFlow,
+                                                                                          PTB, and SATO in our framework. For Stellar, we rely on the results
+Evaluation Models and Datasets. We evaluate Phi across vari-
+                                                                                          reported in the paper.
+ous spiking CNNs (VGG [51], ResNet [25]) and spiking transform-
+ers (Spikformer [66], SDT [64], SpikeBERT [41], SpikingBERT [5]).
+We run these models on tasks including CIFAR10, CIFAR100 [32],
+                                                                                          5.2                   Design Space Exploration
+CIFAR10-DVS [36], SST-2, SST-5 [52], and MNLI [61]. We obtain                             We explore three key design choices in Phi: k-dimension tile (i.e.,
+the models from open source repositories on GitHub in the paper,                          partition) size, number of patterns, and buffer size to justify our
+train and evaluate them on relevant datasets using PyTorch [28],                          settings in Tbl. 1. The experimental results are shown in Fig. 7.
+and achieve an accuracy close to that reported in the paper. During
+model training, we adopt the same settings as those described in                                     0.10                                                                                                  1.20
+                                                                                                                                                                                       Norm. Computation
+
+
+
+
+                                                                                                                                                                                                           1.00
+                                                                                           Density
+
+
+
+
+the paper and the corresponding open source code. For PAFT after                                     0.05
+                                                                                                                                                                                                           0.80
+                                                                                                                                                                                                           0.60
+training, we adjust the learning rate (lr) and 𝜆. A higher learning                                                                                                                                        0.40
+                                                                                                                                                                                                           0.20
+rate and 𝜆 will make the pattern in the activations more pronounced,                                 0.00
+                                                                                                                 4        8         16      32    64
+                                                                                                                                                                                                           0.00
+                                                                                                                                                                                                                   4        8       16        32      64
+but the accuracy will decrease accordingly. In practice, we search                                                            K tile size                                                                                       K tile size
+
+lr = 1 × 10 −5 ∼ 1 × 10 −3, 𝜆 = 0.01 ∼ 1 for each model to achieve                          Element Density Vector Density Total Density                                                 Bit Sparsity Cycles Phi Cycles Optimal Cycles
+
+the best performance. Then, we obtain the model’s activations and                                                                                                                          (b) Compute cycles (normalized by bits
+                                                                                                            (a) Density with the k tile size.
+                                                                                                                                                                                                  parsity) with k tile Size.
+utilize this information in our experiments.                                                              1.1                                               70                                              1.2                                                5.0
+                                                                                                                                                                 Memory Access
+
+
+
+
+                                                                                                                                                            60
+   Phi Implementation. We developed a simulator based on the                                                                                                                                                  1                                                4.0
+                                                                                                Compute
+
+
+
+
+                                                                                                          0.9                                               50                                              0.8
+                                                                                                                                                                                                                                                                     Buffer
+                                                                                                                                                                                                  Dram
+
+
+
+
+                                                                                                                                                            40                                                                                                 3.0
+methodology of a widely adopted open-source framework [19, 22,                                            0.7                                               30
+                                                                                                                                                            20
+                                                                                                                                                                                                            0.6
+                                                                                                                                                                                                            0.4                                                2.0
+                                                                                                          0.5                                                                                                                                                  1.0
+48, 60]. The simulator takes the activations of the model and the                                         0.3
+                                                                                                                                                            10
+                                                                                                                                                            0
+                                                                                                                                                                                                            0.2
+                                                                                                                                                                                                              0                                                0.0
+calibrated patterns as input, modeling the behavior of each compo-                                              8    16       32    64 128 256 512
+                                                                                                                Pattern Number per Partition
+                                                                                                                                                                                                                  120     160      240
+                                                                                                                                                                                                                          Buffer Size (KB)
+                                                                                                                                                                                                                                          400        720
+
+nent to estimate the runtime performance of Phi. We implement the                                    Bit Sparsity Cycles                 Phi Cycles                                                   Norm. Dram Power                   Norm. Buffer Area
+                                                                                                     Optimal Cycles                      Mem. Access                                                  Norm. Buffer Power
+Phi Preprocessor, the L1 and L2 Processor, and the Spiking Neuron
+                                                                                               (c) Compute cycles (normalized by bit                                                                       (d) Normalized power and area with
+Array using SystemVerilog [1]. The components are synthesized                                        sparsity) with # patterns.                                                                                        buffer size.
+with Synopsys Design Compiler in a commercial 28nm process,
+which provides area and static/dynamic power estimations. We use                                                               Figure 7: Design space exploration
+CACTI 7.0 [43] to evaluate the area and power of the on-chip buffer
+

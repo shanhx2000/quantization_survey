@@ -1,0 +1,107 @@
+                                                                                                                                                             TABLE II
+                                                                                           
+                                                                                                                                               OASIS ACCELERATOR CONFIGURATIONS (28 NM , 500MH Z ).
+                                                                                                       
+                                                                                                                                                   Module                      Speciﬁcation               Area (mm2 )   Power (W )
+                                                                                                           
+                                                                                                                                                    PE Line                 16 PE Lines per chip              9.08          7.54
+
+
+
+
+                                               
+                                                                                                   
+ 
+
+
+
+
+                                                                                                    
+                                                                                                                                                  Concat Unit        4096 Concat Units per line       8.68 × 10−2   8.36 × 10−2
+                                                                
+                                                                                
+                                                                                                         
+                                                                                                                 
+                                                                                                                                                     Wgt Idx Buffer             2 KB per line             6.75 × 10−2   1.69 × 10−2
+                                                                                                                                PE Line      Index Counter    32 16-in Index Counters per line    2.71 × 10−1   6.14 × 10−2
+                                                                                                                              Dequant Unit         1 Dequant Unit per line         2.83 × 10−3   6.11 × 10−3
+                        
+                                                                                                                                                        MAC Tree       1 32-in FP16 MAC Tree per line      1.17 × 10−1   2.54 × 10−1
+                                                                                                            MAC            8 FP16 MAC Units per line         2.26 × 10−2   4.89 × 10−2
+
+       Fig. 9. Design of (a) the Index Counter and (b) the Clustering Unit.                                                                   Output Buffer                    64 KB per chip                 2.17       2.68 × 10−1
+
+                                                                                                                                              Act. Idx Buffer                  16 KB per chip              5.40 × 10−1   6.71 × 10−2
+indices fetched from the Weight Index Buffer to form the
+                                                                                                                                                     LUT                        2 KB per chip              6.75 × 10−2   8.38 × 10−3
+concatenated indices. Next, in step 4 , the Index Counters cal-
+                                                                                                                                               Cluster. Unit              4 Clustering Units per chip      1.31 × 10−3   2.90 × 10−4
+culate the counts of the unique concatenated indices. Finally, in
+                                                                                                                                                    Orizuru            273 16-in Orizuru Units per chip    7.39 × 10−1   2.73 × 10−1
+step 5 , the MAC Tree performs the weighted-sum operations
+                                                                                                                                             Error Calc. Unit          1 Error Calculation Unit per chip   4.12 × 10−3   6.40 × 10−3
+based on the counts and the corresponding Cartesian Product
+                                                                                                                                                   Func. Unit             1 Functional Unit per chip       8.89 × 10−1   5.63 × 10−1
+values retrieved from the LUT, generating the look-ahead
+                                                                                                                                            Memory Controller           1 Memory Controller per chip          1.47       9.28 × 10−1
+computation results.
+                                                                                                                                                     Total                            —                       15.31         9.66
+   For the outlier branch, in step 1 , the Orizuru units read the
+FP16 activations in the Output buffer and dynamically identify
+the outliers, sequentially outputting each outlier value along
+with its channel index. The weight input channel correspond-                                                                         C. Clustering Unit
+ing to the outlier channel index is fetched from the Weight                                                                             To perform efﬁcient non-uniform quantization for the acti-
+Index Buffer in step 2 , and dequantized to FP16 weights in the                                                                      vations, we design a Clustering Unit as illustrated in Fig. 9(b),
+Dequantization Unit in step 3 . In step 4 , the Error Calculation                                                                    which maps each activation to its nearest centroid based on
+Unit calculates the residual between the outlier activation and                                                                      the pre-deﬁned codebook. The clustering unit ﬁrst computes
+its nearest centroid from the Activation Codebook. Step 4 is                                                                         the boundary values between each pair of adjacent centroids:
+performed in parallel with 2 and 3 . Then, in step 5 , the                                                                           bi = (ci + ci+1 )/2, where ci and ci+1 are two adjacent
+MAC Units perform multiply-accumulates between the outlier                                                                           centroids. For any input value which is within [bi−1 , bi ), it
+residuals and the dequantized weights, generating the error                                                                          is assigned to the i-th cluster with centroid ci . Then, for each
+compensation terms. Finally, the MAC units combine the error                                                                         input activation x, the clustering unit compares it with the
+compensation terms with the look-ahead computation results                                                                           boundary values to determine the cluster index it belongs
+from the main branch to produce the ﬁnal output activations,                                                                         to. To accelerate the clustering process, we implement the
+which are stored back in the Output Buffer.                                                                                          comparison logic using a binary search tree structure. In the
+   To minimize end-to-end latency, the Memory Controller                                                                             example of Fig. 9(b), there are 4 centroids, and each input
+orchestrates pipelined execution of operations across both                                                                           activation x undergoes log2 (4) = 2 hierarchical comparisons
+the main and outlier branches. The cycle latencies for each                                                                          to determine its cluster index.
+computation step are presented in § V-D3.
+                                                                                                                                     D. Orizuru: Dynamic Outlier Detection Engine
+B. Index Counter
+                                                                                                                                        As mentioned in § III-C, OASIS minimizes runtime by
+   In OASIS, we design an Index Counter to compute the
+                                                                                                                                     performing outlier detection on a dedicated outlier branch that
+index distribution of the concatenated indices with high par-
+                                                                                                                                     runs in parallel with the main branch. To avoid making the
+allelism, which is illustrated in Fig. 9(a). The concatenated
+                                                                                                                                     outlier branch the performance bottleneck of the entire GEMM
+indices are decoded into one-hot vectors in parallel, and
+                                                                                                                                     operation, we design Orizuru 1 , an efﬁcient outlier detection
+the bit counters calculate the row-wise sums of the one-hot
+                                                                                                                                     engine that identiﬁes the outliers from each activation token
+vectors to obtain the count for a certain concatenated index.
+                                                                                                                                     with minimal latency and energy consumption.
+For example, the ﬁrst concatenated index ‘01’ is decoded
+                                                                                                                                        We propose to detect the top k largest and smallest values
+into the one-hot vector [0, 0, 1, 0] as shown in the ﬁrst
+                                                                                                                                     within each activation token x = [xi ] ∈ RN , which are ex-
+column of the decoded one-hot matrix in Fig. 9(a). In the
+                                                                                                                                     cluded from the quantization process. To minimize the number
+ﬁrst row of the decoded one-hot matrix, there is one ‘1’,
+                                                                                                                                     of comparisons required for outlier detection, we adopt a tree-
+indicating that the concatenated index ‘11’ appears once in
+                                                                                                                                     based architecture which maximizes the reuse of comparison
+the concatenated indices. The row-wise sums of the second,
+                                                                                                                                     results. As shown in Fig. 10(a), Orizuru is composed of two
+third, and fourth rows correspond to the counts of concatenated
+                                                                                                                                     complete binary trees with shared leaf nodes. These two binary
+indices ‘10’, ‘01’, and ‘00’, respectively. To satisfy timing and
+                                                                                                                                     trees, named the max tree, P, and the min tree, Q, are used
+area constraints, the Index Counter employs a 16-input design,
+with each PE Line incorporating 32 Index Counters to perform                                                                           1 The shape of the two-fold binary trees with shared leaves resembles an
+the index distribution calculations in parallel.                                                                                     Orizuru (a paper crane).
+
+
+
+                                                                                                                                   313
+

@@ -1,0 +1,81 @@
+   1) Online Distribution Learning: LoKA Probe operates                                   Given historical summaries (nold , µold , Σold ), where Σold is the
+in two phases: online learning during training and offline                                (unnormalized) scatter matrix, the merged quantities are
+benchmarking for error analysis.
+   During training, LoKA Probe efficiently tracks the statistical                                                nnew = nold + B,
+properties of each linear layer’s inputs and weights without                                                      δ = µb − µold ,
+storing the actual tensors (which would be prohibitively expen-                                                               B
+                                                                                                               µnew = µold +       δ,
+sive and prone to overfitting). Instead, it maintains compact                                                                nnew
+statistical summaries that can recreate realistic distributions.                                                              nold B T
+LoKA Probe models distributions as multivariate Gaussians.                                                Σnew = Σold + Sb +          δδ .
+                                                                                                                               nnew
+For a 2D tensor T of shape (M, N), LoKA Probe samples from
+                                                                                          The the unbiased (sample) covariance is
+                                T ∼ G(µ, Σ)
+                                                                                                                   Σnew
+where µ ∈ RM ×N is the mean and Σ ∈ RM N ×M N is the                                                      Σ =             (for nnew > 1).
+                                                                                                                 nnew − 1
+covariance matrix.
+                                                                                          Implementation notes. LoKA Probe accumulates Σ in higher
+   This Gaussian assumption is motivated by both theoretical
+                                                                                          precision (e.g., FP32).
+and empirical observations: activations in large models, after
+layer normalization or RMS normalization, tend to concentrate                             Optimized Weight Distribution Modeling We cannot assume
+around zero and exhibit light-tailed, symmetric statistics, which                         dimension independence for W (weight matrix), so the trick
+are well captured by a normal distribution. Moreover, under                               for input modeling does not apply. Instead, we model a weight
+the central-limit effect, the pre-activation of each neuron                               matrix W ∈ RM ×N with a matrix-normal distribution:
+aggregates many independent (or weakly correlated) input                                                        
+                                                                                          W ∼ MN M, U, V , and vec(W ) ∼ N vec(M ), V ⊗U ,
+                                                                                                                                                        
+contributions, making its distribution approximately Gaussian
+even in nonlinear regimes.                                                                where U ∈ RM ×M is the row covariance and V ∈ RN ×N is
+   Finally, LoKA’s objective is not to perfectly reproduce the                            the column covariance. This reduces storage from O(M 2 N 2 )
+long-tail statistics of activations but to approximate their second-                      to O(M 2 + N 2 ) while capturing essential correlations.
+order structure sufficiently for quantization-error analysis.                                Let Wc = W − M be the mean-centered weight. We main-
+Within this scope, Gaussian families provide analytically closed                          tain (U, V ) online using a Kronecker-factor (flip–flop–style)
+moments, stable parameter updates, and simple sampling rules,                             update with exponential moving average (EMA). To avoid
+making them the pragmatic choice for large-scale, online                                  explicit matrix inverses, we use linear solves with (regularized)
+distribution tracking.                                                                    Cholesky factors.
+   However, while conceptually simple, storing the full covari-                              Per-update (single minibatch) estimates:
+ance matrix (M 2 N 2 elements) is still intractable for large
+                                                                                                  SolveLV LTV = V + εI,               f = Wc L−T ,
+                                                                                                                                      W
+tensors. Therefore, we seek to significantly reduce LoKA                                                                                      V
+Probe’s storage requirements.                                                                          1 f fT
+                                                                                                  U′ =   WW ,                            (M × M )
+Optimized Input Distribution Modeling Activations play a                                               N
+critical role in selecting layers to quantize [45]. For them, we                                  Solve LU LTU = U + εI,              c = L−1 Wc ,
+                                                                                                                                      W    U
+exploit the independence of the batch dimension, a key property
+                                                                                                        1 cT c
+in recommendation models where cross-batch operators like                                         V′ =    W W,                           (N × N )
+                                                                                                        M
+BatchNorm are avoided to prevent information leakage2 . By
+treating the batch dimension as independent, it enables us to                                 EMA smoothing:
+model only along the feature dimension, reducing storage from
+                                                                                                             U ′′ = m U + (1 − m) U ′ ,
+O(M 2 N 2 ) to manageable O(N 2 ).
+   Tracking the mean is trivially done in a streaming fashion.                                               V ′′ = m V + (1 − m) V ′ ,
+For variance, we implement a batched Welford tracker [13]                                                     U ← 21(U ′′ + U ′′T ) + εI,
+that efficiently updates covariance online using only O(N 2 )                                                 V ← 12(V ′′ + V ′′T ) + εI.
+memory, by decomposing the final covariance as follows.
+   Let the current batch be X ∈ RB×K (rows are samples,                                      Scale identifiability. Because V ⊗ U is invariant under
+columns are features, therefore B = M and K = N using                                     (U, V ) 7→ (cU, V /c) (where ⊗ is the Kronecker product [34],
+previous annotations). Define the batch mean µb ∈ RK and                                  we renormalize to prevent drift using s for better numerical
+batch scatter:                                                                            stability:
+         Sb = (X − 1B µTb )T (X − 1B µTb ) ∈ RK×K .                                                       trace(U )             U
+                                                                                                  s =               ,     U←      ,         V ← s V.
+  2 Consider the case when the current (user, item) pair and the user’s future                               M                  s
+iteration (user, item in the future) both present in the same local batch, a batch          These updates allow us to avoid forming V −1 or U −1
+norm would effectively use the user’s future behavior, which may already
+encode their current action in its input feature, to predict their current behavior,      explicitly. In practice we use small ε (e.g., 10−6 × trace(U
+                                                                                                                                                  M
+                                                                                                                                                       )
+                                                                                                                                                         )
+leading to catastrophic overfitting.                                                      and a momentum m ∈ [0.9, 0.99] for stable online tracking.
+
+
+
+
+                                                                                       1372
+

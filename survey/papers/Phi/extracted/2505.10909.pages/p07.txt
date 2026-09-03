@@ -1,0 +1,109 @@
+Phi: Leveraging Pattern-based Hierarchical Sparsity for High-Efficiency Spiking Neural Networks                                                                             ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+    L1 Processor. The L1 Processor exploits structured vector                                                                                                       Matcher 1            Matcher 2             Matcher n
+                                                                                                   Spike Activation
+sparsity in Level 1 through efficient pre-computed Pattern-Wise                                                     1 0 1 1                                         1 0 1 1             1 0 1 1                1 0 1 1
+                                                                                                   0   1 1 1 0
+                                                                                                                                                                     Pattern 1              Pattern 2           Pattern n
+Products (PWP). It primarily performs PWP retrieval and accu-                                      1   1 0 1 0
+                                                                                                                                                                    1 1 1 0             1 0 0 1                1 1 0 1
+                                                                                                   2   1 1 0 0 1                                                                                          …
+mulation based on identified patterns. For rows without matching                                   3   0 0 0 0 Read
+                                                                                                                                                                    Diﬀerence             Diﬀerence             Diﬀerence
+                                                                                                                                                                    0 -1 0 1            0 0 1 0                0 -1 1 0
+                                                                                                                          2 Match
+patterns, the L1 processor implements an efficient skipping mech-                                  4   0 1 0 0
+                                                                                                   5   1 0 1 1      Popcount                                        Popcount             Popcount               Popcount
+anism. To solve the challenge of massive off-chip memory access
+                                                                                                                                          3                             2                      1                   2
+                                                                                                          (b)
+induced by the pre-computed PWPs, we employ a prefetcher to                                            Compressor
+filter out the redundant memory access.                                                                   4 Compress
+                                                                                                                                                   3 Select                      Minimum
+    L2 Processor. The L2 Processor handles unstructured element                                          0 0 1 0
+                                                                                                         0    1    2    3
+                                                                                                                                                                      L2 Sparse Map    Nnz Patt. ID
+sparsity using the optimized packed data structure from the Pre-                                         Col ID 2
+                                                                                                                                                                       0 0 1 0          1       2       (a) Pattern Matcher
+                                                                                                         Value     1
+processor, enabling efficient parallel processing through structured                              Row5
+
+memory access patterns and computation scheduling. While L1                                                   Conflict Detector 0                                                     Window 0
+                                                                                                         Space Check         Conflict Detect                                +1      p: partial sum w: weight        Level 1
+and L2 processors operate independently and concurrently, they                                                                     Row4 00                               Label p w p w                              Pattern
+                                                                                                          1        6                                                                                                 Index
+                                                                                                                                                                         Index 0 1 1 2
+require synchronization in each output tile. Our design carefully                                                                  Row5 01
+                                                                                                                                              10
+                                                                                                                                                                                                                    Buﬀer
+                                                                                                                                                                         Value 1 1 1 1
+balances computational loads between processors to minimize inter-                                            <?
+
+
+
+
+                                                                                                                                                       Controller
+                                                                                                                                              11
+                                                                                                                                                                         Space  2    Free space: 6
+
+processor interference while maximizing overall throughput.                                                   Conflict Detector 1                                                     Window 1                      Level 2
+                                                                                                         Space Check         Conflict Detect                                        p: partial sum w: weight         Pack
+    Spiking Neuron Array. The Spiking Neuron Array processes                                                                                                             Label p w p w                              Buﬀer
+                                                                                                          1        4                          00
+the aggregated outputs from both processors, implementing the                                                                      Row1       01                         Index 0 1 1 3
+
+
+
+
+                                                                                                                                                   +
+                                                                                                                       Conflict!   Row2       10                         Value 1 -1 1 -1
+LIF neuron operation to generate spike activations for subsequent
+
+
+
+
+                                                                                                                                                                    +
+                                                                                                              <?                              11                                                                       …
+                                                                                                                                                                         Space  2    2   Free space: 4
+
+layers. This component, while straightforward, is essential for SNN                                                5 Detect                        (c) Packer                            6 Pack
+
+accelerators.                                                                                                                         Figure 4: Preprocessor.
+
+4.2     Preprocessor                                                                      4.2.2 Level 2 sparse preprocessing. The Level 2 element sparsity
+The Preprocessor has three main parts: Matcher, Compressor, and                           in our design reaches 96.80%, which is significantly higher than
+Packer.                                                                                   the original bit sparsity of 83.63%. While this increased sparsity
+                                                                                          creates opportunities for operation reduction, it also introduces
+4.2.1 Phi Pattern Matcher. The pattern matcher, a crucial compo-                          architectural challenges. To address these challenges, we propose an
+nent of the Preprocessor shown in Fig. 4 (a), implements the Phi                          innovative preprocessing mechanism specifically designed for Level
+sparsity mechanism defined in Sec. 3.1. The Matcher processes pre-                        2 sparsity. Our analysis reveals that the Level 2 sparse matrix for
+loaded offline-calibrated L1 patterns for the current tile to generate                    each tiled row is highly sparse, typically containing either zero or
+optimal two levels of sparse representations.                                             1-2 nonzero elements due to our pattern selection criteria. This high
+    The pattern matching process consists of steps ① through ③. In                        sparsity can lead to hardware underutilization when attempting to
+step ①, a spike row from the current activation tile is broadcast to                      process nonzeros within a row in parallel. Therefore, we introduce
+all Matcher units. During step ②, each Matcher unit computes the                          a row-packing strategy that combines multiple sparse rows into
+difference between its stored pattern and the input spike activation                      regular-sized packs, enabling efficient utilization of the processor’s
+to generate a candidate L2 sparse row. For instance, as shown in                          computation array.
+Fig. 4 (a) Matcher 1, the operation 1011−1110 = 0, -1, 0, 1 produces a                       Compressor. In step ④ shown in Fig. 4 (b), the compressor
+candidate sparse map. Popcount operations [2] are then performed                          performs two functions: (1) it filters out all-zero rows generated
+on the difference to count nonzero elements in the candidate sparse                       by the pattern matcher, and (2) it scans the remaining nonzero
+map and on the original activation to establish a baseline case                           elements to extract their column indices, creating a compressed
+(representing no pattern assignment). In step ③, the system ag-                           representation of the sparse map.
+gregates Popcount results from all matcher units to identify the                             Compact data structure. We employ a compact data struc-
+minimum count, which corresponds to the highest achievable Level                          ture for each pack. This structure serves two purposes: it provides
+2 sparsity. This determines both the best-matching pattern and its                        regular-sized inputs to the Level 2 processor, enabling parallel pro-
+corresponding Level 2 sparse row.                                                         cessing of nonzeros for improved hardware utilization, and it ef-
+    To optimize hardware efficiency while maintaining functionality,                      ficiently handles partial sums from previous partitions. We treat
+we implement the matcher units in a 1-D systolic array architecture.                      partial sums as special units within the pack since, like nonzeros,
+This design choice offers several key advantages. It maintains a                          they appear irregularly and require summation with weights.
+throughput of one row per cycle while reducing hardware overhead                             Each of our compact data structures contains 8 units, where each
+compared to parallel implementations. Although the systolic design                        unit contains three fields: 1. A label field indicating whether the unit
+introduces additional latency, this overhead is effectively hidden                        represents a nonzero element (requiring weight accumulation) or a
+by overlapping the operation with L1 and L2 processing.                                   partial sum from the previous partition; 2. An index field containing
+    The pattern-matching process produces two key outputs. First,                         either the column index from the compressor or a partial sum index
+the matched pattern index is directly forwarded to the Level 1                            indicating its position among partial sums in the pack; 3. A value
+pattern index buffer for subsequent processing. Second, the gen-                          field containing either 1 or -1 for nonzeros, or 1 for partial sums
+erated Level 2 sparse row and its nonzero count undergo further                           (since they are always accumulated). Additionally, the structure
+preprocessing stages.                                                                     maintains metadata including the number of units occupied per
+

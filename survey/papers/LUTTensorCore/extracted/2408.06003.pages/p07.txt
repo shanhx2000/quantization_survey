@@ -1,0 +1,99 @@
+  LUT Tensor Core: A Software-Hardware Co-Design for LUT-Based Low-Bit LLM Inference                                                                 ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                  100                              WINT1AFP16        WINT1AFP8                                  DP4 Unit Compute Density and Power @ TSMC 28nm (No Psum)
+                                                                                                                                                                                    2.0
+Compute Density
+
+
+
+
+                                                                                                                                                                                     Power Consumption
+  (TFLOPs/mm²)
+
+
+
+
+                                                                                       Compute Density
+                                                   WINT1AINT16       WINT1AINT8
+                   75
+
+
+
+
+                                                                                         (TFLOPs/mm²)
+                                                                                                         100                                                                        1.5
+
+
+
+
+                                                                                                                                                                                            (mW)
+                   50                                                                                                                                                               1.0
+                                                                                                          50
+                   25                                                                                                                                                               0.5
+
+                        2   3     4        5         6           7        8                                 0
+                                                                                                                  WFP16AFP16 WINT1AFP16 WINT1AFP16 WFP8AFP8 WINT1AFP8 WINT1AFP8
+                                                                                                                                                                                    0.0
+                                           K                                                                         MAC        ADD        LUT       MAC      ADD        LUT
+
+  Figure 11: Design space exploration along the K-axis for the                           Figure 12: PPA comparison across MAC/ADD/LUT-based DP4
+  LUT-based dot product unit. K = 4 is the optimal in general.                           implementations. Our LUT-based DP4 unit has compute den-
+                                                                                         sity and power advantages.
+
+  following key aspects. Figure 10 shows an example of compilation                                                        MAC WFP16AFP16
+  on the LLAMA model:                                                                                                     ADD WINTXAFP16
+                                                                                                            104           LUT WINTXAFP16 Conventional
+                                                                                                                          LUT WINTXAFP16 LUT Tensor Core
+
+
+
+
+                                                                                                  Area ( m^2)
+  • DFG Transformation. Given the model represented in DFG, we
+    transform the mixed-precision GEMM operator to a precompute
+    operator and a LUT-mpGEMM operator. This transformation is
+    implemented as a graph optimization pass in Welder [62].
+  • Operator Fusion. Operator fusion is a widely-used compiler                                              103
+    technique to optimize the end-to-end model execution by reduc-
+                                                                                                  4 × 102
+    ing memory traffic and runtime overhead. We reuse Welder for op-                                               INT1             INT2             INT4          INT8           INT16
+    erator fusion by registering the precompute and LUT-mpGEMM                                                                                  Weight Type
+    operators with the required tile-based representation. As shown
+                                                                                         Figure 13: Area comparison of MAC, ADD, and LUT-based
+    in Figure 10, the element-wise precompute operator is fused with
+                                                                                         DP4 units across weight bit-widths in 𝑊INTX ×𝐴FP16 . Conven-
+    the previous element-wise operator.
+                                                                                         tional LUT implementation does not have area advantages.
+  • LUT-mpGEMM Scheduling. Scheduling LUT-mpGEMM op-
+    erator requires careful consideration of tiling in the memory
+    hierarchy for optimal performance. Conventional GEMM tiling                         Tensor Core and Addition (ADD)-based Tensor Core. MAC repre-
+    strategies [5, 82, 84] assume the same data type for both activa-                   sents the typical design in current GPUs which needs dequantiza-
+    tions and weights. However, mpGEMM uses different data types                        tion to support mpGEMM. ADD adopts the bit-serial computing
+    for activation and weight, affecting memory transactions. To ad-                    proposed in [27] to support mpGEMM, where every bit of weights
+    dress this, we represent tiling by memory size rather than shape,                   needs one addition. We implement LUT-based Tensor Core and
+    and register LMMA instruction shapes and tiling calculations in                     baselines in Verilog and use Synopsys’s Design Compiler [63] and
+    Roller’s rTile [84] interfaces to schedule optimal configurations.                  the TSMC 28nm process library for synthesizing circuits and gener-
+  • Code Generation. With the finalized scheduling plans, code                          ating PPA data. We apply DC’s medium effort level targeting 1GHz
+    generation is performed using TVM. Specifically, the LMMA                           to ensure a fair comparison across all designs.
+    instructions are registered as intrinsics in TVM, and TVM can                       4.1.2 Kernel-level evaluation. For mpGEMM kernel-level eval-
+    follow the scheduling to generate the kernel code with LMMA                         uation, we use the NVIDIA A100 GPU as the baseline and employ
+    instructions.                                                                       Accel-Sim [30], an open-source state-of-the-art simulator. Modi-
+                                                                                        fications to the configuration and trace files in Accel-Sim enable
+  4           Evaluation                                                                us to simulate both the original A100 and the LUT Tensor Core-
+  In this section, we evaluate LUT Tensor Core to validate its effi-                    equipped A100.
+  ciency in accelerating low-bit LLM inference. First, we assess the                    4.1.3 Model end-to-end evaluation and analysis. To extend
+  hardware efficiency gains of our design via detailed PPA benchmark-                   our evaluation to real LLMs, we utilize four widely-used open-
+  ing (§4.2). Then, kernel-level experiments are conducted to illustrate                source LLMs: LLAMA-2 [65], OPT [80], BLOOM [36], and Bit-
+  the acceleration of mpGEMM (§4.3). Next, we perform end-to-end                        Net [68]. Since Accel-Sim becomes infeasible for end-to-end LLM
+  inference evaluation on commonly-used LLMs to demonstrate the                         experiments due to its slow simulation speed for large trace files,
+  practical performance improvements (§4.4). Finally, we compare                        we develop a tile-based simulator to support end-to-end inference
+  LUT Tensor Core with previous LUT-based works (§4.5) and eval-                        evaluations, as detailed in §4.4.
+  uate the effectiveness of our software optimizations, focusing on
+  table precompute fusion and table quantization (§4.6).                                 4.2                    Hardware PPA Benchmarks
+                                                                                        4.2.1 Dot product unit microbenchmark. In this experiment,
+  4.1              Experimental Setup and Methodology                                   we fixed 𝑀 and 𝑁 to 1 and varied 𝐾 (i.e., a dot product unit of 𝐾-
+ 4.1.1 Hardware PPA benchmarks. We compare our LUT-based                                element vectors) to explore its impact on compute density. A large
+ Tensor Core with two baselines: Multiply-Accumulate (MAC)-based                        𝐾 could lead to exponential growth in lookup table entries, whereas
+                                                                                  7
+

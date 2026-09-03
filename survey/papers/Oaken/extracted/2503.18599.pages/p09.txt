@@ -1,0 +1,136 @@
+Oaken: Fast and Efficient LLM Serving with Online-Offline Hybrid KV Cache Quantization                                                 ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+           Inlier               Dense KV                   Inlier Scaling Factor (𝜎)                                    Dense Management Table              Memory Layout
+          Outlier               Sparse KV                 Outlier Scaling Factor (𝜎)                                       Address Xfer Size
+                                                                                                                            0x0000      0x04
+
+
+
+
+                                                                                                                                                 Sequence
+Control Register Matrix Processing Unit                     Device Memory                                                   0x0004      0x04
+
+
+
+
+                                                                                                                                                  Length
+
+
+
+
+                                                                                                                                                                              Page
+                                                                                             Token 1          idx g s       0x0008      0x04
+1           Threshold                KV           4                     5                                     idx g s       0x000C      0x04
+                  Decomposer                                                   Zero-Insert    Layer 1         idx g s
+                                                                                              Head 1
+
+
+
+
+                                                                                                                                 ...
+2                                                                                Shifter                      idx g s
+                        3
+    Min&Max                          Min&Max
+                                                                                                                        Sparse Management Table
+
+
+
+
+                                                                                                                                                                ...
+                                                         Buffer
+
+
+
+
+                                                                    Outlier
+     Finder                           Finder                                                 Token 2
+
+
+
+
+                                                                    Index
+                                                                                                              idx g s      Address Xfer Size                idx g s idx g s
+     <    Min                         <   Min                                    Buffer       Layer 1                                                       idx g s idx g s
+                                                                                                              idx g s       0x1000      0x02
+     >    Max Buffer                  >   Max                                                 Head 1                                                        idx g s idx g s
+
+
+
+
+                                                                                                                                                 Sequence
+
+
+
+
+                                                                                                                                                                              Page
+                                                                                                                            0x1002      0x02
+
+
+
+
+                                                                                                                                                  Length
+        𝜎                   Buffer       𝜎                                                                                  0x1004      0x01
+
+
+
+
+                                                                                                                                                                ... ...
+                                                                                                        ...
+    Calculator                       Calculator          Outlier                                                            0x1005      0x01
+                                                                              Concatenator
+                                                        Extractor
+
+
+
+
+                                                                                                                                 ...
+         Quantizer            Quantizer
+                                                      Dequantizer              Dequantizer
+                            Outlier Spliter                                                  Figure 10: Operations of memory management unit (MMU)
+                                                                      OR                     for handling dense and sparse data.
+           OR               Zero-Remove
+                               Shifter
+                                                                         KV                   (1) Addresses and transfer size management: Dense matri-
+                 Device Memory                           Matrix Processing Unit                ces have predictable sizes that are well-aligned within memory
+         (a) Quantization Engine                      (b) Dequantization Engine                spaces, while sparse matrices vary in size. Thus, management
+                                                                                               tables are needed for both dense and sparse data to accommodate
+Figure 9: Quantization and dequantization engines of Oaken                                     this variability. These tables contain the virtual-to-physical ad-
+compute core.                                                                                  dress mappings and transfer sizes for the KV cache, considering
+                                                                                               up to the maximum sequence length per attention head. Physical
+                                                                                               addresses and transfer sizes are dynamically calculated during
+                                                                                               inference by checking available pages on demand.
+module generates an index and a group flag for COO transformation.                            (2) Read-write granularity and order determination: To max-
+It employs a zero-remove shifter [57, 67] to implement fused dense-                            imize memory bandwidth utilization, burst access should be lever-
+and-sparse encoding, optimizing memory usage.                                                  aged whenever possible to reduce the total number of memory
+Dequantization engine. The dequantization engine, illustrated in                               transactions. Writing KV cache involves relatively small sizes,
+Figure 9(b), is also integrated into the DMA unit to dequantize the                            as it only includes the key-value for the current token, whereas
+KV cache retrieved from memory.                                                                reading requires retrieving the KV cache for all previous tokens.
+    The ④ inlier dequantizer module buffers incoming dense data                                To address this, Oaken organizes KV cache for the current token
+to synchronize with sparse data processed by the outlier dequan-                               in a layout that facilitates burst reads in subsequent operations.
+tizer module. The ⑤ outlier dequantizer module handles sparse                                  Key-value vectors generated in the current layer are divided by
+COO data by performing a zero-insert [57, 67] operation to restore                             attention head and written to distinct pages, as explained in Sec-
+the original data alignment. It identifies the original positions of                           tion 5.2. When the KV cache for the next token is generated, it is
+fused outliers using the index and group information of the sparse                             divided similarly and written sequentially, immediately follow-
+data and inserts the necessary zeros accordingly. Both dequantizer                             ing the previous tokens’ KV cache. This sequential arrangement
+modules then restore the data, which is buffered to be aligned with                            allows that the KV cache for all previous tokens can be read in
+the outputs of the counterpart module. Finally, the outputs from                               burst mode, allowing Oaken to efficiently utilize bandwidth.
+both dequantizer modules are merged via an OR gate and forwarded
+to the processing unit.                                                                      5.3        Token-level Batch Scheduling
+    Since the dequantization engine does not require the entire KV                           Efficient scheduling is crucial for Oaken to efficiently serve LLM
+cache for its operation, we designed it to function in a streaming                           inference. Each compute core in Oaken is optimized to process a
+manner. This design allows the dequantization engine to maintain                             single token efficiently. During the prefill phase, input tokens from
+low latency, while efficiently processing all past KV cache.                                 each request are scheduled for parallel processing across multiple
+Memory management unit. Figure 10 illustrates the operations of                              cores. However, in the generation phase, each core handles a single
+memory management unit, which manages the reading and writing                                output token from one request, which reduce hardware utiliza-
+of quantized KV cache. We design the MMU unit to handle dense-                               tion. For larger batches, Oaken improves overall core utilization by
+and-sparse matrices in a page-based manner, optimizing bandwidth                             processing multiple requests in parallel.
+utilization. It supports multiple memory accesses in burst mode and                             Although the overhead for KV cache quantization and dequan-
+streamlined operations to hide latency of memory and quantiza-                               tization is minimal, Oaken further minimizes this by overlapping
+tion/dequantization operations. Since Oaken’s MMU units share a                              them with other operations. In batched inference, KV cache cannot
+common address space, MMU operates in each compute core inde-                                be shared across cores because each core processes distinct requests,
+pendently, preventing interference. Without this specialized MMU,                            forcing each core to monopolize the memory bandwidth. Oaken
+processing variable-sized sparse matrices would require additional                           employs a scheduling strategy that hides latency by overlapping
+overhead for indexing, reshaping, and subsequent operations. There                           KV quantization and dequantization with DMA reads and attention
+are two major challenges associated with the design of MMU unit:                             computations from other requests.
+

@@ -1,0 +1,1285 @@
+                                                     LUT Tensor Core: A Software-Hardware Co-Design for
+                                                              LUT-Based Low-Bit LLM Inference
+                                                             Zhiwen Mo∗                                       Lei Wang∗                                       Jianyu Wei∗
+                                                   Imperial College London and                         Peking University and                    University of Science and Technology
+                                                       Microsoft Research                               Microsoft Research                        of China and Microsoft Research
+                                                           London, UK                                      Beijing, China                                  Beijing, China
+
+                                                           Zhichen Zeng∗                                     Shijie Cao†                                     Lingxiao Ma
+                                                  University of Washington and                             Microsoft Research                              Microsoft Research
+                                                       Microsoft Research                                    Beijing, China                                  Beijing, China
+                                                           Seattle, USA
+arXiv:2408.06003v3 [cs.AR] 28 Jul 2025
+
+
+
+
+                                                             Naifeng Jing                                     Ting Cao                                         Jilong Xue
+                                                  Shanghai Jiao Tong University                            Microsoft Research                              Microsoft Research
+                                                        Shanghai, China                                      Beijing, China                                  Beijing, China
+
+                                                                                            Fan Yang                                  Mao Yang
+                                                                                      Microsoft Research                          Microsoft Research
+                                                                                        Beijing, China                              Beijing, China
+
+                                         Abstract                                                                        CCS Concepts
+                                         Large Language Model (LLM) inference becomes resource-intensive,                • Computer systems organization → Neural networks; Archi-
+                                         prompting a shift toward low-bit model weights to reduce the mem-               tectures; • Hardware → Arithmetic and datapath circuits.
+                                         ory footprint and improve efficiency. Such low-bit LLMs necessitate
+                                         the mixed-precision matrix multiplication (mpGEMM), an impor-                   Keywords
+                                         tant yet underexplored operation involving the multiplication of                Low-bit LLM, Software-hardware co-design, LUT, Accelerator
+                                         lower-precision weights with higher-precision activations. Off-the-
+                                         shelf hardware does not support this operation natively, leading to             ACM Reference Format:
+                                         indirect, thus inefficient, dequantization-based implementations.               Zhiwen Mo, Lei Wang, Jianyu Wei, Zhichen Zeng, Shijie Cao, Lingxiao Ma,
+                                            In this paper, we study the lookup table (LUT)-based approach                Naifeng Jing, Ting Cao, Jilong Xue, Fan Yang, and Mao Yang. 2025. LUT
+                                                                                                                         Tensor Core: A Software-Hardware Co-Design for LUT-Based Low-Bit
+                                         for mpGEMM and find that a conventional LUT implementation
+                                                                                                                         LLM Inference. In Proceedings of the 52nd Annual International Symposium
+                                         fails to achieve the promised gains. To unlock the full potential of            on Computer Architecture (ISCA ’25), June 21–25, 2025, Tokyo, Japan. ACM,
+                                         LUT-based mpGEMM, we propose LUT Tensor Core, a software-                       New York, NY, USA, 14 pages. https://doi.org/10.1145/3695053.3731057
+                                         hardware co-design for low-bit LLM inference. LUT Tensor Core
+                                         differentiates itself from conventional LUT designs through: 1)
+                                         software-based optimizations to minimize table precompute over-                 1    Introduction
+                                         head and weight reinterpretation to reduce table storage; 2) a LUT-             The advent of Large Language Models (LLMs) offers transformative
+                                         based Tensor Core hardware design with an elongated tiling shape                opportunities across various AI applications [1, 3, 28, 65]. How-
+                                         to maximize table reuse and a bit-serial design to support diverse              ever, the deployment of LLMs requires substantial hardware re-
+                                         precision combinations in mpGEMM; 3) a new instruction set and                  sources [21, 54, 55]. To reduce inference costs, low-bit LLMs have
+                                         compilation optimizations for LUT-based mpGEMM. LUT Ten-                        emerged as promising approaches [10, 15, 31, 40]. Among differ-
+                                         sor Core significantly outperforms existing pure software LUT                   ent solutions, weight quantization, i.e., quantizing LLMs with low-
+                                         implementations and achieves a 1.44× improvement in compute                     precision weights and high-precision activations, has become par-
+                                         density and energy efficiency compared to previous state-of-the-art             ticularly attractive as it reduces memory and computation costs
+                                         LUT-based accelerators.                                                         while maintaining model accuracy [39, 75, 81]. While 4-bit weight
+                                         ∗ Work is done during internship at Microsoft Research.                         quantization has become pervasive [12, 32, 64], both academia and
+                                         † Corresponding Author                                                          industry are actively exploring advancements toward 2-bit and
+                                                                                                                         even 1-bit to further improve efficiency [4, 14, 29, 42, 44, 49, 68].
+                                                                                                                             Weight quantization shifts the key computation pattern of LLM
+                                         Please use nonacm option or ACM Engage class to enable CC licenses
+                                         This work is licensed under a Creative Commons Attribution-NonCommercial-       inference from conventional General Matrix Multiplication (GEMM)
+                                         NoDerivatives 4.0 International License.                                        to mixed-precision GEMM (mpGEMM), where one input matrix
+                                         ISCA ’25, June 21–25, 2025, Tokyo, Japan                                        is in lower precision (e.g., INT4/2/1 weights) and the other remains
+                                         © 2025 Copyright held by the owner/author(s).
+                                         ACM ISBN 979-8-4007-1261-6/2025/06                                              in higher precision (e.g., FP16/8, INT8 activations). Currently, off-
+                                         https://doi.org/10.1145/3695053.3731057                                         the-shelf hardware does not support mixed-precision operations
+                                                                                                                     1
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                   Mo et al.
+
+
+natively. Consequently, most low-bit LLM inference systems have              instruction set, which includes essential metadata specifying the
+to utilize dequantization-based approaches for mpGEMM [16, 39,               operand types and shapes. With the extension, LUT Tensor Core
+51, 69]. Dequantization upscales low-bit representations to match            leverages the shape information provided in LMMA to recompile
+the hardware-supported GEMM. Such extra operations can become                LLM workloads using tile-based deep learning compilers [5, 62, 84],
+a performance bottleneck in large batch scenarios.                           producing efficient kernels for the new hardware.
+    Lookup table (LUT) is another popular approach for low-bit com-              Our LUT-based Tensor Core exhibits a power and area reduction
+putation and is well-suited for mpGEMM [26, 38, 45, 53, 71]. By              of 4× to 6× compared to the conventional Tensor Core. To validate
+precomputing multiplication results between low-precision weights            the performance enhancement of mpGEMM, we integrate our LUT-
+and high-precision activations, LUT-based methods eliminate the              based Tensor Core design and instructions into Accel-Sim [30], a
+need for dequantization and replace complex operations with sim-             GPU hardware simulator. The results show that our LUT-based
+ple table lookups. In practice, LUTs are implemented on a per-tile           Tensor Core occupies only 16% of the area of a conventional Tensor
+basis. For each small tile of mpGEMM, a lookup table is precom-              Core while achieving even higher mpGEMM performance. Com-
+puted specifically for the activations within a tile and reused across       pared to state-of-the-art (SOTA) LUT software implementations
+weight matrix columns, significantly reducing storage overhead               [53], LUT Tensor Core achieves up to a 1.42× speedup in gen-
+while maintaining efficiency.                                                eral matrix vector multiplications (GEMV) and a 72.2× speedup in
+    Despite its potential, LUT-based mpGEMM still experiences no-            GEMM. Compared to SOTA LUT accelerators [38], LUT Tensor
+table performance gaps and challenges in both software and hard-             Core achieves 1.44× higher compute density and energy efficiency,
+ware implementations. On the software side, LUT kernels face                 enabled by the software-hardware co-design. Our code is avail-
+limited instruction support and inefficient memory access, which             able at https://github.com/microsoft/T-MAC/tree/LUTTensorCore_
+lead to suboptimal performance compared to dequantization-based              ISCA25.
+kernels on GPUs, as shown in Figure 4. On the hardware side, con-                Our contributions can be summarized as follows:
+ventional LUT designs lack optimization for mpGEMM and often                 • We propose LUT Tensor Core, a software-hardware co-design
+fall short of expected performance improvements. This is due to key             for LUT-based mpGEMM to boost the inference efficiency of
+challenges such as high table precomputation and storage overhead,              low-bit LLMs.
+limited support for diverse bit-width combinations, inefficiencies           • Experiments show that the proposed LUT-based Tensor Core
+from suboptimal tiling shapes, and the lack of dedicated instruction            achieves 4× to 6× power, performance, and area (PPA) gains.
+sets and compilation support; see §2.3 for details.                             LUT Tensor Core exhibits inference speedups of 2.06× to 5.51×
+    LUT Tensor Core addresses these challenges through a holis-                 for low-bit LLMs like BitNet and quantized LLAMA models, with
+tic software and hardware co-design. By optimizing hardware-                    comparable area and accuracy.
+unfriendly tasks, such as table precomputation and storage man-              • Beyond efficiency, our design can accommodate a wide range
+agement, in a software-based approach, LUT Tensor Core reduces                  of weight (e.g., INT4/2/1) and activation precisions (e.g., FP16/8,
+the workload on hardware, simplifying its design and improving                  INT8). Moreover, LUT Tensor Core can be integrated into exist-
+its compactness and efficiency. To be specific:                                 ing inference hardware and software stacks with the extended
+Software optimization (§ 3.1). To amortize the overhead of pre-                 LMMA instructions and compilation optimizations.
+computing lookup tables, we observed that conventional designs
+precompute redundantly across multiple units. LUT Tensor Core                2 Background and Motivation
+splits the precomputation into an independent operator, thus avoid-
+ing redundancies, and fuses it with the previous operator to further         2.1 LLM Inference and Low-Bit Quantization
+reduce memory accesses. To reduce storage overhead, LUT Ten-                 Recently, LLMs mainly rely on the decoder-only transformer ar-
+sor Core exposes and exploits the inherent symmetry of a lookup              chitecture [66], as shown in Figure 1. Specifically, LLMs are built
+table for mpGEMM by reinterpreting {0, 1} as {−1, 1}, reducing               with sequential transformer layers, where each transformer layer
+the table size by half. LUT Tensor Core also reduces the table               contains a multi-head attention block followed by a feed-forward
+width and supports various activation bit widths by applying table           block. In both blocks, the primary computations are GEMM, or
+quantization techniques.                                                     mpGEMM operations with weight quantization. The scaling up of
+Hardware customization (§ 3.2). LUT Tensor Core customizes                   LLMs requires substantial hardware resources [21, 28]. For exam-
+the LUT-based Tensor Core design. The aforementioned software                ple, LLAMA-2-70B [65] consumes 140GB of memory for its model
+optimizations have simplified the hardware design by offloading the          weights alone (in FP16), far exceeding the capacity of a modern GPU
+circuitry tasks to software, reducing the need for broadcasting and          like NVIDIA A100 or H100. This imposes a considerable challenge
+multiplexers by half. Meanwhile, LUT Tensor Core incorporates a              for LLM deployment.
+flexible bit-serial-like circuit to accommodate various combinations            To reduce inference costs in LLM deployment, low-bit quanti-
+of mixed precision operations. Moreover, LUT Tensor Core con-                zation has become a popular approach [10, 12, 64, 76]. It reduces
+ducts a design space exploration (DSE) for the shape of LUT-based            the precision of numerical representations of a model, thus de-
+Tensor Core and identifies an elongated tiling shape that enables            creasing memory footprint and computation time. In LLM quanti-
+more efficient table reuse.                                                  zation, weight quantization is preferred over activation quantiza-
+New instruction and compilation support (§ 3.3). LUT Tensor                  tion [37, 39]. This is because the values of model weights are static
+Core extends the traditional Matrix Multiply-Accumulate (MMA)                and thus can be quantized offline. Weights can be quantized to
+instruction set to the LUT-based Matrix Multiply-Accumulate (LMMA)           4-bit, 2-bit, and even 1-bit. Post-training quantization (PTQ) incurs
+                                                                         2
+LUT Tensor Core: A Software-Hardware Co-Design for LUT-Based Low-Bit LLM Inference                                                                                                                    ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+                                                                                                                                                                INT1 Weights (4xN)
+                                                                                                                                                                  0        0                1
+                                               Weight-Only                            FP16 Activations (1x4)                                                                                                                   FP16 Outputs (1xN )
+                                              Quantized LLMs                                                                                                      0        1                1
+                    Add & Norm                                                                A          B             C        D                                                  …                                           LUT[1]       LUT[9]               …                   LUT[14]
+                                                                                                                                                                  0        0                1
+                                                Linear: mpGEMM                                                    Precompute                                      1        1                0
+                          Feed                       GeLU                                         Lookup Table (LUT)
+                         Forward
+                                                Linear: mpGEMM                                         Index                         0000                                 0001                    …                               1110                 1111
+         N×                                                                                            Result                          0                                   D                      …                             A+B+C           A+B+C+D
+                    Add & Norm
+                                           Output Projection: mpGEMM
+                     Multi-Head                                                        Figure 3: A naive LUT-based mpGEMM tile example of FP16
+                                              Self Attention: GEMM                     activations and INT1 weights. With the precomputed table, a
+                     Attention
+                                             QKV Projection: mpGEMM                    table lookup can replace a dot product of 4-element vectors.
+                                                                                                                           cuBLAS_WFP16AFP16                                        CUTLASS_WINT4AFP16                                      LUT_GEMM_WINT4AFP16
+
+
+
+
+                                                                                   Speedup vs cuBLAS
+Figure 1: Decoder-only transformer blocks in LLMs. The pri-                                        5                                                                      1.25                                                           1.25
+
+
+
+
+                                                                                                                                        LUT-GEMM Seg. Error
+
+
+
+
+                                                                                                                                                                                                         LUT-GEMM Seg. Error
+
+
+
+
+                                                                                                                                                                                                                                                                       LUT-GEMM Seg. Error
+mary computations are GEMM operations (or mpGEMM op-                                               4     3.51
+                                                                                                                       4.02
+                                                                                                                                     3.77                                 1.00                                                           1.00
+                                                                                                                                                                                 0.79      0.76                                0.80
+erations with weight quantization).                                                                3                          2.52
+                                                                                                                                                                          0.75                         0.69                              0.75   0.62
+                                                                                                                                                                                                                                                          0.51       0.50
+                                                                                                   2            1.94                                                      0.50                                                           0.50
+                           W(INT4/2/1)                                                             1                                                                      0.25                                                           0.25                                                0.24
+                                                                                                                                                              0.64 0.62
+                                   Dequantization                                                                                                                                   0.02      0.02                                0.02             0.01       0.01                              0.01
+                                                                                                   0                                                                      0.00                                                           0.00
+    W(FP16)    A(FP16)      W(FP16)      A(FP16)    W(INT4/2/1)      A(FP16)                              M0 M1 M2 M3                                                             M0 M1 M2 M3                                                    M0 M1 M2 M3
+                                                                                                           a) Matmul BS=1                                                        b) Matmul BS=1024                                              c) Matmul BS=4096
+          GEMM                     GEMM                     mpGEMM
+                                                                                      Figure 4: mpGEMM kernel performance with shapes M0-
+                                                                                      M3 extracted from LLAMA2-70B. 𝑊𝐼 𝑁𝑇 4𝐴𝐹 𝑃 16 denotes INT4
+         O(FP16)                   O(FP16)                  O(FP16)
+           (a)                       (b)                      (c)                     weights and FP16 activations. LUT-based software kernels
+                                                                                      (LUT-GEMM) underperform dequantization-based kernels
+Figure 2: (a) GEMM, (b) Indirect mpGEMM with dequantiza-
+                                                                                      (CUTLASS) on the A100 GPU.
+tion, (c) Direct mpGEMM for low-bit LLM inference.
+
+minimal accuracy loss for 4-bit weights [12, 64, 76]. Recent studies                  products between high-precision activations and low-precision
+and practices show that 2-bit weight quantization outperforms 4-bit                   weights, which are then stored in lookup tables (LUT) for fast
+in model accuracy at the same memory budget using quantization-                       retrieval. Instead of precomputing a massive table for all possible
+aware training (QAT) [14, 42, 49]. BitNet further shows that training                 combinations of high-precision and low-precision values (e.g., FP16
+models with 1.58-bit (ternary) or even 1-bit (binary) weights from                    × INT4, which would require a table of size (216 × 24 )), LUT-based
+scratch can achieve comparable accuracy with 16-bit models [44, 68].                  mpGEMM organizes computations in a tiled manner. For each
+ParetoQ[42] also reports 2-bit quantization offers promising po-                      small tile of the mpGEMM operation, i.e., each small group of
+tential for memory reduction and speedup considering hardware                         activations, a LUT is precomputed specifically for these activation
+constraints.                                                                          values and reused across weight columns. This approach minimizes
+   Conversely, activations are generated on-the-fly with high vari-                   table size and maintains efficiency by dynamically building LUTs
+ance, presented as dynamic outliers [10, 18, 73]. Due to the presence                 for each tile during computation. Figure 3 illustrates a basic example
+of outliers, it is challenging to quantize activations below 8 bits. Dif-             where a small tile consists of 1×4 FP16 activations and 4×N INT1
+ferent combinations of weight and activation bit-widths have been                     weights. With an activation vector length of 4, the lookup table
+explored across various models and scenarios [10, 14, 15, 19, 68],                    size is 16. In this case, each result of the dot product of length 4
+suggesting that no universal solution fits all scenarios.                             can be obtained through a simple table lookup. The table can be
+                                                                                      reused N times, which is significant given the size of the weight
+2.2    LUT-based mpGEMM for Low-Bit LLM                                               matrix. Larger activation vectors or higher-bit weights require
+The varying bit-widths of weights and activations lead to a unique                    proportionally larger lookup tables.
+requirement of mixed-precision GEMM (mpGEMM), such as INT4/2/
+1 multiplied by FP16, illustrated in Figure 2. Current commercial                      2.3                      Gaps in Current LUT-based Solutions
+LLM inference hardware, such as GPUs and TPUs, lack native                            LUT-based mpGEMM is promising due to its advantages in elimi-
+support for mpGEMM, focusing instead on conventional GEMM                             nating dequantization and multiplication and reducing additions
+with uniform input formats. Dequantization-based mpGEMM                               through simple table lookups. However, existing software and hard-
+bridges this gap by upscaling low-precision weights to match high-                    ware implementations face challenges and gaps:
+precision activations [50, 69]. However, this approach introduces                        Software LUT kernel. LUT-based mpGEMM software kernels
+additional dequantization operations and forgoes the efficiency                       often face challenges related to limited instruction support and
+gains of low-precision computation.                                                   inefficient memory access. The limitations are two-fold: First, GPU
+   LUT-based mpGEMM is an increasingly attractive approach                            instruction support for table lookups is limited. The most effec-
+for low-bit LLM inference [26, 38, 45, 53, 71]. It precomputes dot                    tive available instruction, prmt (permute), has a limited width that
+                                                                               3
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                             Mo et al.
+
+
+                                                                                                                                         DFG Trans.
+                      1 Table Precomputation                        2 Table Lookup
+                                                                         &MUX      3 Partial
+                                                                                      Addtion
+                                                                                             Sum
+                                                                                                                            Activation                           LUT Table
+                                                                                                                                    Pre-                          -A-B-C-D
+
+
+                      CD
+                                                                                                                       Norm
+
+
+
+
+                                                                                                                                                                                      MUX
+                                                                          W0 W1 W2 W3
+
+                                           Index   Act Bit widths                                                                 Compute
+
+                   AB
+                                           0000         0                               PSUM FSM SHIFTER
+                                                                                                                          Op. Fusion
+W0  A                                      0001         D                                     << (0,1,2,3)
+                                                                                                                                                  LUT-
+                                                                                                                                                         LMMA    -A+B+C+D
+
+
+  ● B
+W   1                         16 Entries
+                                                                                                                  Low-bit                       mpGEMM
+
+
+
+
+                                                                            MUX
+    C
+                                                                                           D Q                                                                  Low-bit Weight
+W                                                                                                                 Weight       Offline
+
+
+
+
+                                                                                                                                                                                      MUX
+    2
+
+W   D
+    3
+                                                                                                                             Remapping
+                                           1110  +A+B+C
+                                           1111 +A+B+C+D                                                                Software Optimization                       LUT Tensor Core Unit
+
+
+                                                                                                                               Figure 6: LUT Tensor Core workflow.
+Figure 5: Conventional LUT hardware in three steps. Table
+precomputation and storage introduce heavy overhead.
+                                                                                                                 Tensor Core. Different from conventional hardware-based LUT
+                                                                                                                 solutions where table precompute and storage introduce significant
+prevents completing a whole table lookup in a single instruction,                                                hardware overhead, LUT Tensor Core introduces software-based
+reducing throughput. Second, table location significantly affects                                                optimizations (§3.1) to optimize the table precompute and stor-
+performance. Storing lookup tables in the register file causes ex-                                               age: precomputing the LUT table for the input activation tensor is
+tensive data duplication across threads due to the broadcast nature                                              performed by operator fusion, while the input weight tensor is rein-
+of LUT methods, leading to register spillage when handling large                                                 terpreted to enable table storage optimizations. On the hardware
+tables. Conversely, placing tables in shared memory may result in                                                side, the LUT-based Tensor Core microarchitecture (§3.2)provides
+bank conflicts due to random accesses by threads within a warp,                                                  efficiency for mpGEMM processing and flexibility for different bit-
+severely affecting memory bandwidth. These issues lead to their                                                  width data types. To integrate LUT Tensor Core into existing deep
+reduced effectiveness compared to dequantization-based kernels on                                                learning ecosystem, LUT Tensor Core designs the LMMA instruc-
+existing LLM inference hardware, such as GPUs. Figure 4 compares                                                 tion set to expose the LUT-based Tensor Core for programming
+the performance of the LUT-based mpGEMM kernel in [53] to the                                                    mpGEMMs and implements a compilation stack to schedule the
+dequantization-based mpGEMM kernel in CUTLASS [50] on A100                                                       end-to-end LLM execution (§3.3).
+GPU. The results indicate that the dequantization-based kernel
+consistently outperforms the LUT-based kernel. Notably, when the                                                 3.1    Software-based Table Optimization
+batch size is large, the LUT-based kernel suffers from significant
+performance degradation due to table access overhead, performing                                                 As introduced in §2, LUT-based mpGEMM requires an additional
+several orders of magnitude worse. The “Seg. Error” annotation                                                   table precomputation process and storage to store the precomputed
+indicates a segmentation error observed in LUT-GEMM[53].                                                         results. Naively, the precomputed dot products of a length 𝐾 activa-
+    Hardware LUT Accelerator. At first glance, customized LUT                                                    tion vector on the 𝑊 _𝐵𝐼𝑇 weight require (2𝑊 _𝐵𝐼𝑇 ) 𝐾 entries for the
+hardware promises efficiency gains due to its simplicity, requir-                                                table. For each activation element, multiplying it with the 𝑊 _𝐵𝐼𝑇
+ing only registers for table storage and multiplexers for lookups.                                               weight has 2𝑊 _𝐵𝐼𝑇 possible results, constructing the precompute
+However, our study indicates that conventional LUT hardware                                                      table for this activation element. Therefore, the precomputed table
+designs fall short of delivering these gains. Figure 5 depicts a con-                                            has (2𝑊 _𝐵𝐼𝑇 ) 𝐾 entries for a length 𝐾 activation vector. Figure 3
+ventional three-step LUT-based hardware solution for mpGEMM:                                                     shows the lookup table with 24 entries for 𝐾 = 4,𝑊 _𝐵𝐼𝑇 = 1.
+table precomputation, table lookup, and partial sum addition. Nu-                                                   A commonly-used optimization is bit-serial [27], which repre-
+merous challenges and unexplored design aspects significantly                                                    sents a 𝑊 _𝐵𝐼𝑇 integer as 𝑊 1-bit integers and performs multipli-
+impact the overall performance: (1) Table precompute and storage.                                                cation over 1-bit integers with bit shift. This paradigm can reuse
+Precomputed tables can occupy excessive storage, incurring area                                                  the precompute table on 1-bit, and therefore reduces the table size
+and latency overhead and thus diminishing efficiency gains. (2) Bit-                                             to 2𝐾 . Nonetheless, even this reduced table size entails significant
+width flexibility. Supporting various bit-width combinations (e.g.,                                              hardware overhead. LUT Tensor Core proposes dataflow graph
+INT4/2/1 × FP16/FP8/INT8) may consume excessive chip area. (3)                                                   (DFG) transformation and operator fusion to eliminate the table
+LUT tiling shape. Suboptimal tiling increases storage costs and lim-                                             precomputation overhead, as well as weight reinterpretation and
+its table reuse opportunities, impacting performance. (4) Instruction                                            table quantization to reduce the table size.
+and compilation. A new instruction set is required for LUT-based                                                 3.1.1 Precomputing lookup table with DFG transformation
+mpGEMM. However, the conventional compilation stack, optimized                                                   and operator fusion. The LUT-based mpGEMM requires precom-
+for standard GEMM hardware, may not efficiently map and sched-                                                   puting the dot products between high-precision activations and
+ule the new instruction set, complicating integration with existing                                              a set of low-precision weights as a table for the later lookup op-
+software stacks.                                                                                                 erations. Conventional implementations position the precompute
+                                                                                                                 unit adjacent to the LUT unit, performing table precomputation
+3       LUT Tensor Core Design                                                                                   on-the-fly for each LUT unit. This approach introduces signifi-
+We introduce LUT Tensor Core, a software-hardware co-design                                                      cant hardware costs due to redundancy, as multiple precompute
+aimed at addressing the aforementioned efficiency, flexibility, and                                              units often perform identical operations. Considering an example
+integration challenges (§2.3). Figure 6 provides an overview of LUT                                              of [4096,12288]×[12288,12288] GEMM in OPT-175B, a naive direct
+                                                                                                             4
+LUT Tensor Core: A Software-Hardware Co-Design for LUT-Based Low-Bit LLM Inference                                                   ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+                                                             Original Uint W3W2W1W0
+ r=S(q-z)                       0000   0001 ... 1110   1111 q∈{0,1,…,14,15}                     and 𝑧 = 1/2 .The calculation proceeds as follows:
+  =S'(q'-z')
+                                                             S = 1, z = 0                                           ∑︁
+                      q value    0      1       14      15                                                    𝐷𝑃 =     𝐴𝑐𝑡𝑖 𝑠 𝑤 (𝑞 𝑤𝑖 − 𝑧 𝑤 )
+        0000           0001      ...   1110            1111 Reinterpreted W3'W2'W1'W0'
+                                                             q'∈{-15,-3,…,13,15}                                  = 𝐴 · 2 · (0 − 0.5) + 𝐵 · 2 · (1 − 0.5)
+q' value -15            -13             13              15 S' = 0.5, z' = -15
+                                                                                                                  + 𝐶 · 2 · (1 − 0.5) + 𝐷 · 2 · (1 − 0.5)
+                                                                                                                  = −𝐴 + 𝐵 − 𝐶 − 𝐷
+Figure 7: Reinterpreting 0,1 to -1,1 to enable symmetry,
+thereby cutting the table size by half.                                                          After reinterpretation, the binary values {‘0’,‘1’} are remapped to
+                                                                                                                                               ′ = 1 and bias 𝑧 ′ = 0.
+                                                                                                represent {-1,1}, with adjusted scale factor 𝑠 𝑤                𝑤
+                                                                                                The updated computation is:
+precompute unit shares a table across a LUT-based Tensor Core                                                        ∑︁
+                                                                                                                                ′   ′     ′ 
+                                                                                                               𝐷𝑃 =      𝐴𝑐𝑡𝑖 𝑠 𝑤 𝑞 𝑤𝑖 − 𝑧𝑤
+within an array size of N=4. In this setup, each table is computed re-
+peatedly (12288/4 = 3072 times) by different LUT units throughout                                                  = 𝐴 · 1 · (−1 − 0) + 𝐵 · 1 · (1 − 0)
+the process, imposing a significant computational burden.                                                         + 𝐶 · 1 · (−1 − 0) + 𝐷 · 1 · (−1 − 0)
+   To address this inefficiency, we first transform the DFG to split                                               = −𝐴 + 𝐵 − 𝐶 − 𝐷
+the precomputation into an independent kernel, enabling one-time
+precomputation that can be broadcasted to all LUT units. This modi-                              It is clear that the two expressions remain mathematically equiva-
+fication reduces the precomputation overhead by hundreds of times,                              lent. As the table entries are symmetric about zero, the lookup table
+making it manageable by existing vector units like CUDA Cores.                                  exhibits properties similar to odd functions. Assuming the index
+To amortize the additional memory traffic introduced by broad-                                  is a 4-bit value 𝑊3𝑊2𝑊1𝑊0 , a naive implementation of the lookup
+casting, LUT Tensor Core fuses the precompute operator with                                     table (LUT) requires 24 = 16 entries. However, it can be observed
+the preceding operator, leveraging its element-wise computation                                 that the following property, akin to that of odd functions, holds:
+pattern, as shown in Figure 6 and detailed in §3.3.2. This fusion                                          LUT[𝑊3𝑊2𝑊1𝑊0 ] = −LUT[∼ (𝑊3𝑊2𝑊1𝑊0 )]                          (4)
+reduces memory access and brings precomputation overhead down
+                                                                                                  Therefore, the number of entries in the LUT can be reduced to
+to almost zero. as evaluated in §4.6.1.
+                                                                                                half of the original, which is 24−1 = 8, and the equation becomes:
+                                                                                                                           (
+3.1.2 Reinterpreting weight for table symmetrization. The                                                                    −LUT[∼ (𝑊2𝑊1𝑊0 )], if 𝑊3 = 1
+2𝐾 table size of precomputing a length 𝐾 activation vector intro-                                    LUT[𝑊3𝑊2𝑊1𝑊0 ] =                                           (5)
+                                                                                                                             LUT[𝑊2𝑊1𝑊0 ],           if 𝑊3 = 0
+duces a significant cost in both table storage and table accesses. To
+address this issue, we observed and leveraged the symmetrization                                Here, ∼ denotes the bit-wise NOT operation. Therefore, given a
+property of the integer representation.                                                         length 𝐾 activation vector, table symmetrization can reduce the
+    Assume that the originally quantized weights are represented                                table length to 2𝐾 −1 . The table size not only affects the computa-
+as:                                                                                             tional operations required during the precompute stage, but also
+                                                                                                the multiplexers’ size. Furthermore, each entry in the table also
+                                 𝑟 𝑤 = 𝑠 𝑤 (𝑞 𝑤 − 𝑧 𝑤 )                               (1)
+                                                                                                needs to be broadcast to 𝑁 PEs, typically 64 or 128, for dot prod-
+where 𝑟 𝑤 is the real-valued weight, 𝑠 𝑤 is the scale factor, 𝑧 𝑤 is the                        uct computations. Such an optimization significantly reduces the
+bias, and 𝑞 𝑤 is the 𝐾-bit integer representation.                                              broadcasting overhead and the MUX selection overhead. Note that
+   Our goal is to map 𝑞 𝑤 such that it is symmetric around zero while                           𝑊3𝑊2𝑊1𝑊0 in Equation 5 are static weights. The bit-level negation
+maintaining mathematical equivalence. To achieve this, both 𝑠 𝑤                                 can be done offline to simplify the design as follows:
+and 𝑧 𝑤 must be adjusted. When mapping a uint 𝑞 𝑤 to be symmetric                                                             (
+                                                                                                              ′ ′ ′ ′           −LUT[𝑊2′𝑊1′𝑊0′ ], if 𝑊3′ = 1
+about zero, the following adjustments are required:                                                    LUT[𝑊3 𝑊2 𝑊1 𝑊0 ] =                                       (6)
+                                                                                                                                LUT[𝑊2′𝑊1′𝑊0′ ],     if 𝑊3′ = 0
+     ′
+    𝑞𝑤 = 2𝑞 𝑤 − (2𝐾 − 1),               ′
+                                       𝑠𝑤 = 𝑠 𝑤 /2,       ′
+                                                         𝑧𝑤 = 2𝑧 𝑤 + 1 − 2𝐾           (2)       This simplification can eliminate the negation operation in circuit
+                                                                                                design, which will be introduced in §3.2.
+   This process is illustrated in Figure 7, showing an example of
+transforming 4-bit unsigned integers. By calculating 𝑠 𝑤         ′ and 𝑧 ′ , 𝑞 ′                3.1.3 Table quantization. For high-precision activations such as
+                                                                         𝑤 𝑤
+is mapped from {0, 1, . . . , 14, 15} to {−15, −13, . . . , 13, 15}, achieving                  FP32 or FP16, we employ table quantization techniques to convert
+symmetry around zero.                                                                           the precomputed table elements to a lower, unified precision like
+   Next, the dot product can be represented as:                                                 INT8. This approach offers flexibility through support for multiple
+                                                                                                activation precisions and improves efficiency by reducing table size.
+                                                      ′    ′     ′
+               𝐷𝑃 = Σ𝐴𝑐𝑡𝑖 𝑠 𝑤 (𝑞 𝑤𝑖 − 𝑧 𝑤 ) = Σ𝐴𝑐𝑡𝑖 𝑠 𝑤 (𝑞 𝑤𝑖 − 𝑧𝑤 )                  (3)          Compared to traditional activation quantization, table quanti-
+                                                                                                zation allows for more dynamic, fine-grained quantization during
+where 𝐷𝑃 is the dot product and 𝐴𝑐𝑡𝑖 is the activation value. There-                            the table precomputation stage. For example, with a group size of 4
+fore, the quantization process remains the same as before, with the                             activation elements, we perform quantization for each table that
+additional step of an offline mapping for the weight’s 𝑠 𝑤 (𝑞 𝑤𝑖 − 𝑧 𝑤 )                        contains 8 precomputed dot products. Our empirical experiments,
+     ′ (𝑞 ′ − 𝑧 ′ ). Let us consider a dot product between the binary
+to 𝑠 𝑤                                                                                          discussed in § 4.6.2, demonstrate that INT8 table quantization main-
+          𝑤𝑖    𝑤
+representation 𝑊3𝑊2𝑊1𝑊0 = 0100 and variables 𝐴, 𝐵, 𝐶, 𝐷. Initially,                             tains high accuracy while simplifying hardware design, thereby
+the binary values {‘0’,‘1’} are interpreted as {0,1}. Assume 𝑠 𝑤 = 2                            validating the effectiveness of our approach.
+                                                                                            5
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                                                                 Mo et al.
+
+
+                                                            W0 W1 W2        W3
+                                                                                                                              Conventional method                                                     LUT Tensor Core's method
+                                                            Eliminated
+                          Index    Act Bit widths            Negation                                                                                                              Mul                             Fused (Mul+
+                                                               Circuit                          FSM SHIFTER                                   Mul
+                          0000 -A-B-C-D                                                                                        Low-bit                         Low-bit                                Low-bit      Precompute)
+                                                                                                 << (0,1,2,3)                                                                   Precompute
+                          0001 -A-B-C+D                                                                                         LLM                             LLM                                    LLM
+         Halved Entries
+
+
+
+
+                                                                                                                                             GEMM
+                          0010 -A-B+C-D                                                                                         DFG                             DFG             LUT-mpGEMM             DFG         LUT-mpGEMM
+
+
+
+
+                                                            MUX
+                                                                       EN                      D Q
+                          0011 -A-B+C+D                                 NEG.
+                                                                                                                                            + DFG Trans., Weight Reint.               + Operator Fusion
+                          0100 -A+B-C-D                                LOGIC
+                          0101 -A+B-C+D                                                                                        LUT-mpGEMM with LMMA instruction
+                          0110 -A+B+C-D                                                                                        on LUT-based Tensor Core
+                          0111 -A+B+C+D
+                                                                                                                                               ...
+                          Figure 8: Optimized LUT unit with bit-serial.
+                                                                            N
+                                                                                                                                               ...
+
+
+
+
+                                                                                                                                                                                                                   ...
+         111 000 011 000
+                                                     1         1                 1        0
+         011 111 111 000                                                                           Grouped
+                                                     0         1                 1        0
+         111 000 000 111                K                                                       Binary Weights
+                                                     1         1                 0        0
+         000 111 000 111
+                                                     0         0                 1        1
+                  ……                                                                                                                     Blocked GEMM       Thread Block Tile             Warp Tile       LMMA Instruction
+       Reinterpreted                                                                                                                     Global Memory      Shared Memory                Register File LUT-based Tensor Core
+         Weights                                010                                     001
+                             -A-B-C-D
+                             -A-B-C+D                      1                                         0   Table Shared       Figure 10: Compilation for LUT-mpGEMM. Overall dataflow
+                             -A-B+C-D
+                                                                                         MUX
+                                                    MUX
+
+
+
+
+                            -A-B+C+D
+2k-1 Entries                 -A+B-C-D
+                                                          NEG.                                   NEG.
+                                                                                                          Parallelism       is cutlass-like [50]. Elongated tile for better data reuse.
+                            -A+B-C+D
+                            -A+B+C-D
+
+                                                                       MUX
+                            -A+B+C+D
+
+      M                                                                                                                     and the size for grouped binary weights is given by:
+                             -W-X-Y-Z
+                                                                       PEs
+                             -W-X-Y+Z
+                             -W-X+Y-Z                                                                    Table Shared                 Grouped Binary Weights Size = 𝐾 × 𝑁 × W_BIT                                                (8)
+                                                                                         MUX
+                                                    MUX
+
+
+
+
+                            -W-X+Y+Z                      NEG.                                    NEG.
+                             -W+X-Y-Z
+                            -W+X-Y+Z
+                                                                                                          Parallelism
+                            -W+X+Y-Z
+                            -W+X+Y+Z
+                                                                                                                            where LUT_BIT is the bit width of the LUT entries, and W_BIT is
+                            Tables          Query Shared                             Query Shared
+                                                                                                                            the bit width of the weights.
+                                             Parallelism                              Parallelism                              An LUT-based Tensor Core benefits from an elongated tiling
+                                                                                                                            shape. When 𝐾 is large, the number of table entries grows expo-
+                                                                                                                            nentially, whereas 𝑁 determines how many MUX units can reuse
+Figure 9: Elongated 𝑀𝑁 𝐾 tiling of LUT-based Tensor Core.                                                                   each table entry. An optimal configuration requires a balanced
+LUT-based Tensor Core requires a larger 𝑁 (e.g., 64/128) to                                                                 𝐾, a larger 𝑁 , and a smaller 𝑀, unlike conventional GPU Tensor
+maximize table reuse, along with a suitably sized 𝐾 (e.g., 4)                                                               Cores. Additionally, the tiling shape affects I/O traffic, where a more
+for a cost-efficient table size.                                                                                            square-like tiling configuration reduces data movement overhead.
+3.2                LUT-based Tensor Core Microarchitecture                                                                  In §4.2.2, we explore the design space for 𝑀𝑁 𝐾 tiling, confirming
+                                                                                                                            that elongated tiling shapes yield higher efficiency.
+3.2.1 Simplified LUT unit design with bit-serial. By leverag-
+ing software-based precompute fusion and weight reinterpretation,
+the hardware cost for customizing each individual LUT unit is re-
+                                                                                                                            3.3     Instruction and Compilation
+duced. Figure 8 illustrates our LUT unit design. Compared to a                                                              To integrate LUT Tensor Core into existing GPU architectures
+straightforward design, the registers required for storing the LUT                                                          and ecosystems, we introduce a new instruction set and develop a
+and the costs associated with table broadcasting and multiplexers                                                           compilation stack based on tile-based DNN compilers [5, 62, 84].
+are reduced by half. As shown in Equation 6, the bit-level negation
+                                                                                                                            3.3.1 LUT-based MMA instructions. To enable programming
+circuit can be eliminated from each LUT unit to further improve
+                                                                                                                            with LUT-based Tensor Core, we define a set of LMMA instructions
+efficiency. To support flexible bit-widths for weights, we employ a
+                                                                                                                            as an extension of the MMA instruction set in GPU.
+bit-serial circuit architecture [27, 74]. This design maps the weight
+bit-width to W_BIT cycles, enabling the processing of various bit-                                                                lmma.{M}{N}{K}.{𝑨dtype }{𝑾dtype }{𝑨𝒄𝒄𝒖𝒎 dtype }{𝑶 dtype }
+widths in a serialized manner.                                                                                              The above formula shows the format of LMMA instructions, which
+                                                                                                                            resemble MMA. Specifically, the 𝑀, 𝑁 , and 𝐾 indicate the shape
+3.2.2 Elongated LUT tiling. The selection of dimensions 𝑀, 𝑁 ,
+                                                                                                                            of the LUT-based Tensor Core. 𝐴𝑑𝑡 𝑦𝑝𝑒 , 𝑊𝑑𝑡 𝑦𝑝𝑒 , 𝐴𝑐𝑐𝑢𝑚𝑑𝑡 𝑦𝑝𝑒 , and
+and 𝐾 is crucial for the performance of the LUT-based Tensor Core,
+                                                                                                                            𝑂𝑑𝑡 𝑦𝑝𝑒 indicate the data types of the inputs, accumulation and the
+as traditional choices for MAC-based Tensor Cores may result in
+                                                                                                                            output, respectively. Similar to MMA instructions, each LMMA in-
+suboptimal performance. As illustrated in Figure 9, a 𝑀𝑁 𝐾 Tile’s
+                                                                                                                            struction is scheduled to a warp of threads for execution. Each warp
+LUT Array comprises 𝑀 tables, 𝑁 sets of weights, and 𝑀 ∗ 𝑁 MUX-
+                                                                                                                            calculates the formula 𝑂𝑑𝑡 𝑦𝑝𝑒 [𝑀, 𝑁 ] = 𝐴𝑑𝑡 𝑦𝑝𝑒 [𝑀, 𝐾] ×𝑊𝑑𝑡 𝑦𝑝𝑒 [𝑁 , 𝐾]
+based units. Each table contains 𝑀 × 2𝐾 −1 entries, with each entry
+                                                                                                                            + 𝐴𝑐𝑐𝑢𝑚𝑑𝑡 𝑦𝑝𝑒 [𝑀, 𝑁 ].
+broadcast to 𝑁 MUX units. Each set of Grouped Binary Weights
+includes 𝐾 bits, which must be broadcast to 𝑀 MUX units to act                                                              3.3.2 Compilation support and optimizations. We implemented
+as select signals for the MUX. The total table size is given by the                                                         the LUT-mpGEMM kernel generation and end-to-end LLM compila-
+equation:                                                                                                                   tion with LUT-based Tensor Core on top of TVM [5], Roller [84] and
+             Total Table Size = 𝑀 × 2𝐾 −1 × LUT_BIT              (7)                                                        Welder [62]. Specifically, the compilation stack encompasses the
+                                                                                                                        6
+  LUT Tensor Core: A Software-Hardware Co-Design for LUT-Based Low-Bit LLM Inference                                                                 ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                  100                              WINT1AFP16        WINT1AFP8                                  DP4 Unit Compute Density and Power @ TSMC 28nm (No Psum)
+                                                                                                                                                                                    2.0
+Compute Density
+
+
+
+
+                                                                                                                                                                                     Power Consumption
+  (TFLOPs/mm²)
+
+
+
+
+                                                                                       Compute Density
+                                                   WINT1AINT16       WINT1AINT8
+                   75
+
+
+
+
+                                                                                         (TFLOPs/mm²)
+                                                                                                         100                                                                        1.5
+
+
+
+
+                                                                                                                                                                                            (mW)
+                   50                                                                                                                                                               1.0
+                                                                                                          50
+                   25                                                                                                                                                               0.5
+
+                        2   3     4        5         6           7        8                                 0
+                                                                                                                  WFP16AFP16 WINT1AFP16 WINT1AFP16 WFP8AFP8 WINT1AFP8 WINT1AFP8
+                                                                                                                                                                                    0.0
+                                           K                                                                         MAC        ADD        LUT       MAC      ADD        LUT
+
+  Figure 11: Design space exploration along the K-axis for the                           Figure 12: PPA comparison across MAC/ADD/LUT-based DP4
+  LUT-based dot product unit. K = 4 is the optimal in general.                           implementations. Our LUT-based DP4 unit has compute den-
+                                                                                         sity and power advantages.
+
+  following key aspects. Figure 10 shows an example of compilation                                                        MAC WFP16AFP16
+  on the LLAMA model:                                                                                                     ADD WINTXAFP16
+                                                                                                            104           LUT WINTXAFP16 Conventional
+                                                                                                                          LUT WINTXAFP16 LUT Tensor Core
+
+
+
+
+                                                                                                  Area ( m^2)
+  • DFG Transformation. Given the model represented in DFG, we
+    transform the mixed-precision GEMM operator to a precompute
+    operator and a LUT-mpGEMM operator. This transformation is
+    implemented as a graph optimization pass in Welder [62].
+  • Operator Fusion. Operator fusion is a widely-used compiler                                              103
+    technique to optimize the end-to-end model execution by reduc-
+                                                                                                  4 × 102
+    ing memory traffic and runtime overhead. We reuse Welder for op-                                               INT1             INT2             INT4          INT8           INT16
+    erator fusion by registering the precompute and LUT-mpGEMM                                                                                  Weight Type
+    operators with the required tile-based representation. As shown
+                                                                                         Figure 13: Area comparison of MAC, ADD, and LUT-based
+    in Figure 10, the element-wise precompute operator is fused with
+                                                                                         DP4 units across weight bit-widths in 𝑊INTX ×𝐴FP16 . Conven-
+    the previous element-wise operator.
+                                                                                         tional LUT implementation does not have area advantages.
+  • LUT-mpGEMM Scheduling. Scheduling LUT-mpGEMM op-
+    erator requires careful consideration of tiling in the memory
+    hierarchy for optimal performance. Conventional GEMM tiling                         Tensor Core and Addition (ADD)-based Tensor Core. MAC repre-
+    strategies [5, 82, 84] assume the same data type for both activa-                   sents the typical design in current GPUs which needs dequantiza-
+    tions and weights. However, mpGEMM uses different data types                        tion to support mpGEMM. ADD adopts the bit-serial computing
+    for activation and weight, affecting memory transactions. To ad-                    proposed in [27] to support mpGEMM, where every bit of weights
+    dress this, we represent tiling by memory size rather than shape,                   needs one addition. We implement LUT-based Tensor Core and
+    and register LMMA instruction shapes and tiling calculations in                     baselines in Verilog and use Synopsys’s Design Compiler [63] and
+    Roller’s rTile [84] interfaces to schedule optimal configurations.                  the TSMC 28nm process library for synthesizing circuits and gener-
+  • Code Generation. With the finalized scheduling plans, code                          ating PPA data. We apply DC’s medium effort level targeting 1GHz
+    generation is performed using TVM. Specifically, the LMMA                           to ensure a fair comparison across all designs.
+    instructions are registered as intrinsics in TVM, and TVM can                       4.1.2 Kernel-level evaluation. For mpGEMM kernel-level eval-
+    follow the scheduling to generate the kernel code with LMMA                         uation, we use the NVIDIA A100 GPU as the baseline and employ
+    instructions.                                                                       Accel-Sim [30], an open-source state-of-the-art simulator. Modi-
+                                                                                        fications to the configuration and trace files in Accel-Sim enable
+  4           Evaluation                                                                us to simulate both the original A100 and the LUT Tensor Core-
+  In this section, we evaluate LUT Tensor Core to validate its effi-                    equipped A100.
+  ciency in accelerating low-bit LLM inference. First, we assess the                    4.1.3 Model end-to-end evaluation and analysis. To extend
+  hardware efficiency gains of our design via detailed PPA benchmark-                   our evaluation to real LLMs, we utilize four widely-used open-
+  ing (§4.2). Then, kernel-level experiments are conducted to illustrate                source LLMs: LLAMA-2 [65], OPT [80], BLOOM [36], and Bit-
+  the acceleration of mpGEMM (§4.3). Next, we perform end-to-end                        Net [68]. Since Accel-Sim becomes infeasible for end-to-end LLM
+  inference evaluation on commonly-used LLMs to demonstrate the                         experiments due to its slow simulation speed for large trace files,
+  practical performance improvements (§4.4). Finally, we compare                        we develop a tile-based simulator to support end-to-end inference
+  LUT Tensor Core with previous LUT-based works (§4.5) and eval-                        evaluations, as detailed in §4.4.
+  uate the effectiveness of our software optimizations, focusing on
+  table precompute fusion and table quantization (§4.6).                                 4.2                    Hardware PPA Benchmarks
+                                                                                        4.2.1 Dot product unit microbenchmark. In this experiment,
+  4.1              Experimental Setup and Methodology                                   we fixed 𝑀 and 𝑁 to 1 and varied 𝐾 (i.e., a dot product unit of 𝐾-
+ 4.1.1 Hardware PPA benchmarks. We compare our LUT-based                                element vectors) to explore its impact on compute density. A large
+ Tensor Core with two baselines: Multiply-Accumulate (MAC)-based                        𝐾 could lead to exponential growth in lookup table entries, whereas
+                                                                                  7
+ ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                                                Mo et al.
+
+
+
+                                              LUT-based Tensor Core                                ADD-based Tensor Core                            MAC-based Tensor Core
+                                WINT1AFP16 Tensor Core                                               WINT2AFP16 Tensor Core                                               WINT4AFP16 Tensor Core
+Area/1000 m^2)
+
+
+
+
+                                                                    Area/1000 m^2)
+
+
+
+
+                                                                                                                                             Area/1000 m^2)
+                                                                                     400
+                 200                                                                                                                                          500
+                                                                                     200
+
+                     00        100         200        300                                00    100        200       300         400                            00   200        400       600         800
+                                     Power/mW                                                             Power/mW                                                             Power/mW
+                                WINT1AFP8 Tensor Core                                                WINT2AFP8 Tensor Core                                                WINT4AFP8 Tensor Core
+Area/1000 m^2)
+
+
+
+
+                                                                    Area/1000 m^2)
+
+
+
+
+                                                                                                                                             Area/1000 m^2)
+                 100
+                                                                                     100                                                                      200
+                     50
+                     00   20        40    60     80 100       120                        00         50          100         150                                00        100          200         300
+                                      Power/mW                                                            Power/mW                                                              Power/mW
+                                WINT1AINT16 Tensor Core                                             WINT2AINT16 Tensor Core                                               WINT4AINT16 Tensor Core
+                 200                                                                 200
+Area/1000 m^2)
+
+
+
+
+                                                                    Area/1000 m^2)
+
+
+
+
+                                                                                                                                             Area/1000 m^2)
+                                                                                                                                                              200
+                 100                                                                 100
+
+                     00        50        100        150        200                       00    50        100       150      200        250                     00   100       200       300      400        500
+                                      Power/mW                                                             Power/mW                                                             Power/mW
+                                WINT1AINT8 Tensor Core                                               WINT2AINT8 Tensor Core                                               WINT4AINT8 Tensor Core
+    Area/1000 m^2)
+
+
+
+
+                                                                        Area/1000 m^2)
+
+
+
+
+                                                                                                                                             Area/1000 m^2)
+                     40                                                                  50                                                                   100
+                     20
+                     00   10        20     30    40      50   60                         00   20      40     60    80         100     120                      00   50         100     150         200      250
+                                         Power/mW                                                          Power/mW                                                             Power/mW
+
+                                     Figure 14: PPA across LUT-/ADD-/MAC-based Tensor Core implementations for mpGEMM.
+
+a smaller 𝐾 results in 1/𝐾 of the computations still being performed                                             4.2.2 Tensor Core benchmark. We scale our evaluation to the
+by adders. As shown in Figure 11, we found INT operations peak                                                   Tensor Core level, incorporating a design space exploration to iden-
+in density at 𝐾 = 4, while floating-point operations perform best                                                tify optimal 𝑀𝑁 𝐾 configurations. To match the configuration of
+at 𝐾 = 5 but also well at 𝐾 = 4. Therefore, we adopt 𝐾 = 4 for all                                               the A100 INT8 Tensor Core with 𝑀, 𝑁 , 𝐾 = 8, 4, 16, we set our array
+subsequent LUT-based designs.                                                                                    size to 𝑀 × 𝑁 × 𝐾 = 512. Our experiments involve various activa-
+    We conduct benchmarks on dot product implementations using                                                   tion data types, including 𝐴FP16 , 𝐴INT16 , 𝐴FP8 , and 𝐴INT8 , as well as
+MAC, ADD, and LUT-based approaches across various data formats.                                                  multiple weight bit-widths, such as 𝑊INT1 , 𝑊INT2 , and 𝑊INT4 . We
+This includes uniform precision with MAC, such as𝑊FP16𝐴FP16 , and                                                compare the performance of our LUT-based approach with MAC-
+mixed precision, such as 𝑊INT1𝐴FP8 , using both ADD and LUT ap-                                                  and ADD-based approaches.
+proaches. As depicted in Figure 12, the LUT-based approach reaches                                                  As shown in Figure 14, we sweep different 𝑀, 𝑁 , 𝐾 configura-
+61.55 TFLOPs/mm2 with 𝑊INT1𝐴FP16 , surpassing the conventional                                                   tions to explore the design space and ensure a fair comparison
+MAC implementation, which only registers 3.39 TFLOPs/mm2 with                                                    across all methods. The y-axis is labeled “area”, and the x-axis is
+𝑊FP16𝐴FP16 . Power efficiency shows a similar trend, with LUT-                                                   labeled “power”. The dashed lines represent the contours where
+based methods achieving higher efficiency than other approaches.                                                 the minimum Area×Power point for each design methodology lies
+    Furthermore, we conduct weight-bit scaling experiments for                                                   among all data points. Our results demonstrate that across 12 sets
+𝑊INTX × 𝐴FP16 DP4 units across MAC/ADD/LUT-based implemen-                                                       of experiments with different activation data formats and weight
+tations. The experiments are configured with the Tensor Core’s N                                                 bit-widths, the LUT-based method achieves the smallest area and
+dimension set to 4 to match the A100’s configuration. As shown in                                                lowest power consumption, except in the𝑊INT8𝐴INT4 case. Notably,
+Figure 13, the conventional LUT-based implementation does not                                                    with 1-bit weights, the LUT-based approach exhibits a 4×-6× reduc-
+have area advantages compared to the MAC baseline when the                                                       tion in power and area compared to the MAC-based Tensor Core
+weight is more than 2 bits. The main area efficiency bottleneck                                                  design. We identify the optimal MNK configuration for the LUT-
+is the table precompute and storage overhead. ADD-based imple-                                                   based Tensor Core as 𝑀2𝑁 64𝐾4. This result is due to the fact that
+mentations also only surpass the MAC baseline in the 1-bit and                                                   activations are in high bits and weights are in low bits. Considering
+2-bit cases. Through the software-hardware co-design, LUT Tensor                                                 the overall bit-width, the M dimension calculates to 2 × 16 = 32 bits,
+Core outperforms all the baselines up to a weight bit-width of 6                                                 while the N dimension computes to 64 × 1 = 64 bits. The overall bit
+and delivers better area efficiency compared to the conventional                                                 configuration still approximates a square array.
+LUT implementation.
+                                                                                                            8
+ LUT Tensor Core: A Software-Hardware Co-Design for LUT-Based Low-Bit LLM Inference                                                                                                                                                                     ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+             Ideal         A100 Real GPU           Sim A100-LUT                                  Sim A100-LUT 8X Reg                                                                  Sim A100-LUT 4X Reg                                            Sim A100-LUT 2X Reg                         Area
+                           WINT1AFP16                                                                      WINT2AFP16                                                                                                                                          WINT4AFP16
+
+
+
+
+                                                           Area /1000 m² Area /1000 m²
+
+
+
+
+                                                                                                                                                                                                       Area /1000 m² Area /1000 m²
+
+
+
+
+                                                                                                                                                                                                                                                                                                          Area /1000 m² Area /1000 m²
+                                                          200                                                                                                                                      200                          600                                                                      200
+     2000                                                                            1000
+TFLOPs
+
+
+
+
+                                                                            TFLOPs
+
+
+
+
+                                                                                                                                                                                                                        TFLOPs
+                                                                                                                                                                                                                                400
+     1000                                                 100                            500                                                                                                       100                          200                                                                      100
+         0 W A LUT A LUT A LUT A LUT A                                                    0 W A LUT A LUT A LUT A LUT A                                                                                                               0 W A LUT A LUT A LUT A LUT A
+            FP16 FP16   FP16   FP16   FP16   FP16                                            FP16 FP16   FP16   FP16   FP16   FP16                                                                                                       FP16 FP16   FP16   FP16   FP16   FP16
+            cuBLAS    1X     2X     4X     8X                                                cuBLAS    1X     2X     4X     8X                                                                                                           cuBLAS    1X     2X     4X     8X
+                           WINT1AINT8                                                                      WINT2AINT8                                                                                                                                          WINT4AINT8
+                                                                                                                                                                                                                                 600
+     2000                                                                            1000
+TFLOPs
+
+
+
+
+                                                              TFLOPs
+
+
+
+
+                                                                                                                                                                                                          TFLOPs
+                                                          40                                                                                                                                           40                                                                                                40
+                                                                                                                                                                                                                                 400
+     1000                                                                                500                                                                                                                                     200
+                                                          20                                                                                                                                           20                                                                                                20
+         0                                                                                 0                                                                                                                                           0
+               WINT8AINT8 LUT AINT8 LUT AINT8 LUT AINT8                                        WINT8AINT8 LUT AINT8 LUT AINT8 LUT AINT8                                                                                                     WINT8AINT8 LUT AINT8 LUT AINT8 LUT AINT8
+                cuBLAS       1X        2X        4X                                             cuBLAS       1X        2X        4X                                                                                                          cuBLAS       1X        2X        4X
+ Figure 15: Accel-Sim runtime and area across 𝐴FP16 and 𝐴INT8 Tensor Core designs. The symbol × denotes the Tensor Core
+ array size relative to the 1× baseline, where 1× corresponds to the 𝑀 × 𝑁 × 𝐾 = 512 array size in the NVIDIA A100.
+
+                                                                                                                                       100
+                                                                                                                                                                                                                  BS1-SEQ2048 Ground Truth                                         BS1-SEQ2048 Ground Truth
+ 4.3         mpGEMM Kernel-level Evaluation
+
+
+
+                                                                                                                     Inference Time (ms)
+                                                                                                                                           80                                                                     BS1-SEQ2048 Simulation                                           BS1-SEQ2048 Simulation
+                                                                                                                                                                                                                  BS1024-SEQ1 Ground Truth                                         BS1024-SEQ1 Ground Truth
+ We employ Accel-Sim, a SOTA GPU simulator, to validate the effi-                                                                          60
+                                                                                                                                                                                                                  BS1024-SEQ1 Simulation                                           BS1024-SEQ1 Simulation
+ ciency of LUT Tensor Core on mpGEMM operations and its com-                                                                               40
+ patibility with existing GPU architectures. The mpGEMM shape is
+                                                                                                                                           20
+ extracted from LLAMA2-13B, with 𝑀 = 2048, 𝑁 = 27648, 𝐾 = 5120.
+                                                                                                                                            0                               OPT BLOOM LLAMA2 OPT BLOOM LLAMA2                                                  OPT BLOOM LLAMA2 OPT BLOOM LLAMA2
+ The dataflow of mpGEMM is designed to be cutlass-like and output-                                                                                                                        WFP16AFP16                                 WINT8AINT8                   WFP16AFP16                WINT8AINT8
+ stationary, with tiling shapes optimized for efficient data reuse. For                                                                                                                                     A100                                                               RTX3090
+ instance, a good candidate for 𝑊INT1𝐴INT8 tiling sets the Thread                                                                          Figure 16: Evaluation of end-to-end simulator accuracy.
+ Block tile to [128, 512, 32] and the Warp tile to [64, 256, 32].
+    As shown in Figure 15, LUT-based Tensor Core outperforms                                                                                WFP16AFP16_R                                           WFP16AFP16_M                            WINT1AINT8_4x_DRM       WINT2AINT8_4x_DRM          WINT4AINT8_4x_DRM
+                                                                                                                                            WINT8AINT8_R                                           WINT8AINT8_M                            WINT1AINT8_8x_DRM       WINT2AINT8_8x_DRM          WINT4AINT8_8x_DRM
+ traditional MAC-based Tensor Core in mpGEMM operations. The
+                                                                                                                                                Normalized Speedup VS. WFP16AFP16_M
+
+
+
+
+ leftmost two bars in each subplot represent A100’s ideal peak per-                                                                                                                   5                                                                5
+ formance and the measured performance using cuBLAS. The re-                                                                                                                          0                                                                0
+                                                                                                                                                                                                BS1SEQ2048                             BS1024SEQ1               BS1SEQ2048             BS1024SEQ1
+ maining bars represent LUT-based results: ideal peak performance,                                                                                                                                            OPT-175B                                                  OPT-175B
+ simulated performance, and simulated performance with an in-                                                                                                                         5                                                                5
+ creased register capacity. The register capacity adjustment ad-
+                                                                                                                                                                                      0                                                                0
+                                                                                                                                                                                                BS1SEQ2048                             BS1024SEQ1               BS1SEQ2048             BS1024SEQ1
+ dresses bottlenecks caused by insufficient registers, which restrict                                                                                                                                      BLOOM-176B                                                 BLOOM-176B
+ large tiling and tie performance to memory constraints. For ex-                                                                                                                      5                                                                5
+ ample, with 𝑊INT1𝐴FP16 , the LUT-based approach delivers slightly
+                                                                                                                                                                                      0                                                                0
+ higher mpGEMM performance while using only 14.3% of the area                                                                                                                                   BS1SEQ2048                             BS1024SEQ1               BS1SEQ2048             BS1024SEQ1
+                                                                                                                                                                                                             LLAMA-70B                                                 LLAMA-70B
+ of a MAC-based Tensor Core.                                                                                                                                                                                  (a) A100                                                (b) RTX 3090
+                                                                                                                            Figure 17: End-to-end simulation results on LLMs (A100 and
+                                                                                                                            3090). R: Real GPU, M: Modeling, DRM: Double Reg Modeling.
+ 4.4         Model End-to-End Evaluation
+ While Accel-Sim offers detailed architectural emulation, it suffers                                                        bandwidth, computational resources, and operator fusion. We plan
+ from a slowdown of approximately five million times, transforming                                                          to open source this simulator in future work.
+ a ten-second task on an A100 GPU into a simulation period of up
+                                                                                                                            4.4.1 Simulator accuracy evaluation. In Figure 16, we vali-
+ to 579 days, and generating trace files over 79TB in size.
+                                                                                                                            date our end-to-end simulator using OPT-175B, BLOOM-176B, and
+    To overcome these obstacles, we have developed an end-to-end
+                                                                                                                            LLAMA2-70B, across various configurations on a single layer on
+ simulator designed for rapid and accurate emulation with tile-level
+                                                                                                                            both A100 and RTX 3090 GPUs. Our simulator achieves a mean ab-
+ granularity. Our key insight is that the behavior of highly opti-
+                                                                                                                            solute percentage error of only 5.21% against real GPU performance,
+ mized, large GPU kernels with minimal stalling can be treated as
+                                                                                                                            while significantly faster than Accel-Sim in simulation speed.
+ accelerators, particularly in LLM scenarios. This perspective is sup-
+ ported by findings from NVIDIA in NVAS [67], which suggests view-                                                          4.4.2 End-to-end inference simulation results. Figure 17 presents
+ ing GPU simulation philosophically as “dynamically interacting                                                             benchmark results for the OPT, BLOOM, and LLAMA models. Our
+ roofline components”, rather than as a “cycle-by-cycle progression”.                                                       experiments demonstrate that LUT Tensor Core achieves an end-
+ Accordingly, we adopt analytical methods from established accel-                                                           to-end speedup of up to 8.2× while occupying less area compared
+ erator modeling frameworks, such as Timeloop [52], Maestro [34],                                                           to traditional 𝑊FP16𝐴FP16 Tensor Cores. Notably, even under an 8×
+ and Tileflow [83], to develop a tile-based GPU simulator. This tool                                                        setting, the area of LUT Tensor Core remains only 38.3% that of
+ facilitates a detailed and accurate evaluation of dataflow, memory                                                         conventional 𝑊FP16𝐴FP16 MAC-based Tensor Cores.
+                                                                                                                 9
+      ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                           Mo et al.
+
+
+                                                                                    Table 1: Overall comparison.
+                                                                                  BS1           BS1024
+                                                                   Model                                         Peak       TC. Area        TC. Compute            TC. Energy
+                     HW. Config.               Model                            SEQ2048          SEQ1
+                                                                  Avg. Acc.                                      Perf.       Per SM           Density              Efficiency
+                                                                                Latency         Latency
+                                            LLAMA 3B
+             A100† FP16 TC.                                        49.7%       106.71ms         41.15ms    312 TFLOPs      0.975mm2      2.96 TFLOPs/mm2       2.98 TFLOPs/W
+                                          (𝑊FP16𝐴FP16 )
+                                         BitNet b1.58 3B
+             A100† INT8 TC                                         49.4%        67.06ms         21.70ms     624 TOPs       0.312mm2      17.73 TOPs/mm2         19.94 TOPs/W
+                                          (𝑊INT2𝐴INT8 )
+                                         BitNet b1.58 3B
+             A100† -LUT-4X∗                                        49.4%        42.49ms         11.41ms     1248 TOPs      0.187mm2      61.84 TOPs/mm2         33.32 TOPs/W
+                                          (𝑊INT2𝐴INT8 )
+                                         BitNet b1.58 3B
+             A100† -LUT-8X∗                                        49.4%        38.02ms         7.47ms      2496 TOPs      0.373mm2      61.95 TOPs/mm2         33.65 TOPs/W
+                                          (𝑊INT2𝐴INT8 )
+                                         BitNet b1.58 3B
+                    H100† FP8 TC                                      -         38.20ms         12.30ms    1525 TFLOPs     0.918mm2     12.59TFLOPs/mm2        12.24TFLOPs/W
+                                            (𝑊FP8𝐴FP8 )
+                                         BitNet b1.58 3B
+             H100† -LUT-4X∗                                           -         28.70ms         9.90ms     1525 TFLOPs     0.488mm2     23.69TFLOPs/mm2        16.35TFLOPs/W
+                                           (𝑊INT2𝐴FP8 )
+                                         BitNet b1.58 3B
+             H100† -LUT-8X∗                                           -         23.48ms         5.97ms     3049 TFLOPs     0.909mm2     25.40TFLOPs/mm2        17.32TFLOPs/W
+                                           (𝑊INT2𝐴FP8 )
+       Due to the lack of public data on A100/H100 Tensor Cores and their 7/4nm processes, † indicates that the data are normalized to 28nm at 1.41GHz
+      and optimized to the best of our ability for fair comparison. -LUT∗ denotes LUT Tensor Core-equipped GPU with Double Register Modeling. ×
+      means that of A100 FP16 Tensor Core array size. TC. refers to Tensor Core. Model accuracy for 𝐴𝐹 𝑃 8 is not reported, as BitNet is trained from
+      scratch in the 𝐴𝐼 𝑁𝑇 8 format. Prior works [33, 47, 81] show that 𝐴𝐹 𝑃 8 generally outperforms 𝐴𝐼 𝑁𝑇 8 in terms of accuracy.
+
+                                cuBLAS_WFP16AFP16          LUT-GEMM           LUT Tensor Core
+Speedup vs cuBLAS
+
+
+
+
+                                                                                                           4.5.2 LUT-based hardware. UNPU [38] is the SOTA LUT-based
+                10.0                                          3                                            hardware accelerator for DNN workloads. Since no public code is
+                 7.5
+                                                              2                                            available, we re-implement the UNPU design based on its paper and
+                 5.0
+                                                              1                                            apply optimizations to ensure a fair comparison. We conduct DSE
+                 2.5
+                                                                                                           for both UNPU and LUT Tensor Core at the Tensor Core level.
+                 0.0                                          0
+                        WINT1AFP16 WINT2AFP16 WINT4AFP16           WINT1AFP16 WINT2AFP16 WINT4AFP16        Using𝑊INT8𝐴INT2 as an example under a Tensor Core configuration
+                          a) GEMV in LLAMA2-70B                     b) GEMM in LLAMA2-70B                  of 𝑀 × 𝑁 × 𝐾 = 512, an ablation study evaluates the impact of each
+                                                                                                           optimization. Table 2 shows that the weight reinterpretation for
+      Figure 18: LUT Tensor Core compared with LUT-based soft-
+                                                                                                           multi-bit weights and symmetrization enhance compute intensity
+      ware work LUT-GEMM [53] for GEMM and GEMV.
+                                                                                                           and power efficiency by 30%. Additional optimizations, including
+                                                                                                           offline weight reinterpretation, negation circuit elimination, DFG
+      4.4.3 Overall comparison. As shown in Table 1, the A100 equipped                                     transformation, and kernel fusion, enable LUT Tensor Core to
+      with LUT + BitNet delivers up to a 5.51× acceleration in inference                                   achieve a 1.44× improvement in these metrics compared to UNPU.
+      speed while utilizing only 38.3% of the original Tensor Core’s area.
+      This results in an increase of up to 20.9× in compute density and an
+                                                                                                           4.5.3 Accelerators for quantized DNN. Previous works, such
+      11.2× improvement in energy efficiency, enabled by the quantized
+                                                                                                           as Ant [19], FIGNA [25] and Mokey [78], primarily design PEs
+      LUT table and highly optimized LUT circuit through software-
+                                                                                                           with MACs for dedicated quantized precision (e.g., int8×int8 or
+      hardware co-design. Compared to the original 𝑊𝐹 𝑃 8𝐴𝐹 𝑃 8 Tensor
+                                                                                                           int4×fp16). While efficient for certain data types, these designs lack
+      Core of H100, LUT Tensor Core can achieve up to a 2.02× im-
+                                                                                                           flexibility in adapting to different precision requirements. They
+      provement in area efficiency.
+                                                                                                           either sacrifice model accuracy when converting to lower precision
+                                                                                                           formats or miss efficiency opportunities when converting to higher
+      4.5               Compared to Prior Works                                                            precision formats. In contrast, we adopt a LUT-based approach
+      4.5.1 LUT-based software. LUT-GEMM [53] and T-MAC [71]                                               that supports 1-4 bit INT weights and FP/INT 16/8 activations via
+      are previous SOTA LUT-based software solutions for GPUs and                                          different LMMA instructions, covering most low-bit LLM use cases.
+      CPUs, respectively. Since T-MAC is designed for CPUs, we use LUT-                                    Table 3 compares LUT Tensor Core to other accelerators.
+      GEMM for a more relevant comparison on GPUs. LUT Tensor Core
+      is configured using only 57.2% of the area of conventional FP16
+      Tensor Cores. Figure 18 presents the comparative speedups of LUT                                     4.6      Software Optimization Analysis
+      Tensor Core and LUT-GEMM relative to 𝑊𝐹 𝑃 16𝐴𝐹 𝑃 16 cuBLAS                                           4.6.1 Table precompute fusion analysis. Table 4 demonstrates
+      on A100. LUT-GEMM improves performance only in GEMV cases,                                           the impact of incorporating precomputation with the DNN compiler
+      but is several dozen times slower in GEMM compared to cuBLAS.                                        Welder[62], which enhances inference performance by optimizing
+      Compared to the software-based LUT-GEMM, LUT Tensor Core                                             operator fusion. This evaluation was conducted on a single layer
+      delivers up to 1.42× faster GEMV and 72.2× faster GEMM.                                              of the OPT-175B, BLOOM-176B, and LLAMA2-70B models in both
+                                                                                                      10
+LUT Tensor Core: A Software-Hardware Co-Design for LUT-Based Low-Bit LLM Inference                                        ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+                          Table 2: LUT Tensor Core compared with UNPU [38]: 𝑊INT2𝐴INT8 Tensor Core case.
+
+ Configuration                          Area (mm2 )       Normalized Compute Intensity                 Power (mW)        Normalized Power Efficiency
+ UNPU (DSE Enabled)                       17,271.71                          1×                            23.39                          1×
+ + Weight Reinterpretation                13,116.60                        1.317×                          17.98                        1.301×
+ + Negation Circuit Elimination           12,780.05                        1.351×                          17.37                        1.347×
+ + DFG Trans. + Kernel Fusion
+ =LUT Tensor Core (Proposed)              11,991.29                        1.440×                          16.22                        1.442×
+
+                             Table 3: LUT Tensor Core compared with accelerators for quantized models.
+
+                            UNPU[38]                  Ant[19]              Mokey[78]                   FIGNA[25]                  LUT Tensor Core
+    Act. Format              INT16                    flint4            FP16/32, INT4               FP16/32, BF16               FP/INT8, FP/INT16
+    Wgt. Format           INT1∼INT16                  flint4               INT3/4                       INT4/8                      INT1∼INT4
+  Compute Engine              LUT               flint-flint MAC         Multi Counter           Pre-aligned INT MAC                    LUT
+      Process                 65nm                    28nm                  65nm                         28nm                         28nm
+   PE Energy Eff.       27TOPs/W @0.9V                 N/A                   N/A                  2.19× FP16-FP16            63.78TOPs/W @0.9V DC
+                         (𝑊INT1𝐴INT16 )                                                             (𝑊INT4𝐴FP16 )                 (𝑊INT1𝐴INT8 )
+  Compiler Stack               %                     %                      %                             %                             !
+   Eval. Models         VGG-16, AlexNet          ResNet, BERT        BERT, Ro/DeBERTa            BERT, BLOOM, OPT          LLAMA, BitNet, BLOOM, OPT
+
+Table 4: Comparison of seperated table precompute and fused                              Table 5: Table quantization analysis on LLAMA models.
+table precompute. With operator fusion, the table precom-
+                                                                                                                   WikiText2 MMLU        Zero-shot Accuracy ↑
+pute overhead is negligible.                                                         # Model Config.                PPL ↓     5s ↑ HS BQ OQ PQ WGe Avg.
+
+                                           Welder            Welder                  LLAMA2-7B 𝑊FP16𝐴FP16 [65]       5.47      45.3 57.1 77.9 31.4 78.0 69.1 62.7
+    Model        Config      Welder                                                  LLAMA-3B 𝑊FP16𝐴FP16 [44]        10.04    N/A 43.3 61.8 24.6 72.1 58.2 49.7
+                                        +precompute    +Fused precompute
+  OPT-175B     BS1SEQ2048    32.38 ms      38.77 ms         33.63 ms                 LLAMA2-7B 𝑊INT2𝐴FP16 [14]        7.68    30.5 49.2 70.2 25.8 73.8 63.1 56.4
+  OPT-175B     BS1024SEQ1    14.99 ms      17.43 ms         15.50 ms                 LLAMA2-7B 𝑊INT2𝐴LUT_INT8 [14]   7.69     30.61 49.2 70.0 26.2 73.7 63.5 56.5
+ BLOOM-176B    BS1SEQ4096   107.11 ms     129.85 ms         108.38 ms
+ BLOOM-176B    BS1024SEQ1    20.99 ms      26.05 ms         21.31 ms
+ LLAMA2-70B    BS1SEQ4096    34.68 ms      37.60 ms         35.65 ms                 model accuracy, showing a negligible degradation in perplexity and
+ LLAMA2-70B    BS1024SEQ1    11.45 ms      15.21 ms         11.75 ms                 a slight increase in task accuracy, which may be attributed to the
+                                                                                     regularizing effect of quantization.
+batch prefilling and decoding configurations. Initially, precomputa-                 5     Discussion and Limitations
+tion on CUDA Cores led to average overhead of 16.47% and 24.41%.
+However, by treating precomputation as an independent operator                       Low-Bit Training and Finetuning. Currently, LUT Tensor Core
+within Welder’s search space, overhead is reduced to 2.62% and                       is only applicable to inference acceleration for low-bit LLMs. Re-
+2.52%, making it negligible in the overall execution time.                           cent trends show an increasing interest in low-bit training and
+                                                                                     fine-tuning for LLMs [11, 72]. While LUT Tensor Core’s approach
+4.6.2 Table quantization analysis. To evaluate the impact of ta-                     for mpGEMM is applicable during the forward pass of low-bit train-
+ble quantization, we conduct comparative experiments on a LLAMA2-                    ing, the complexity and stability of the training process still demand
+7B model[65] with 2-bit quantized weights. The first data row repre-                 more high precision computation in the backward pass. This in-
+sents the original 𝑊𝐹 𝑃 16𝐴𝐹 𝑃 16 LLAMA2-7B model, and the second                    volves tensors and calculations such as gradients and optimizer
+item corresponds to the LLAMA-3B model reported in the BitNet-                       states, which are not fully compatible with low-bit formats yet.
+b1.58 paper [44]. The following 2-bit model is derived from BitDis-                  Further, the efficiency of training is impacted by a broad spectrum
+tiller [14], which is an open-source QAT framework to enhance                        of factors such as memory efficiency and communication efficiency,
+ultra low-bit LLMs. The original configuration comprised INT2                        beyond GEMM performance. Consequently, optimizing the low-bit
+weights and FP16 activations. Building upon the open-source code                     training process requires a more comprehensive strategy, possibly
+of BitDistiller, we further implemented INT8 table quantization                      entailing new training algorithms that can embrace lower precision
+with LUT-based mpGEMM. The evaluation metrics, aligned with                          and hardware innovations to support the intricate requirements
+BitDistiller, including perplexity on the WikiText-2 dataset [46], 5-                of training workflows. We identify these challenges as potential
+shot accuracy on MMLU [20], and zero-shot accuracy across several                    future directions to extend LUT Tensor Core for training.
+tasks [2, 7, 48, 59, 79]. The results of this empirical study are sum-                  Long-Context Attention and KV Cache Quantization. Ad-
+marized in Table 5. ‘N/A’ in the second data row indicates that the                  dressing long contexts is an important frontier for LLM capabili-
+MMLU accuracy is not reported in [44]. Although the 2-bit weight                     ties [13, 56]. In long-context scenarios, the attention mechanism
+quantization underperforms compared to the original 𝑊𝐹 𝑃 16𝐴𝐹 𝑃 16                   often becomes the computational bottleneck. Current research and
+LLAMA2-7B model, it still outperforms the𝑊𝐹 𝑃 16𝐴𝐹 𝑃 16 LLAMA-3B                     practice indicate that during the prefilling stage, quantizing atten-
+model. Notably, the INT8 table quantization does not compromise                      tion computation to FP8 does not significantly compromise model
+                                                                              11
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                               Mo et al.
+
+
+accuracy [60]. However, the effects of ultra-low-bit precision on                                                                            Roofline Model
+                                                                                                                                                                                1248 TFLOPs
+model accuracy remain largely unexplored. During the decoding
+                                                                                                               1015                                 (736.0, 1104.0T)
+phase, several studies have shown that quantizing the KV cache                                                                                              WFP16AFP16 Tensor Core Roofline
+
+
+
+
+                                                                                      Performance (FLOPs)
+                                                                                                                                                            WINT1AFP16 LUT Tensor Core Roofline
+
+
+
+
+                                                                                                                                     oof
+to 4-bit or even 2-bit has a negligible impact on model perfor-
+
+
+
+
+                                                                                                                                   hR
+mance [22, 41]. Given that the Q matrix remains in high precision,                                          6 × 1014                     (374.8, 652.7T)
+
+
+
+
+                                                                                                                                idt
+                                                                                                                                                            WFP16AFP16 CUTLASS
+
+
+
+
+                                                                                                                             ndw
+the computation aligns with mpGEMM. Exploring LUT Tensor                                                                                                    WINT1AFP16 LUT Tensor Core Naive
+
+
+
+
+                                                                                                                             Ba
+                                                                                                            4 × 1014                                        WINT1AFP16 LUT Tensor Core
+Core for long-context scenarios presents a promising direction for                                                                                          + All Opt. + Double Register
+future research.                                                                                                                                                                 312 TFLOPs
+                                                                                                            3 × 1014
+                                                                                                                                  (225.7, 288.9T)
+   More Data Flexibility and Non-Integer Weights. We believe
+that the LUT-based method is inherently suited for flexible precision                                       2 × 1014
+combinations, as it replaces the main dot product operation with                                                       102                           103                                  104
+table lookups. Currently, LUT Tensor Core supports 𝑊INT𝐴FP and                                                                    Operational Intensity (FLOPs/Byte)
+𝑊INT𝐴INT combinations. To extend this to 𝑊FP , our preliminary
+strategy involves treating the mantissa and sign bit similarly to                       Figure 19: Roofline analysis of conventional 𝑊𝐹 𝑃 16𝐴𝐹 𝑃 16 Ten-
+𝑊INT , using them as table indices. The exponent bits, on the other                     sor Core and 𝑊𝐼 𝑁𝑇 1𝐴𝐹 𝑃 16 from LUT Tensor Core.
+hand, are treated as inputs to shifters. The LUT approach also
+accommodates non-integer weight formats. For example, in the
+case of ternary weights, the LUT approach can pack three ternary                       and BF16 in Ampere. In the era of LLMs, Hopper has introduced
+weights into 5 bits, whereas ADD-/MAC-based methods require 6                          FP8 [47] and Blackwell has advanced to FP4 [57]. Beyond GPUs, re-
+bits to represent the same information.                                                cent studies propose customized accelerators that specifically target
+   Emerging Trends in Supporting mpGEMM. Emerging GPUs                                 low-bit quantized DNNs [19, 35, 43, 58, 77, 78]. Although these ad-
+such as B100 [8] natively support mixed-precision GEMM in Tensor                       vances demonstrate significant progress, they predominantly focus
+Cores [9, 50]. Blackwell introduces narrow precision formats such                      on GEMM operations where both inputs (weights and activations)
+as FP4, FP6, FP8, and their variants NVFP4, MXFP4, MXFP6, and                          share the same datatype and bit-width. FIGNA [25] customizes
+MXFP8. It enables a range of mixed precision GEMM, including com-                      an 𝑊𝐼 𝑁𝑇 4𝐴𝐹 𝑃 16 arithmetic unit for enhanced low-bit LLM infer-
+binations of 𝐴𝐹 𝑃 4,𝐹 𝑃 6,𝐹 𝑃 8 × 𝑊𝐹 𝑃 4,𝐹 𝑃 6,𝐹 𝑃 8 and 𝐴𝑀𝑋 𝐹 4,𝑀𝑋 𝐹 6,𝑀𝑋 𝐹 8         ence. LUT Tensor Core improves the efficiency of mpGEMM with
+× 𝑊𝑀𝑋 𝐹 4,𝑀𝑋 𝐹 6,𝑀𝑋 𝐹 8 , while providing the same throughput as                       LUT-based computing paradigm, and offers the flexibility to sup-
+𝑊𝐹 𝑃 8𝐴𝐹 𝑃 8 Tensor Cores. LUT Tensor Core supports these op-                          port diverse precision combinations without the need for complex
+erations through a bit-serial approach and achieves scalable per-                      hardware redesigns.
+formance across different formats. With the emergence of native                           Sparse DNN Accelerators. Alongside low-bit quantization,
+support from major vendors like NVIDIA, mpGEMM is likely to                            sparsity is another popular strategy to reduce model size and accel-
+become a critical and widely-adopted computing pattern.                                erate DNN inference. Sparsity leverages the inherent zero-valued
+   Roofline Analysis of LUT Tensor Core. Figure 19 presents                            elements within DNN weight matrices or activations, omitting
+a roofline chart for both the conventional 𝑊𝐹 𝑃 16𝐴𝐹 𝑃 16 Tensor Core                  them from computation and storage to improve efficiency. With
+and the LUT-based 𝑊𝐼 𝑁𝑇 1𝐴𝐹 𝑃 16 Tensor Core on an A100 memory                         the advent of the NVIDIA A100 GPU, Sparse Tensor Cores were
+system. The x-axis represents operational intensity based on main                      introduced, offering native support for sparsity by facilitating 2:4
+memory traffic. The area occupied by the 𝑊𝐼 𝑁𝑇 1𝐴𝐹 𝑃 16 Tensor Core                    structured sparsity [6]. Beyond commercial GPUs, there has been
+from LUT Tensor Core is only 58.4% of the area of the 𝑊𝐹 𝑃 16𝐴𝐹 𝑃 16                   a growing interest in customized sparse DNN accelerators. These
+Tensor Core, yet it provides 4× the theoretical FLOPs. While the                       designs are tailored to exploit sparsity to varying degrees, often
+original 𝑊𝐹 𝑃 16𝐴𝐹 𝑃 16 is compute-bound, the naïve LUT-based im-                      employing techniques such as pruning, zero-skipping, and sparse
+plementation is memory-bound. Through the software-hardware                            matrix formats to optimize both storage and computation [17, 23,
+co-optimization efforts– reinterpreting weights to halve table size                    24, 61, 70, 74, 85]. Sparsity is also prevalent in low-bit LLMs. When
+and reducing activation memory traffic, employing elongated tiling                     combined with quantization, sparsity has the potential to yield even
+for better data reuse, and swizzling thread blocks to enhance the                      more substantial efficiency gains. However, effectively integrating
+L2 hit rate– LUT Tensor Core has enhanced operational intensity                        both quantization and sparsity poses significant challenges in pre-
+and pushed the optimized point close to the "ridge point".                             serving model accuracy and designing efficient microarchitectures.
+                                                                                       Incorporating sparsity into LUT Tensor Core represents a promis-
+6    Related work                                                                      ing research direction, which we leave for future exploration.
+Low-Bit DNN Accelerators. As LLMs grow in size, there is an in-
+creasing need for low-bit quantization techniques to reduce model                       7                     Conclusion
+size and computational requirements. Hardware accelerators have                        This paper presents LUT Tensor Core, a software-hardware co-
+been developed to efficiently support lower bit-width data types                       design based on a LUT-based computing paradigm to enable effi-
+for quantized model inference. NVIDIA’s GPU architectures reflect                      cient mixed-precision GEMM operations for low-bit LLM accelera-
+this trend, progressively incorporating lower-precision formats.                       tion. LUT Tensor Core enhances performance, provides broad flex-
+Starting with the Fermi architecture’s support for FP32 and FP64,                      ibility for various precision combinations, and seamlessly integrates
+subsequent architectures have progressively included lower bit-                        with existing accelerator architectures and software ecosystems.
+width formats such as FP16 in Pascal, INT4 and INT8 in Turing,
+                                                                                 12
+LUT Tensor Core: A Software-Hardware Co-Design for LUT-Based Low-Bit LLM Inference                                                          ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+References                                                                                     [24] Dongseok Im and Hoi-Jun Yoo. 2024. LUTein: Dense-Sparse Bit-Slice Architecture
+ [1] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Floren-                  With Radix-4 LUT-Based Slice-Tensor Processing Units. In 2024 IEEE International
+     cia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal                       Symposium on High-Performance Computer Architecture (HPCA). IEEE, 747–759.
+     Anadkat, et al. 2023. Gpt-4 technical report. arXiv preprint arXiv:2303.08774             [25] Jaeyong Jang, Yulhwa Kim, Juheun Lee, and Jae-Joon Kim. 2024. FIGNA: Inte-
+     (2023).                                                                                        ger Unit-Based Accelerator Design for FP-INT GEMM Preserving Numerical
+ [2] Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin Choi.                      Accuracy. In 2024 IEEE International Symposium on High-Performance Computer
+     2019. PIQA: Reasoning about Physical Commonsense in Natural Language.                          Architecture (HPCA). IEEE, 760–773.
+     arXiv:1911.11641 [cs.CL]                                                                  [26] Yongkweon Jeon, Baeseong Park, Se Jung Kwon, Byeongwook Kim, Jeongin Yun,
+ [3] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan,                         and Dongsoo Lee. 2020. Biqgemm: matrix multiplication with lookup table for
+     Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda                     binary-coding-based quantized dnns. In SC20: International Conference for High
+     Askell, et al. 2020. Language models are few-shot learners. Advances in neural                 Performance Computing, Networking, Storage and Analysis. IEEE, 1–14.
+     information processing systems 33 (2020), 1877–1901.                                      [27] Patrick Judd, Jorge Albericio, Tayler Hetherington, Tor M Aamodt, and Andreas
+ [4] Jerry Chee, Yaohui Cai, Volodymyr Kuleshov, and Christopher M De Sa. 2024.                     Moshovos. 2016. Stripes: Bit-serial deep neural network computing. In 2016 49th
+     Quip: 2-bit quantization of large language models with guarantees. Advances in                 Annual IEEE/ACM International Symposium on Microarchitecture (MICRO). IEEE,
+     Neural Information Processing Systems 36 (2024).                                               1–12.
+ [5] Tianqi Chen, Thierry Moreau, Ziheng Jiang, Haichen Shen, Eddie Q Yan, Leyuan              [28] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess,
+     Wang, Yuwei Hu, Luis Ceze, Carlos Guestrin, and Arvind Krishnamurthy.                          Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. 2020.
+     2018. TVM: end-to-end optimization stack for deep learning. arXiv preprint                     Scaling laws for neural language models. arXiv preprint arXiv:2001.08361 (2020).
+     arXiv:1802.04799 11, 20 (2018).                                                           [29] Ayush Kaushal, Tejas Vaidhya, Arnab Kumar Mondal, Tejas Pandey, Aaryan
+ [6] Jack Choquette, Wishwesh Gandhi, Olivier Giroux, Nick Stam, and Ronny                          Bhagat, and Irina Rish. 2024. Spectra: Surprising effectiveness of pretraining
+     Krashinsky. 2021. Nvidia a100 tensor core gpu: Performance and innovation.                     ternary language models at scale. arXiv preprint arXiv:2407.12327 (2024).
+     IEEE Micro 41, 2 (2021), 29–35.                                                           [30] Mahmoud Khairy, Zhesheng Shen, Tor M Aamodt, and Timothy G Rogers. 2020.
+ [7] Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, Michael                        Accel-Sim: An extensible simulation framework for validated GPU modeling. In
+     Collins, and Kristina Toutanova. 2019. BoolQ: Exploring the Surprising Difficulty              2020 ACM/IEEE 47th Annual International Symposium on Computer Architecture
+     of Natural Yes/No Questions. arXiv:1905.10044 [cs.CL]                                          (ISCA). IEEE, 473–486.
+ [8] NVIDIA Corporation. 2025. NVIDIA Blackwell Architecture Technical Brief. Techni-          [31] Sehoon Kim, Coleman Hooper, Amir Gholami, Zhen Dong, Xiuyu Li, Sheng Shen,
+     cal Report. NVIDIA Corporation. https://resources.nvidia.com/en-us-blackwell-                  Michael W Mahoney, and Kurt Keutzer. 2023. Squeezellm: Dense-and-sparse
+     architecture?ncid=no-ncid                                                                      quantization. arXiv preprint arXiv:2306.07629 (2023).
+ [9] NVIDIA Corporation. 2025. Parallel Thread Execution ISA Version 8.8. https:               [32] Tanishq Kumar, Zachary Ankner, Benjamin F Spector, Blake Bordelon, Niklas
+     //docs.nvidia.com/cuda/parallel-thread-execution/. Accessed: 2025-05-02.                       Muennighoff, Mansheej Paul, Cengiz Pehlevan, Christopher Ré, and Aditi Raghu-
+[10] Tim Dettmers, Mike Lewis, Younes Belkada, and Luke Zettlemoyer. 2022. Gpt3.                    nathan. 2024. Scaling laws for precision. arXiv preprint arXiv:2411.04330 (2024).
+     int8 (): 8-bit matrix multiplication for transformers at scale. Advances in Neural        [33] Andrey Kuzmin, Mart Van Baalen, Yuwei Ren, Markus Nagel, Jorn Peters, and
+     Information Processing Systems 35 (2022), 30318–30332.                                         Tijmen Blankevoort. 2022. Fp8 quantization: The power of the exponent. Advances
+[11] Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke Zettlemoyer. 2024.                      in Neural Information Processing Systems 35 (2022), 14651–14662.
+     Qlora: Efficient finetuning of quantized llms. Advances in Neural Information             [34] Hyoukjun Kwon, Prasanth Chatarasi, Vivek Sarkar, Tushar Krishna, Michael
+     Processing Systems 36 (2024).                                                                  Pellauer, and Angshuman Parashar. 2020. Maestro: A data-centric approach to
+[12] Tim Dettmers and Luke Zettlemoyer. 2023. The case for 4-bit precision: k-bit                   understand reuse, performance, and hardware cost of dnn mappings. IEEE micro
+     inference scaling laws. In International Conference on Machine Learning. PMLR,                 40, 3 (2020), 20–29.
+     7750–7774.                                                                                [35] Alberto Delmas Lascorz, Mostafa Mahmoud, Ali Hadi Zadeh, Milos Nikolic,
+[13] Yiran Ding, Li Lyna Zhang, Chengruidong Zhang, Yuanyuan Xu, Ning Shang,                        Kareem Ibrahim, Christina Giannoula, Ameer Abdelhadi, and Andreas Moshovos.
+     Jiahang Xu, Fan Yang, and Mao Yang. 2024. Longrope: Extending llm context                      2024. Atalanta: A Bit is Worth a “Thousand” Tensor Values. In Proceedings of
+     window beyond 2 million tokens. arXiv preprint arXiv:2402.13753 (2024).                        the 29th ACM International Conference on Architectural Support for Programming
+[14] Dayou Du, Yijia Zhang, Shijie Cao, Jiaqi Guo, Ting Cao, Xiaowen Chu, and                       Languages and Operating Systems, Volume 2. 85–102.
+     Ningyi Xu. 2024. BitDistiller: Unleashing the Potential of Sub-4-Bit LLMs via             [36] Teven Le Scao, Angela Fan, Christopher Akiki, Ellie Pavlick, Suzana Ilić, Daniel
+     Self-Distillation. arXiv preprint arXiv:2402.10631 (2024).                                     Hesslow, Roman Castagné, Alexandra Sasha Luccioni, François Yvon, Matthias
+[15] Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh. 2022. Gptq:                  Gallé, et al. 2023. Bloom: A 176b-parameter open-access multilingual language
+     Accurate post-training quantization for generative pre-trained transformers.                   model. (2023).
+     arXiv preprint arXiv:2210.17323 (2022).                                                   [37] Changhun Lee, Jungyu Jin, Taesu Kim, Hyungjun Kim, and Eunhyeok Park. 2023.
+[16] ggml org. 2025. llama.cpp: Port of LLaMA models to C/C++. https://github.com/                  Owq: Lessons learned from activation outliers for weight quantization in large
+     ggml-org/llama.cpp.                                                                            language models. arXiv preprint arXiv:2306.02272 (2023).
+[17] Ashish Gondimalla, Mithuna Thottethodi, and TN Vijaykumar. 2023. Eureka:                  [38] Jinmook Lee, Changhyeon Kim, Sanghoon Kang, Dongjoo Shin, Sangyeob Kim,
+     Efficient Tensor Cores for One-sided Unstructured Sparsity in DNN Inference. In                and Hoi-Jun Yoo. 2019. UNPU: An Energy-Efficient Deep Neural Network Ac-
+     Proceedings of the 56th Annual IEEE/ACM International Symposium on Microarchi-                 celerator With Fully Variable Weight Bit Precision. IEEE Journal of Solid-State
+     tecture. 324–337.                                                                              Circuits 54, 1 (2019), 173–185. https://doi.org/10.1109/JSSC.2018.2865489
+[18] Cong Guo, Jiaming Tang, Weiming Hu, Jingwen Leng, Chen Zhang, Fan Yang,                   [39] Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Xingyu Dang, and Song Han.
+     Yunxin Liu, Minyi Guo, and Yuhao Zhu. 2023. Olive: Accelerating large language                 2023. Awq: Activation-aware weight quantization for llm compression and
+     models via hardware-friendly outlier-victim pair quantization. In Proceedings of               acceleration. arXiv preprint arXiv:2306.00978 (2023).
+     the 50th Annual International Symposium on Computer Architecture. 1–15.                   [40] Jing Liu, Ruihao Gong, Xiuying Wei, Zhiwei Dong, Jianfei Cai, and Bohan Zhuang.
+[19] Cong Guo, Chen Zhang, Jingwen Leng, Zihan Liu, Fan Yang, Yunxin Liu, Minyi                     2024. QLLM: Accurate and Efficient Low-Bitwidth Quantization for Large Lan-
+     Guo, and Yuhao Zhu. 2022. Ant: Exploiting adaptive numerical data type for                     guage Models.
+     low-bit deep neural network quantization. In 2022 55th IEEE/ACM International             [41] Zirui Liu, Jiayi Yuan, Hongye Jin, Shaochen Zhong, Zhaozhuo Xu, Vladimir
+     Symposium on Microarchitecture (MICRO). IEEE, 1414–1433.                                       Braverman, Beidi Chen, and Xia Hu. 2024. Kivi: A tuning-free asymmetric 2bit
+[20] Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn                     quantization for kv cache. arXiv preprint arXiv:2402.02750 (2024).
+     Song, and Jacob Steinhardt. 2021. Measuring Massive Multitask Language Un-                [42] Zechun Liu, Changsheng Zhao, Hanxian Huang, Sijia Chen, Jing Zhang, Jiawei
+     derstanding. arXiv:2009.03300 [cs.CY]                                                          Zhao, Scott Roy, Lisa Jin, Yunyang Xiong, Yangyang Shi, et al. 2025. ParetoQ: Scal-
+[21] Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya,                         ing Laws in Extremely Low-bit LLM Quantization. arXiv preprint arXiv:2502.02631
+     Trevor Cai, Eliza Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes                (2025).
+     Welbl, Aidan Clark, et al. 2022. Training compute-optimal large language models.          [43] Yun-Chen Lo and Ren-Shuo Liu. 2023. Bucket Getter: A Bucket-based Processing
+     arXiv preprint arXiv:2203.15556 (2022).                                                        Engine for Low-bit Block Floating Point (BFP) DNNs. In Proceedings of the 56th
+[22] Coleman Hooper, Sehoon Kim, Hiva Mohammadzadeh, Michael W Mahoney,                             Annual IEEE/ACM International Symposium on Microarchitecture (<conf-loc>,
+     Yakun Sophia Shao, Kurt Keutzer, and Amir Gholami. 2024. Kvquant: Towards 10                   <city>Toronto</city>, <state>ON</state>, <country>Canada</country>, </conf-
+     million context length llm inference with kv cache quantization. arXiv preprint                loc>) (MICRO ’23). Association for Computing Machinery, New York, NY, USA,
+     arXiv:2401.18079 (2024).                                                                       1002–1015. https://doi.org/10.1145/3613424.3614249
+[23] Guyue Huang, Zhengyang Wang, Po-An Tsai, Chen Zhang, Yufei Ding, and Yuan                 [44] Shuming Ma, Hongyu Wang, Lingxiao Ma, Lei Wang, Wenhui Wang, Shaohan
+     Xie. 2023. RM-STC: Row-Merge Dataflow Inspired GPU Sparse Tensor Core for                      Huang, Li Dong, Ruiping Wang, Jilong Xue, and Furu Wei. 2024. The Era of 1-bit
+     Energy-Efficient Sparse Acceleration. In Proceedings of the 56th Annual IEEE/ACM               LLMs: All Large Language Models are in 1.58 Bits. arXiv preprint arXiv:2402.17764
+     International Symposium on Microarchitecture. 338–352.                                         (2024).
+
+                                                                                          13
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                      Mo et al.
+
+
+[45] Saeed Maleki. 2023. Look-Up mAI GeMM: Increasing AI GeMMs Performance                           transformers for large language models. arXiv preprint arXiv:2310.11453 (2023).
+     by Nearly 2.5 x via msGeMM. arXiv preprint arXiv:2310.06178 (2023).                        [69] Lei Wang, Lingxiao Ma, Shijie Cao, Quanlu Zhang, Jilong Xue, Yining Shi, Ningxin
+[46] Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. 2016.                        Zheng, Ziming Miao, Fan Yang, Ting Cao, et al. 2024. Ladder: Enabling Efficient
+     Pointer Sentinel Mixture Models. arXiv:1609.07843 [cs.CL]                                       { Low-Precision } Deep Learning Computing through Hardware-aware Tensor
+[47] Paulius Micikevicius, Dusan Stosic, Neil Burgess, Marius Cornea, Pradeep Dubey,                 Transformation. In 18th USENIX Symposium on Operating Systems Design and
+     Richard Grisenthwaite, Sangwon Ha, Alexander Heinecke, Patrick Judd, John                       Implementation (OSDI 24). 307–323.
+     Kamalu, et al. 2022. Fp8 formats for deep learning. arXiv preprint arXiv:2209.05433        [70] Yang Wang, Chen Zhang, Zhiqiang Xie, Cong Guo, Yunxin Liu, and Jingwen Leng.
+     (2022).                                                                                         2021. Dual-side sparse tensor core. In 2021 ACM/IEEE 48th Annual International
+[48] Todor Mihaylov, Peter Clark, Tushar Khot, and Ashish Sabharwal. 2018. Can                       Symposium on Computer Architecture (ISCA). IEEE, 1083–1095.
+     a Suit of Armor Conduct Electricity? A New Dataset for Open Book Question                  [71] Jianyu Wei, Shijie Cao, Ting Cao, Lingxiao Ma, Lei Wang, Yanyong Zhang, and
+     Answering. arXiv:1809.02789 [cs.CL]                                                             Mao Yang. 2024. T-mac: Cpu renaissance via table lookup for low-bit llm deploy-
+[49] Pranav Nair, Puranjay Datta, Jeff Dean, Prateek Jain, and Aditya Kusupati. 2025.                ment on edge. arXiv preprint arXiv:2407.00088 (2024).
+     Matryoshka Quantization. arXiv preprint arXiv:2502.06786 (2025).                           [72] Haocheng Xi, Changhao Li, Jianfei Chen, and Jun Zhu. 2023. Training transform-
+[50] NVIDIA. 2025. CUTLASS: CUDA Templates for Linear Algebra Subroutines.                           ers with 4-bit integers. Advances in Neural Information Processing Systems 36
+     https://github.com/NVIDIA/cutlass.                                                              (2023), 49146–49168.
+[51] NVIDIA. 2025. TensorRT-LLM: High-Performance Inference for Large Language                  [73] Guangxuan Xiao, Ji Lin, Mickael Seznec, Hao Wu, Julien Demouth, and Song
+     Models. https://github.com/NVIDIA/TensorRT-LLM. Accessed: 2025-05-02.                           Han. 2023. Smoothquant: Accurate and efficient post-training quantization for
+[52] Angshuman Parashar, Priyanka Raina, Yakun Sophia Shao, Yu-Hsin Chen,                            large language models. In International Conference on Machine Learning. PMLR,
+     Victor A Ying, Anurag Mukkara, Rangharajan Venkatesan, Brucek Khailany,                         38087–38099.
+     Stephen W Keckler, and Joel Emer. 2019. Timeloop: A systematic approach to                 [74] Jianxun Yang, Zhao Zhang, Zhuangzhi Liu, Jing Zhou, Leibo Liu, Shaojun Wei,
+     dnn accelerator evaluation. In 2019 IEEE international symposium on performance                 and Shouyi Yin. 2021. Fusekna: Fused kernel convolution based accelerator for
+     analysis of systems and software (ISPASS). IEEE, 304–315.                                       deep neural networks. In 2021 IEEE International Symposium on High-Performance
+[53] Gunho Park, Baeseong Park, Minsub Kim, Sungjae Lee, Jeonghoon Kim, Beom-                        Computer Architecture (HPCA). IEEE, 894–907.
+     seok Kwon, Se Jung Kwon, Byeongwook Kim, Youngjoo Lee, and Dongsoo Lee.                    [75] Zhewei Yao, Reza Yazdani Aminabadi, Minjia Zhang, Xiaoxia Wu, Conglong Li,
+     2023. LUT-GEMM: Quantized Matrix Multiplication based on LUTs for Effi-                         and Yuxiong He. 2022. Zeroquant: Efficient and affordable post-training quanti-
+     cient Inference in Large-Scale Generative Language Models. arXiv preprint                       zation for large-scale transformers. Advances in Neural Information Processing
+     arXiv:2206.09557 (2023).                                                                        Systems 35 (2022), 27168–27183.
+[54] Pratyush Patel, Esha Choukse, Chaojie Zhang, Aashaka Shah, Íñigo Goiri, Saeed              [76] Alex Young, Bei Chen, Chao Li, Chengen Huang, Ge Zhang, Guanwei Zhang,
+     Maleki, and Ricardo Bianchini. 2023. Splitwise: Efficient generative llm inference              Heng Li, Jiangcheng Zhu, Jianqun Chen, Jing Chang, et al. 2024. Yi: Open
+     using phase splitting. Power 400, 700W (2023), 1–75.                                            foundation models by 01. ai. arXiv preprint arXiv:2403.04652 (2024).
+[55] David Patterson, Joseph Gonzalez, Urs Hölzle, Quoc Le, Chen Liang, Lluis-Miquel            [77] Ali Hadi Zadeh, Isak Edo, Omar Mohamed Awad, and Andreas Moshovos. 2020.
+     Munguia, Daniel Rothchild, David R So, Maud Texier, and Jeff Dean. 2022. The                    GOBO: Quantizing Attention-Based NLP Models for Low Latency and Energy
+     carbon footprint of machine learning training will plateau, then shrink. Computer               Efficient Inference. In 2020 53rd Annual IEEE/ACM International Symposium on
+     55, 7 (2022), 18–28.                                                                            Microarchitecture (MICRO). IEEE. https://doi.org/10.1109/micro50266.2020.00071
+[56] Bowen Peng, Jeffrey Quesnelle, Honglu Fan, and Enrico Shippole. 2023. Yarn:                [78] Ali Hadi Zadeh, Mostafa Mahmoud, Ameer Abdelhadi, and Andreas Moshovos.
+     Efficient context window extension of large language models. arXiv preprint                     2022. Mokey: enabling narrow fixed-point inference for out-of-the-box floating-
+     arXiv:2309.00071 (2023).                                                                        point transformer models. In Proceedings of the 49th Annual International Sympo-
+[57] Bita Darvish Rouhani, Ritchie Zhao, Ankit More, Mathew Hall, Alireza Kho-                       sium on Computer Architecture (ISCA ’22). ACM. https://doi.org/10.1145/3470496.
+     damoradi, Summer Deng, Dhruv Choudhary, Marius Cornea, Eric Dellinger,                          3527438
+     Kristof Denolf, et al. 2023. Microscaling data formats for deep learning. arXiv            [79] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. 2019.
+     preprint arXiv:2310.10537 (2023).                                                               HellaSwag: Can a Machine Really Finish Your Sentence? arXiv:1905.07830 [cs.CL]
+[58] Sungju Ryu, Hyungjun Kim, Wooseok Yi, Eunhwan Kim, Yulhwa Kim, Taesu                       [80] Susan Zhang, Stephen Roller, Naman Goyal, Mikel Artetxe, Moya Chen, Shuohui
+     Kim, and Jae-Joon Kim. 2022. BitBlade: Energy-efficient variable bit-precision                  Chen, Christopher Dewan, Mona Diab, Xian Li, Xi Victoria Lin, et al. 2022. Opt:
+     hardware accelerator for quantized neural networks. IEEE Journal of Solid-State                 Open pre-trained transformer language models. arXiv preprint arXiv:2205.01068
+     Circuits 57, 6 (2022), 1924–1935.                                                               (2022).
+[59] Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi.                     [81] Yijia Zhang, Lingran Zhao, Shijie Cao, Wenqiang Wang, Ting Cao, Fan Yang,
+     2019. WinoGrande: An Adversarial Winograd Schema Challenge at Scale.                            Mao Yang, Shanghang Zhang, and Ningyi Xu. 2023. Integer or floating point?
+     arXiv:1907.10641 [cs.CL]                                                                        new outlooks for low-bit quantization on large language models. arXiv preprint
+[60] Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, and                      arXiv:2305.12356 (2023).
+     Tri Dao. 2024. FlashAttention-3: Fast and Accurate Attention with Asynchrony               [82] Lianmin Zheng, Chengfan Jia, Minmin Sun, Zhao Wu, Cody Hao Yu, Ameer
+     and Low-precision. arXiv preprint arXiv:2407.08608 (2024).                                      Haj-Ali, Yida Wang, Jun Yang, Danyang Zhuo, Koushik Sen, Joseph E. Gonzalez,
+[61] Man Shi, Vikram Jain, Antony Joseph, Maurice Meijer, and Marian Verhelst. 2024.                 and Ion Stoica. 2020. Ansor: Generating High-Performance Tensor Programs
+     BitWave: Exploiting Column-Based Bit-Level Sparsity for Deep Learning Accel-                    for Deep Learning. In 14th USENIX Symposium on Operating Systems Design and
+     eration. In 2024 IEEE International Symposium on High-Performance Computer                      Implementation (OSDI 20). USENIX Association, 863–879. https://www.usenix.
+     Architecture (HPCA). IEEE, 732–746.                                                             org/conference/osdi20/presentation/zheng
+[62] Yining Shi, Zhi Yang, Jilong Xue, Lingxiao Ma, Yuqing Xia, Ziming Miao, Yuxiao             [83] Size Zheng, Siyuan Chen, Siyuan Gao, Liancheng Jia, Guangyu Sun, Runsheng
+     Guo, Fan Yang, and Lidong Zhou. 2023. Welder: Scheduling Deep Learning                          Wang, and Yun Liang. 2023. TileFlow: A Framework for Modeling Fusion Dataflow
+     Memory Access via Tile-graph. In 17th USENIX Symposium on Operating Systems                     via Tree-based Analysis. In Proceedings of the 56th Annual IEEE/ACM International
+     Design and Implementation (OSDI 23). 701–718.                                                   Symposium on Microarchitecture. 1271–1288.
+[63] Synopsys Inc. 2018. Design Compiler User Guide.                                            [84] Hongyu Zhu, Ruofan Wu, Yijia Diao, Shanbin Ke, Haoyu Li, Chen Zhang, Jilong
+[64] Gemini Team, Rohan Anil, Sebastian Borgeaud, Yonghui Wu, Jean-Baptiste                          Xue, Lingxiao Ma, Yuqing Xia, Wei Cui, et al. 2022. { ROLLER } : Fast and efficient
+     Alayrac, Jiahui Yu, Radu Soricut, Johan Schalkwyk, Andrew M Dai, Anja Hauth,                    tensor compilation for deep learning. In 16th USENIX Symposium on Operating
+     et al. 2023. Gemini: a family of highly capable multimodal models. arXiv preprint               Systems Design and Implementation (OSDI 22). 233–248.
+     arXiv:2312.11805 (2023).                                                                   [85] Maohua Zhu, Tao Zhang, Zhenyu Gu, and Yuan Xie. 2019. Sparse tensor core:
+[65] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yas-                    Algorithm and hardware co-design for vector-wise sparse neural networks on
+     mine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhos-                   modern gpus. In Proceedings of the 52nd Annual IEEE/ACM International Sympo-
+     ale, et al. 2023. Llama 2: Open foundation and fine-tuned chat models. arXiv                    sium on Microarchitecture. 359–371.
+     preprint arXiv:2307.09288 (2023).
+[66] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+     Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all
+     you need. Advances in neural information processing systems 30 (2017).
+[67] Oreste Villa, Daniel Lustig, Zi Yan, Evgeny Bolotin, Yaosheng Fu, Niladrish
+     Chatterjee, Nan Jiang, and David Nellans. 2021. Need for speed: Experiences
+     building a trustworthy system-level gpu simulator. In 2021 IEEE International
+     Symposium on High-Performance Computer Architecture (HPCA). IEEE, 868–880.
+[68] Hongyu Wang, Shuming Ma, Li Dong, Shaohan Huang, Huaijie Wang, Lingxiao
+     Ma, Fan Yang, Ruiping Wang, Yi Wu, and Furu Wei. 2023. Bitnet: Scaling 1-bit
+
+                                                                                           14
+

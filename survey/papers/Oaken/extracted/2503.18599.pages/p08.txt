@@ -1,0 +1,103 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                           Kim, Hong, et al.
+
+
+                                                                                  Oaken Accelerator
+does not require additional information beyond those obtained from                                                  Oaken Compute Core
+the offline profiling described in Section 4.3.                                         ...           Host                   Vector       DMA
+                                                                            MC     MC         MC                 Control
+                                                                                                    Interface     Unit     Processing
+   In summary, Oaken’s quantization function 𝑄𝑜 (𝑥), which con-                                                               Unit       Quant.
+                                                                                                                                         Engine
+verts the value 𝑥 to the quantized one, is defined as follows:
+                                                                                     Interconnect                            Matrix     Dequant.
+                                𝑜)                          𝑜                                                   Register   Processing    Engine
+                       𝑄 (𝑥 − 𝑇ℎ𝑖          𝑥 ∈ 𝐺𝑜 and 𝑥 > 𝑇ℎ𝑖                                                     File
+                     
+                                                                                                                              Unit
+                     
+                                                                                                                                          MMU
+                                                                           Core Core Core Core ... Core
+                     
+                     
+                     
+                     
+                               𝑜)
+                       𝑄 (𝑥 − 𝑇𝑙𝑜                           𝑜
+                                           𝑥 ∈ 𝐺𝑜 and 𝑥 < 𝑇𝑙𝑜
+                     
+                     
+                     
+             𝑄𝑜 (𝑥) = 𝑄 (𝑥 − 𝑇ℎ𝑖𝑖 )        𝑥 ∈ 𝐺𝑚 and 𝑥 > 𝑇ℎ𝑖𝑖 ,   (4)
+                     
+                     𝑄 (𝑥 − 𝑇𝑙𝑜
+                     
+                               𝑖 )        𝑥 ∈ 𝐺𝑚 and 𝑥 < 𝑇𝑙𝑜𝑖
+                     
+                                                                                Figure 8: Overall Oaken accelerator architecture.
+                     𝑄 (𝑥)
+                     
+                                           𝑥 ∈ 𝐺𝑖
+                     
+where 𝑄 (𝑥) is a quantization function defined in Eq. 3. Oaken            also manages the scheduling of incoming requests and distributing
+quantizes middle group into 4-bit, inner and outer groups into 5-bit.     them across compute cores for efficient processing. An interconnect
+                                                                          links these components and is optimized to maximize bandwidth
+4.5     Fused Dense-and-Sparse Encoding                                   utilization during memory read, ensuring efficient data transfer to
+Oaken employs a dense-and-sparse encoding strategy, as proposed           the compute cores. This design enables the concurrent use of all
+in prior works, to efficiently store dense inliers and sparse out-        memory controllers for reading model parameters and distributing
+liers [22, 30]. In Oaken, the middle group, which consists of inliers     them across the compute cores. On the other hand, memory writes
+and makes up the majority of the KV cache, is stored in a dense ma-       from the compute cores are less frequent and involve smaller data
+trix. The outer and inner groups, which consist of outliers, are stored   sizes, reducing bandwidth consumption and simplifying the logic
+using a sparse matrix format, Coordinate List (COO) [16, 18, 72, 85],     design without compromising performance.
+with the corresponding elements in the dense matrix being zeroed.
+COO format used in Oaken requires extra 6 bits to indicate the            5.2    Oaken Compute Core
+location of each value, along with 1 bit to denote the quantization
+                                                                          Overall design. The main modules of the proposed accelerator
+group, and the bits used to represent the value for each entry.
+                                                                          are the compute cores, which are adapted from the architecture
+   To further reduce capacity overhead, we propose leveraging
+                                                                          introduced in LPU [48] to enable end-to-end LLM inference. Each
+the zeroed elements in the dense matrices. These zeroed elements,
+                                                                          compute core consists of a Matrix Processing Unit (MPU) and Vec-
+corresponding to positions originally occupied by outliers in the KV
+                                                                          tor Processing Unit (VPU) designed to execute LLM inference op-
+cache, remain unused after separating the KV cache into dense and
+                                                                          erations token-by-token. These processing units are designed to
+sparse matrices. We introduce a fused dense-and-sparse encoding
+                                                                          maintain high utilization throughout the entire process while mini-
+method that repurposes these unused 4 bits to store part of the
+                                                                          mizing inefficient logic and ensuring low latency. MPU is designed
+outliers, as illustrated in Figure 7(c). Specifically, four bits of the
+                                                                          to stream weight read from memory to perform efficient matrix-
+quantized 5-bit outliers are embedded in the zeroed elements of the
+                                                                          vector multiplication, while VPU handles element-wise operations
+dense matrix, while the remaining 6 index bits, 1 group bit, and 1
+                                                                          between matrix-vector computations. The direct memory access
+sign bit are stored in the sparse COO format.
+                                                                          (DMA) unit facilitates data transfer by reading weights from mem-
+   Since the index bits in the COO format already indicate the
+                                                                          ory to feed the processing units and writing KV cache back to mem-
+location of outliers within the dense matrix, a dedicated flag to
+                                                                          ory. This DMA unit also incorporates quantization/dequantization
+denote their presence is unnecessary. Moreover, with each entry in
+                                                                          engines and a memory management unit (MMU), all of which are
+the sparse matrix fixed at 8 bits and memory-aligned, the memory
+                                                                          critical for implementing the proposed KV quantization technique.
+management unit can efficiently handle both dense and sparse
+matrices on a page basis, the details of which will be described in       Quantization engine. Figure 9(a) shows the quantization engine
+Section 5.2. By combining our fused dense-and-sparse encoding             in DMA unit, designed to perform online KV cache quantization.
+strategy with group-shift quantization, we reduce the bitwidth of            First, the ① decomposer module partitions incoming activa-
+each outlier entry from 23 to just 8 bits, increasing the compression     tions into three quantization groups based on outlier thresholds
+ratio of the KV cache, while keeping memory alignment.                    determined offline. It then performs group shift for the outer and
+                                                                          middle groups by subtracting their streamed thresholds from the
+5 Oaken’s Accelerator Architecture                                        values of these groups. Finally, the middle group is directed to
+                                                                          the inlier quantization path, while outliers, whether from inner or
+5.1 Architecture Overview                                                 outer groups, are routed to the outlier quantization path, with zeros
+Figure 8 illustrates the overview of the proposed architecture, which     inserted in the alternate path accordingly.
+mainly consists of compute cores, memory controllers, a host inter-          Both the ② inlier and ③ outlier quantizer modules handle
+face, and an interconnect. The compute cores are designed to sup-         quantization for each key and value vector. Quantization scaling
+port end-to-end LLM inference operations. The memory controllers          factors are dynamically computed during runtime, based on per-
+handle device memory to read data, including model parameters,            token min and max values for each group. After calculating the
+keys, and values, and are also responsible for writing keys and           scaling factors, these two modules finally perform 4/5-bit uniform
+values back to memory. The host interface employs a PCIe-based            quantization. The quantized inlier and outlier values are merged
+connection to communicate with the host system. This interface            using an OR gate and sent to the quantized dense matrix. The outlier
+

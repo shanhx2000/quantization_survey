@@ -1,0 +1,81 @@
+B. SpZip fetcher                                                                             L2            SpZip Fetcher
+   The SpZip fetcher runs DCL programs to traverse and decom-                          Access unit          Decomp. unit           Scheduler
+press data structures, as we saw in Sec. II. Each core’s fetcher                      agen resp             Delta BPC            ctxt 0   … ctxt k
+                                                                                                                        …
+issues accesses to its L2 cache. This keeps data in compressed
+form in the L2 and LLC, increasing their effective capacity.                               q0              q1                      qn
+
+
+
+
+                                                                                                                                               configure
+   To begin execution, the core loads a DCL program in the                          min head tail max      Scratchpad
+fetcher, and enqueues some initial inputs to it. The fetcher then                                                 enqueue          dequeue
+runs decoupled from the core: it issues accesses autonomously                                                                     Core
+and runs the traversal and data decompression ahead of the                              Fig. 10. SpZip programmable fetcher microarchitecture.
+core, filling its output queues with data that the core can then
+dequeue. Importantly, unlike prior indirect prefetchers [5, 6,                decompression latencies. This design supports any DCL pro-
+13, 73], SpZip does not monitor the core’s accesses to infer                  gram with as many operators as contexts and as many queues
+which accesses to perform. This is simpler, more efficient, and               as the scratchpad can track (16 each in our implementation).
+supports decompressing data in ways that prefetchers cannot.                  Access Unit (AU): The AU implements both memory-access
+However, it does require changes to programs.                                 operators: indirections and range fetches. The AU is internally
+                                                                              decoupled to support many outstanding memory requests, as
+   We first discuss the microarchitecture of the fetcher, then
+                                                                              shown in Fig. 10: the address generator (agen) issues a mem-
+explain how to modify programs to use it. (Though we show
+                                                                              ory request for each indirection or range fetch, and the response
+application code using SpZip directly for illustration purposes,
+                                                                              handler (resp) tracks of outstanding requests and writes data
+our implementation uses SpZip through a Ligra-style runtime,
+                                                                              to output queues as responses are received. Memory requests
+and leaves application code unchanged—see Sec. III-D.)
+                                                                              are sent to the L2 cache, but they often miss, so the AU sup-
+Fetcher microarchitecture: The key challenge in implement-
+                                                                              ports multiple outstanding requests (up to 8 cache lines in our
+ing the SpZip fetcher is how to implement programmability
+                                                                              implementation) to hide memory latency.
+efficiently. Prior fetch units [38, 40, 44] implemented either a
+                                                                              Decompression Unit (DU): The DU implements decompres-
+fixed-function pipeline, or provided some configurability by
+                                                                              sion operators. Its implementation includes decompression logic
+disabling or configuring components within a fixed pipeline.
+                                                                              for all supported compression algorithms.
+But SpZip requires a more flexible approach.
+                                                                                 We use two algorithms in our design, delta encoding [57] and
+   A possible fetcher implementation would be to adopt a re-                  Bit-Plane Compression (BPC) [35], because we observe that
+configurable design, with multiple fetch and decompression                    no algorithm dominates. Our delta-encoding implementation
+operators and queues that can be wired through a configurable                 simply subtracts the previous and current inputs, and emits an N-
+interconnect to implement DCL programs. However, this is                      byte output if their delta (plus a small length prefix) fits within
+costlier than needed. Instead, we observe that, when each op-                 N bytes (some prior work calls this a byte code [62]). BPC uses
+erator is implemented as a specialized unit with reasonable                   a more sophisticated encoding but needs longer chunks (e.g.,
+throughput (e.g., a range fetcher or decompressor that can pro-               32 elements) to compress effectively. Thus, delta encoding is
+duce up to 32 bytes/cycle), operators have relatively low activity            preferable on short streams, like individual neighbor sets, and
+factors: to consistently run ahead of cores, it suffices for one              BPC on longer chunks, like bins in Update Batching.
+operator to fire 33% of the cycles in our applications.                       Scheduler: The scheduler decides which operator context to
+   This observation leads us to a time-multiplexed fetcher design,            execute and arbitrates reads and writes to the queues. It uses
+shown in Fig. 10, where operators and queues share the same                   queue occupancy to determine which operators are ready. An
+physical units. The fetcher has three types of components:                    operator is ready if its input queue has an element, its output
+• The scratchpad stores the queues of the DCL program. Each                   queues have sufficient free space, and its functional unit (FU) is
+   queue uses a region of the scratchpad, and is managed as a                 available (e.g., the AU may be filled with inflight requests). The
+   circular buffer, with head and tail pointers as shown in Fig. 10.          scheduler follows a round-robin policy among ready operators.
+• Two functional units (FUs), the access unit and the decom-                  To issue an operation, the scheduler feeds the head of the input
+   pression unit, implement the functionality needed by the                   queue to the FU, along with the context id. (Though contexts
+   memory-access and decompression DCL operators.                             are shown separately in Fig. 10, each context is specialized
+• The scheduler chooses which operator to execute each cycle.                 to an FU, and tracks FU-specific information, e.g., the current
+   It keeps multiple operator contexts. Each context holds the                index for each range fetch.) The scheduler also arbitrates writes
+   configuration and input/output queue ids of a single operator              to queues performed by the access and decompression units.
+   in the DCL program. The scheduler tracks which operators                   Queues and markers: Queues are held in the scratchpad. Each
+   are ready to execute, and picks one each cycle.                            queue is managed as a circular buffer, and tracked with the
+   This design achieves high throughput by exploiting dataflow                usual pointers: min/max and head/tail. Queues take and serve
+execution and by decoupling operators through queues: each                    elements of various widths, as specified by their operators. For
+operator fires only when its input queue has an element to pro-               example, a range fetch can consume 8, 16, 32, or 64-bit indexes.
+cess and its output queues have sufficient space, and operators                  Queues implement markers to support variable-length chunks:
+can run ahead and buffer results in queues, hiding memory and                 each 32-bit word is tagged with a marker bit; if set, the word is
+
+
+
+
+                                                                         1074
+
+       Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:08:17 UTC from IEEE Xplore. Restrictions apply.
+

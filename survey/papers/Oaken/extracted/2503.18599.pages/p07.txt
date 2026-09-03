@@ -1,0 +1,100 @@
+  Oaken: Fast and Efficient LLM Serving with Online-Offline Hybrid KV Cache Quantization                                        ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                                                                                                           16-bit          4-bit             4-bit
+
+
+
+
+                                                                                                                 Dense
+                                                                                                                 Inlier
+Frequency
+
+
+
+
+            Outer                   Inner                     Outer
+            Group                   Group                     Group                   Middle Group
+                                                                                                                                         idx g s             idx g s
+                         Middle               Middle                                                                                     idx g s             idx g s
+
+
+
+
+                                                                                                                 Outlier
+                                                                                                                 Sparse
+                         Group                Group                                                                                      idx g s             idx g s
+                                                                                                                                         idx g s             idx g s
+                                       0                                               Outer Group
+                                                                                                                           16-bit        7-bit 5-bit           8-bit
+                                       (a)                                                    (b)                                           (c)
+ Figure 7: Oaken’s quantization algorithm consisting of three components: (a) threshold-based online-offline hybrid quantization,
+ (b) group-shift quantization, and (c) fused dense-and-sparse encoding.
+
+
+ complexity of 𝑂 (𝑛 log 𝑛), introduces significant overhead when per-                      Oaken dynamically separates KV cache values into three groups
+ formed during inference, degrades end-to-end performance. Oaken                           using four group thresholds obtained from offline profiling. It then
+ employs offline outlier threshold profiling, leveraging the consis-                       retrieves the minimum and maximum values for each quantization
+ tent characteristics in the distribution of KV cache discussed in                         group, calculates the scaling factor online, and quantizes the value
+ Section 4.1 to avoid expensive online operations.                                         within each group accordingly.
+     The criteria for splitting the KV cache into three groups are based
+ on four thresholds determined through offline threshold profiling:
+   𝑜 , 𝑇 𝑖 , 𝑇 𝑖 , and 𝑇 𝑜 . Using these thresholds, the outer group, middle
+ 𝑇𝑙𝑜                                                                                       4.4      Group-Shift Quantization
+        𝑙𝑜 ℎ𝑖           ℎ𝑖
+ group, and inner group are defined as follows:                                            Oaken’s threshold-based online grouping effectively mitigates in-
+                                          𝑜
+                          𝐺𝑜 = {𝑥 | 𝑥 < 𝑇𝑙𝑜     𝑜
+                                            or 𝑇ℎ𝑖 < 𝑥 },                                  formation loss by splitting values into three groups: outer, middle,
+                                𝑜         𝑖     𝑖         𝑜
+                                                                                           and inner group. However, this approach poses a new challenge.
+                    𝐺𝑚 = {𝑥 | 𝑇𝑙𝑜 ≤ 𝑥 < 𝑇𝑙𝑜 or 𝑇ℎ𝑖 < 𝑥 ≤ 𝑇ℎ𝑖 },               (1)          When quantizing the outer group, whose values have large magni-
+                                         𝑖
+                             𝐺𝑖 = {𝑥 | 𝑇𝑙𝑜        𝑖
+                                           ≤ 𝑥 ≤ 𝑇ℎ𝑖 }                                     tudes, directly applying uniform quantization results in information
+                                                                                           loss. Previous works have addressed this by using mixed precision
+     Oaken performs approximately a hundred offline inferences with
+                                                                                           (e.g., FP16) for outliers, distinct from the precision used for inliers
+  sample input prompts to gather distribution information from the
+                                                                                           (e.g., INT4) [22, 30, 33, 86]. However, using mixed precision for
+  KV cache of each decoder layer. The four group thresholds are
+                                                                                           outliers introduces sparsity, incurring a storage cost of 23 bits per
+  extracted during the profiling process from the KV cache of each in-
+                                                                                           entry: 16 bits for the value, 6 bits for the index, and 1 bit to indi-
+  ference run using topK operations, and their averages are computed
+                                                                                           cate the group. Dealing with sparse, mixed-precision outliers also
+  for each decoder layer. These statistics are then used to establish
+                                                                                           requires additional hardware modules, which adds complexity to
+  group thresholds for the KV cache. As discussed in Section 4.1,
+                                                                                           the accelerator. While these overheads are negligible when the out-
+  Oaken’s offline profiling should be performed separately for each
+                                                                                           lier fraction is small, they become substantial as the proportion
+  model, whereas the KV cache distribution and the profiling are inde-
+                                                                                           increases. Moreover, this extra complexity makes it challenging to
+  pendent of both the profiling dataset and future inputs. It effectively
+                                                                                           explore the sweet spot in the accuracy-performance trade-off by
+  minimizes accuracy loss with only a small number of inferences,
+                                                                                           adjusting the group thresholds.
+  ensuring minimal and one-time overhead.
+                                                                                              One straightforward way to address this issue is to quantize out-
+  Uniform quantization. Oaken adopts uniform quantization, where                           liers as well. However, as discussed in Section 4.1, quantizing outer
+  the scaling factor 𝜎 is calculated using only simple statistics to min-                  groups is challenging due to their wide magnitude range. To address
+  imize hardware complexity:                                                               this, we propose group-shift quantization, a hardware-efficient algo-
+                                  2𝑚 − 1                                                   rithm that minimizes quantization loss while compressing outliers
+                                  𝜎=       ,                       (2)                     to a lower bitwidth.
+                                Max − Min
+ Where 𝑚 is the bitwidth of the quantized value, and Max and Min                           Group-shift algorithm. The core idea of Oaken’s group-shift
+ represent the maximum and minimum of the values to be quantized.                          algorithm is to shift the entire group using the thresholds obtained
+ The uniform quantization function, which converts a value 𝑥 into                          from offline profiling to narrow the range of values, making low-
+ its quantized value, is defined using the scaling factor from Eq. 2:                      bit quantization possible. For instance, for the outer group, we
+                                                                                           subtract𝑇ℎ𝑖𝑜 from values larger than𝑇 𝑜 , and subtract𝑇 𝑜 from values
+                          𝑄 (𝑥) = round((𝑥 − Min) × 𝜎).                       (3)                                                  ℎ𝑖              𝑙𝑜
+                                                                                                            𝑜 . While the middle group corresponds to inliers,
+                                                                                           smaller than 𝑇𝑙𝑜
+  Oaken finds the minimum and maximum values for each of the                               our group-shift algorithm can also be applied in the same manner.
+  three quantization groups and computes the quantization scaling                          Figure 7(b) shows that applying the aforementioned method shifts
+  factor for each group dynamically online.                                                the distribution of both the outer and middle groups, concentrating
+  Online KV cache quantization. As previously discussed, Oaken                             them within a narrower range. As a result, Oaken can quantize
+  performs per-token quantization on the KV cache, focusing only                           groups spanning wide ranges to low bitwidth using group-shift,
+  on the key-value vector newly generated in each attention layer.                         minimizing the quantization loss. Note that the group-shift method
+

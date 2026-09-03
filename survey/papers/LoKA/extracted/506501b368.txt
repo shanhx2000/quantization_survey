@@ -1,0 +1,1161 @@
+                    2026 ACM/IEEE 53rd Annual International Symposium on Computer Architecture (ISCA)
+
+
+
+
+             LoKA: Low-precision Kernel Applications for
+                 Recommendation Models At Scale
+                  Liang Luo, Yinbin Ma, Quanyu Zhu, Vasiliy Kuznetsov, Yuxin Chen, Jian Jiao, Jiecao Yu,
+                     Buyun Zhang, Tongyi Tang, Xiaohan Wei, Yanli Zhao, Zeliang Chen, Yuchen Hao,
+                    Venkatesh Ranganathan, Sandeep Parab, Yantao Yao, Maxim Naumov, Chunzhi Yang,
+                                    Shen Li, Ellie Wen, Wenlin Chen, Chunqiang Tang
+                                                                   Meta AI
+                                                            Menlo Park, CA, USA
+                          {liangluo, yinbin, qyz, vasiliy, yuxinc, jianj, jiecaoyu, buyunz, tongyitang, ubimeteor,
+                                yanlizhao, zlc, haoyc, verangan, sandeepparab, yantao, mnaumov, zorror,
+                                              shenli, ellie.wen, wenlinchen, tang}@meta.com
+
+
+      Abstract—Recent GPU generations deliver significantly higher                     TFLOPs           TF32    BF16     FP8/INT8
+   FLOPs using lower-precision arithmetic, such as FP8. While                          A100 [57]        156     312       624
+   successfully applied to large language models (LLMs), its adoption                  H100 NVL [59]    418     840      1,671
+   in large recommendation models (LRMs) has been limited. This                        B200 HGX [58]   1,100   2,250     4,500
+   is because LRMs are numerically sensitive, dominated by small                                       TABLE I
+   matrix multiplications (GEMMs) followed by normalization, and                         NVIDIA GPU D ENSE P EAK P ERFORMANCE .
+   trained in communication-intensive environments. Applying FP8
+   directly to LRMs often degrades model quality and prolongs
+   training time. These challenges are inherent to LRM workloads            our knowledge, no prior work has achieved successful FP8
+   and cannot be resolved merely by introducing better FP8 kernels.
+   Instead, a system-model co-design approach is needed to suc-             training for large recommendation models (LRMs) at scale.
+   cessfully integrate FP8. We present LoKA (Low-precision Kernel           LRMs are critical industrial workloads that power applications
+   Applications), a framework that makes FP8 practical for LRMs             such as advertising, short-video, and news-feed ranking. They
+   through three principles: profile under realistic distributions to       predate LLMs and differ substantially in architecture and
+   know where low precision is safe, co-design model components             numerical behavior. Applying FP8 to LRMs is particularly
+   with hardware to expand where it is safe, and orchestrate across
+   kernel libraries to maximize the gains. Concretely, LoKA Probe is        challenging: on a state-of-the-art framework, TorchAO [60],
+   a statistically grounded, online benchmarking method that learns         we observe 1.3× slowdown and up to 2.5% relative log loss
+   activation and weight statistics, and quantifies per-layer errors.       degradation (note that 0.02% relative log loss is considered
+   This process pinpoints safe and unsafe, fast and slow sites for FP8      significant in production) when applying FP8 training to a
+   adoption. LoKA Mods is a set of reusable model adaptations that          representative production recommendation model, due to the
+   improve both numerical stability and execution efficiency with FP8.
+   LoKA Dispatch is a runtime that leverages the statistical insights       following characteristics.
+   from LoKA Probe to select the fastest FP8 kernel that satisfies             First, LRMs operate under tight quality constraints—even
+   the accuracy requirements. Deployed on production LRMs that              minor degradations in model accuracy are unacceptable,
+   serve billions of users with advertising recommendations at a            leaving little room for approximation. Second, LRMs are
+   major social media company, LoKA delivers up to 20% higher               architecturally heterogeneous. Unlike LLMs’ relatively uniform
+   training throughput and 40% faster inference on heterogeneous
+   GPUs (H100, B200, GB200, MI300X and MI350X) in production                Transformer [67] stacks, LRMs combine wide ensembles [64],
+   environment, with no quality loss, turning FP8 from a model-             deep hierarchical stacking [78], [79], and specialized interaction
+   quality risk into a reliable performance lever for LRMs at scale.        modules [64], each exhibiting distinct numerical sensitivities.
+                                                                            Third, LRMs exhibit low arithmetic intensity despite LLM-
+                          I. I NTRODUCTION                                  scale FLOPs complexity [76]. They consist primarily of many
+      Lower-precision numerics, such as FP8 and FP4, have been              small GEMMs followed immediately by normalization layers,
+   major drivers of GPU performance improvements due to their               where quantization overhead can dominate and often negate
+   efficient use of chip area and power. As shown in Table I,               the benefits of low-precision execution.
+   the B200’s TF32 FLOPs is 7× that of the A100, while its                     These challenges cannot be solved merely by introducing
+   FP8 and FP4 FLOPs are 29× and 58× the A100’s TF32                        better low-precision kernels, as the fundamental problems are
+   FLOPs, respectively. To fully leverage the high FLOPs of lower-          inherent to how LRMs are structured and trained. What is re-
+   precision numerics, ML models must adopt them effectively                quired is a system-model co-design approach that can diagnose
+   without sacrificing quality.                                             where low precision is viable, modify model components to
+      While recent work [19], [35] demonstrated that FP8 can                remain stable under reduced precision, and select the right
+   be applied effectively to large language models (LLMs), to               kernels at runtime to maximize efficiency and maintain quality.
+
+
+979-8-3315-5065-3/26/$31.00 ©2026 IEEE                                   1368
+DOI 10.1109/ISCA66397.2026.00103
+                                    LRMs
+                                                                                                       Prediction
+                                                                                                          Arch
+                              LoKA Mods
+               Precision-Aware Model-Hardware Co-design
+                                                                                           Dense-Sparse Interaction Arch
+
+                                 Numerically                                        Interaction       Interaction      Interaction
+                                 Stable LRM                                          Module 1          Module 2         Module 3
+
+                                                                                                                                        N
+                               LoKA Probe                                            SparseEmbedding
+                                                                                            Embedding
+                                                                                    Sparse
+                                                                                   Sparse Embedding
+                       Distribution-aware Profiling                                        Tables                    Dense Arch
+                                                                                          Tables
+                                                                                         Tables
+
+               Learned Dist.                   Low-precision                                              F
+               Quantified Err.                   Libraries                          Sparse Features                 Float Features
+
+                            LoKA Dispatch                                              Fig. 2. A typical model architecture of a LRM.
+                    Per-Operator Kernel Orchestration
+
+                                                                               problem — selecting the fastest implementation that satisfies
+                     Low-precision Execution
+                                                                               an accuracy constraint — consistently outperforms any
+                                                                               uniform policy. LoKA adopts LoKA Dispatch, a unified
+               E2E Throughput                vs baseline
+                                                                               runtime mechanism that integrates multiple low-precision
+                    Offline       Job Initialization Time                      libraries and dynamically selects the fastest kernel that
+                                                                               satisfies both accuracy and throughput constraints.
+                      Fig. 1. LoKA Overview                                   Together, these principles ensure LoKA remains effective
+                                                                           across a wide range of hardware and beyond specific work-
+   We present LoKA (Low-precision Kernel Applications), a
+                                                                           loads. To demonstrate this, we leverage actual training data,
+framework designed to unlock the benefits of FP8 and emerging
+                                                                           comprising thousands of features, along with realistic batch
+precisions for large-scale recommendation models .
+                                                                           sizes and production-scale model configurations and assess
+   LoKA is built on top of three principles (Figure 1):                    LoKA across three state-of-the-art recommendation model
+1) Distribution-Aware Profiling — Know where low pre-                      families integrating a wide range of industrial and open-source
+   cision is safe. Standard library benchmarks use synthetic               architectures [5], [53], [67], [70], [79], [80]: Wukong [78],
+   inputs and overestimate low-precision readiness. Real work-             Interformer [74] and External Large FM (ELFM) [43]. Across
+   load distributions, especially confounded by complex LRMs,              diverse scales and hardware generations including Nvidia H100,
+   can be heavy-tailed, correlated, or non-stationary. These               B200 and GB200 as well as AMD MI 300X and 350X clusters,
+   expose quantization errors that random tensors miss. Any                LoKA consistently delivered significant end-to-end gains. It
+   low-precision adoption should begin by profiling under                  enabled up to 20% faster training throughput and 40% faster
+   realistic distributions to identify per-operator risk. To that          inference throughput in our hyperscale production environment,
+   end, LoKA introduces LoKA Probe, a statistically grounded               all while preserving model quality. LoKA was successfully
+   benchmarking method that identifies which layers in an                  launched to flagship models, serving billions of users at a
+   LRM can safely operate at low precision efficiently.                    major social media company for both training and inference.
+2) Precision-Aware Model-Hardware Co-design — Expand                       These results demonstrate that low-precision computation, when
+   where low precision is safe. When profiling reveals that                applied through a systematic framework, can serve as a practical
+   certain operators are numerically unsafe or inefficient under           and reliable accelerator for production-scale recommendation
+   low precision, the solution is not to fall back to high                 systems.
+   precision universally but to co-design model components
+   with hardware execution constraints. This means strategi-                         II. L OW P RECISION C OMPUTATION FOR
+   cally modifying operations so that they are simultaneously                              R ECOMMENDATION M ODELS
+   more numerically stable and more hardware-efficient. We                    This section examines the unique challenges of applying low-
+   propose LoKA Mods, a collection of redesigned modules that              precision training to recommendation models, highlighting key
+   improve numerical stability under low-precision execution,              differences from language models that make direct adoption
+   reducing the risk of divergence or quality degradation.                 of existing techniques ineffective.
+3) Per-Operator Kernel Orchestration — Maximize the
+                                                                           A. Large Recommendation Models
+   gains from low precision. No single low-precision library
+   or recipe dominates across all operator shapes and hardware.              Modern recommendation models, illustrated in Figure 2,
+   Treating each operator as an independent optimization                   process diverse inputs to predict user-item interactions. They
+
+
+
+
+                                                                    1369
+                                           2.5                                                                challenges because it requires native low-precision throughout
+
+
+               % Relative Log Loss (RLL)
+                                           2.0                                                                entire training and inference.
+                                                                                                                 Despite successful FP8 adoption in LLMs, direct application
+                                           1.5                                                                to LRMs fails dramatically. To demonstrate this, we applied
+                                                                                                              TorchAO [60], a widely-used PyTorch low-precision library to
+                                           1.0                                                                all linear layers (input/output features ≥ 128) in the state-of-
+                                                                                                              the-art Wukong model using 64 H100 GPUs with tensorwise
+                                           0.5                                                                FP8 scaling.
+                                           0                                                                     Figure 3 shows the results: FP8 training incurs 1.3× slow-
+                                                 10 20      30   40   50      60   70   80                    down and up to 2.5% relative log loss degradation. This failure
+                                                                                                              stems from fundamental differences between LRMs and LLMs
+                                                            Billion Examples
+                                                                                                              highlighted in §I.
+ BF16 Throughput                               FP8 Throughput    FP8 Slowdown      Relative Log Loss (%)
+      520K/s                                       395K/s             1.32×                  2.5                                           Normal Dist.   LRM Input Dist.
+Fig. 3. Significant Relative Log Loss (top) and throughput (bottom) degradation                                          Pytorch BF16          0.03             0.04
+are observed when training a Wukong model in FP8 low precision.                                                          TorchAO RW            0.47             0.53
+                                                                                                                         DeepGEMM BW           0.49             0.56
+                                                                                                                         FBGEMM RW             0.48             0.52
+comprise four main components:
+• Sparse embedding tables store dense vectors for discrete                                                                                   TABLE II
+   features like user IDs and item categories. These tables                                                       G EOMETRIC MEAN OF MERE OF 4 IMPORTANT LINEAR LAYERS IN A LRM
+                                                                                                                     COMPARED TO TF32 BASELINE FOR LOW- PRECISION KERNELS WITH
+   contain most model parameters and are distributed across                                                                       DIFFERENT INPUT DISTRIBUTIONS .
+   GPUs using techniques like embedding sharding.
+• Dense architecture processes continuous numerical features
+                                                                                                              C. Characterizing Low-Precision Quantization Overheads and
+   through standard neural network layers.
+                                                                                                              Error in LRMs
+• Dense-sparse interaction modules combine embeddings and
+   dense features through stacked layers containing specialized                                                      Standard low-precision libraries optimize for accuracy and
+   interaction components including deep cross networks [70],                                                     performance using random or fixed-distribution [18], [27], [66]
+   multi-head attention [15], factorization machines [78], or                                                     tensor benchmarks and common GEMM shapes [60]. However,
+   ensembles [79] thereof. They dominate computational com-                                                       recent study [22] has demonstrated that at scale, models develop
+   plexity in the LRM.                                                                                            highly systematic outlier activations that severely disrupt
+• Prediction layers generate final scores from features.                                                          standard quantization techniques and real LRM workloads
+                                                                                                                  deviate substantially from these test conditions.
+   Like LLMs, LRMs follow scaling laws [7], [31], [33],
+                                                                                                                     We analyzed a four-layer production LRM with lin-
+[40], [78] and have reached comparable FLOPS complexity.
+                                                                                                                  ear layers, comparing three state-of-the-art low-precision
+However, unlike LLMs that process relatively static data
+                                                                                                                  libraries—FBGEMM [41], TorchAO, and DeepGEMM [17].
+requiring single training runs, LRMs must continuously adapt
+                                                                                                                  For each library, we evaluated two input distributions: (1)
+to evolving user preferences and new items through online
+                                                                                                                  standard normal (as used in typical benchmarks), and (2)
+training [30], making both training and inference performance
+                                                                                                                  learned distributions obtained from actual LRM training traces.
+critical.
+                                                                                                                     Using the learned distributions allows us to synthesize
+   Modern LRMs use hybrid training [50]: sparse embedding
+                                                                                                                  representative inputs and quantify how errors manifest on out-
+tables are sharded across GPUs [75], and are communicated
+                                                                                                                  of-distribution data, the conditions that are rarely exercised by
+via the AlltoAll collectives [48], [50], while dense components
+                                                                                                                  standard benchmarks. We enabled fast accumulation, sampled
+use Fully Sharded Data Parallel (FSDP) [81].
+                                                                                                                  50 input–weight pairs per layer, and computed average statistics
+B. Low-precision Training and Inference                                                                           to ensure significance. Only forward performance was tested
+                                                                                                                  for simplicity.
+   Low-precision approaches span several categories [32].
+                                                                                                                  Error Analysis. For each linear layer, we measure the FP8
+Quantization-Aware Training (QAT) simulates quantization
+                                                                                                                  execution error relative to a TF32 reference using Mean
+effects during training while maintaining full-precision weights,
+                                                                                                                  Element-wise Relative Error (MERE):
+improving accuracy but not training speed. Post-Training
+                                                                                                                                                      M X
+                                                                                                                                                        N
+Quantization (PTQ) applies quantization to trained models                                                                                             X     outm,n − refm,n
+without additional training, offering simplicity but typically                                                      MERE(out(M,N ) , ref(M,N ) ) =        |                 |
+                                                                                                                                                      m n
+                                                                                                                                                                refm,n
+larger accuracy loss. Post-Quantization Training (PQT) com-
+bines PTQ with fine-tuning to recover accuracy. Direct Low                                                           MERE captures the average element-wise deviation of low-
+Precision (DLP) employs native low-precision training and                                                         precision outputs from full-precision results.
+inference, offering the greatest throughput benefits. DLP is                                                         Findings. Table II summarizes results: the geometric mean of
+the focus of LoKA, though it presents the greatest technical                                                      MERE across layers increases by up to 15% when tested with
+                                                                                                                  realistic LRM distributions versus standard normal inputs. This
+
+
+
+
+                                                                                                           1370
+                                                                 663                                                                          𝒚 = 𝑾𝒙 + 𝒃
+                                                    611
+               600
+
+
+
+
+                                                                                                         Training Time
+                                                                            Throughput
+                                                                 225
+                                                    189                        Loss
+    TFLOPS/s
+
+
+                        404           409                                                                                              Act. Tracker   Weight Tracker
+               400
+                         149          124
+                                                                                                                                             Online Tracking
+               200                                  422          438
+                                                                          Actual                                              Sampling 𝒙
+                                      285                                                                                                                       Sampling 𝑾
+                         255                                            Throughput
+
+
+
+
+                                                                                                        Offline Benchmarks
+                0
+                        BF16     TorchAO*       DeepGEMM**    FBGEMM
+                                                                                                                                            = 𝑾𝒙 + 𝒃                 FP8
+
+
+                 123
+                       Compute-only          Quantization throughput loss                                                                   = 𝑾𝒙 + 𝒃              TF32
+                       Throughput            Effective Throughput
+                                                                                                                                           loss = MERE(          ,         )
+                                                                                                                                       speedup = Lat( )/Lat( )
+Fig. 4. Compute throughput ablation of low-precision kernels on representative                                                          Accuracy Benchmarking
+LRM shapes. */**: Padding overheads not included in both TorchAO and
+DeepGEMM; torch.compile not available for DeepGEMM.
+
+
+
+
+                                                                                                         Loss versus Steps
+
+
+
+
+                                                                                                                                                      Speedup
+demonstrates that out-of-distribution activations significantly
+
+
+
+
+                                                                                                                             MERE
+amplify quantization errors, precisely the failure mode not
+revealed by conventional random benchmarks.                                                                                          Steps
+Throughput Analysis We benchmarked 27 GEMM shapes                                                                               Linear 1   Linear 2        Recipe 1            Recipe 2
+from production LRMs, ranging from (2048, 256) @ (256,
+768)1 . to (2048, 123200) @ (123200, 1024) on H100 GPUs.                                        Fig. 5. LoKA Probe learns and stores necessary parameters online for offline
+Figure 4 shows results separated into pure compute throughput                                   accuracy benchmarks to derive statistically significant loss for each linear layer
+                                                                                                under low precision execution.
+versus end-to-end performance including quantization overhead.
+Key findings:
+                                                                                                communication-dominated runtimes, and all these impede FP8
+• End-to-end FP8 speedup over BF16 is limited to 1.6× on
+                                                                                                deployment at scale.
+   average.
+• Maximum effective TFLOPS/s remains under 20% of hard-
+                                                                                                                                           III. L O KA
+   ware capacity.
+• Quantization overhead consumes over 30% of end-to-end                                        As established in §I, the fundamental barriers to low-
+   GEMM latency.                                                                            precision LRM training cannot be addressed by better kernels
+• Including memory allocation overhead (e.g., layout manipu-                                alone. They require a systematic approach guided by three
+   lation), FP8 can perform worse than BF16.                                                principles: profiling under realistic distributions to know
+   These results demonstrate that applying low-precision compu-                             where low precision is safe, co-designing model components
+tation to LRMs requires addressing both accuracy degradation                                with hardware to expand where it is safe, and orchestrating
+from realistic data distributions and performance overhead from                             across kernel libraries to maximize the resulting gains. LoKA
+quantization operations which are challenges that cannot be                                 instantiates each principle as a concrete component. LoKA
+solved by library improvements alone.                                                       Probe Probe implements distribution-aware profiling (Principle
+                                                                                            1). LoKA Mods realizes precision-aware model-hardware co-
+D. The Deployment Status Quo of Low Precision Kernels
+                                                                                            design (Principle 2). LoKA Dispatch provides per-operator
+                                                                                            kernel orchestration (Principle 3). We describe each below.
+                                             Training      Inference
+                          TF32                95%            0%                                 A. LoKA Probe: Distribution-Aware Profiling
+                          BF16/TF32            5%             -
+                          FP16                  -           99%                                    The critical insight behind LoKA is that standard low-
+                          FP8                   0         1% (PTQ)
+                                            TABLE III
+                                                                                                precision testing fundamentally underestimates real-world
+   P ROPORTION OF MODELS TRAINED AND SERVED USING A SPECIFIC                                    quantization errors. Existing libraries benchmark accuracy
+         DATATYPE . - MEANS THIS CHOICE IS NOT APPLICABLE .                                     using random tensors (typically normal distributions) which
+                                                                                                fail to capture the complex statistical properties of actual
+   Real-world adoption of low-precision training and inference                                  LRM activations and weights. This leads to overly optimistic
+for LRMs remains limited. In a survey of top 500 Ads ranking                                    error estimates and explains why “battle-tested” low-precision
+LRMs at a large social-media company (Table III), we observed:                                  kernels still cause training divergence in practice.
+in training, 95% of models run in high precision (TF32), 5%                                        LoKA Probe addresses this by learning the true distributions
+use mixed precision (BF16/TF32), and 0% train in FP8; in                                        of inputs and weights during training, then using these learned
+inference, 99% of models serve in FP16, with only 1% using                                      distributions for statistically significant offline accuracy (and
+FP8 via PTQ. These figures underscore the practical hurdles:                                    throughput) assessment. This approach reveals quantization
+numerical stability, small-GEMM quantization overheads, and                                     errors that random testing misses, enabling informed decisions
+  1 Denote a matmul of two tensors with shapes (2048, 256) and (256, 768)                       about which layers can safely use low precision.
+
+
+
+
+                                                                                         1371
+   1) Online Distribution Learning: LoKA Probe operates                                   Given historical summaries (nold , µold , Σold ), where Σold is the
+in two phases: online learning during training and offline                                (unnormalized) scatter matrix, the merged quantities are
+benchmarking for error analysis.
+   During training, LoKA Probe efficiently tracks the statistical                                                nnew = nold + B,
+properties of each linear layer’s inputs and weights without                                                      δ = µb − µold ,
+storing the actual tensors (which would be prohibitively expen-                                                               B
+                                                                                                               µnew = µold +       δ,
+sive and prone to overfitting). Instead, it maintains compact                                                                nnew
+statistical summaries that can recreate realistic distributions.                                                              nold B T
+LoKA Probe models distributions as multivariate Gaussians.                                                Σnew = Σold + Sb +          δδ .
+                                                                                                                               nnew
+For a 2D tensor T of shape (M, N), LoKA Probe samples from
+                                                                                          The the unbiased (sample) covariance is
+                                T ∼ G(µ, Σ)
+                                                                                                                   Σnew
+where µ ∈ RM ×N is the mean and Σ ∈ RM N ×M N is the                                                      Σ =             (for nnew > 1).
+                                                                                                                 nnew − 1
+covariance matrix.
+                                                                                          Implementation notes. LoKA Probe accumulates Σ in higher
+   This Gaussian assumption is motivated by both theoretical
+                                                                                          precision (e.g., FP32).
+and empirical observations: activations in large models, after
+layer normalization or RMS normalization, tend to concentrate                             Optimized Weight Distribution Modeling We cannot assume
+around zero and exhibit light-tailed, symmetric statistics, which                         dimension independence for W (weight matrix), so the trick
+are well captured by a normal distribution. Moreover, under                               for input modeling does not apply. Instead, we model a weight
+the central-limit effect, the pre-activation of each neuron                               matrix W ∈ RM ×N with a matrix-normal distribution:
+aggregates many independent (or weakly correlated) input                                                        
+                                                                                          W ∼ MN M, U, V , and vec(W ) ∼ N vec(M ), V ⊗U ,
+                                                                                                                                                        
+contributions, making its distribution approximately Gaussian
+even in nonlinear regimes.                                                                where U ∈ RM ×M is the row covariance and V ∈ RN ×N is
+   Finally, LoKA’s objective is not to perfectly reproduce the                            the column covariance. This reduces storage from O(M 2 N 2 )
+long-tail statistics of activations but to approximate their second-                      to O(M 2 + N 2 ) while capturing essential correlations.
+order structure sufficiently for quantization-error analysis.                                Let Wc = W − M be the mean-centered weight. We main-
+Within this scope, Gaussian families provide analytically closed                          tain (U, V ) online using a Kronecker-factor (flip–flop–style)
+moments, stable parameter updates, and simple sampling rules,                             update with exponential moving average (EMA). To avoid
+making them the pragmatic choice for large-scale, online                                  explicit matrix inverses, we use linear solves with (regularized)
+distribution tracking.                                                                    Cholesky factors.
+   However, while conceptually simple, storing the full covari-                              Per-update (single minibatch) estimates:
+ance matrix (M 2 N 2 elements) is still intractable for large
+                                                                                                  SolveLV LTV = V + εI,               f = Wc L−T ,
+                                                                                                                                      W
+tensors. Therefore, we seek to significantly reduce LoKA                                                                                      V
+Probe’s storage requirements.                                                                          1 f fT
+                                                                                                  U′ =   WW ,                            (M × M )
+Optimized Input Distribution Modeling Activations play a                                               N
+critical role in selecting layers to quantize [45]. For them, we                                  Solve LU LTU = U + εI,              c = L−1 Wc ,
+                                                                                                                                      W    U
+exploit the independence of the batch dimension, a key property
+                                                                                                        1 cT c
+in recommendation models where cross-batch operators like                                         V′ =    W W,                           (N × N )
+                                                                                                        M
+BatchNorm are avoided to prevent information leakage2 . By
+treating the batch dimension as independent, it enables us to                                 EMA smoothing:
+model only along the feature dimension, reducing storage from
+                                                                                                             U ′′ = m U + (1 − m) U ′ ,
+O(M 2 N 2 ) to manageable O(N 2 ).
+   Tracking the mean is trivially done in a streaming fashion.                                               V ′′ = m V + (1 − m) V ′ ,
+For variance, we implement a batched Welford tracker [13]                                                     U ← 21(U ′′ + U ′′T ) + εI,
+that efficiently updates covariance online using only O(N 2 )                                                 V ← 12(V ′′ + V ′′T ) + εI.
+memory, by decomposing the final covariance as follows.
+   Let the current batch be X ∈ RB×K (rows are samples,                                      Scale identifiability. Because V ⊗ U is invariant under
+columns are features, therefore B = M and K = N using                                     (U, V ) 7→ (cU, V /c) (where ⊗ is the Kronecker product [34],
+previous annotations). Define the batch mean µb ∈ RK and                                  we renormalize to prevent drift using s for better numerical
+batch scatter:                                                                            stability:
+         Sb = (X − 1B µTb )T (X − 1B µTb ) ∈ RK×K .                                                       trace(U )             U
+                                                                                                  s =               ,     U←      ,         V ← s V.
+  2 Consider the case when the current (user, item) pair and the user’s future                               M                  s
+iteration (user, item in the future) both present in the same local batch, a batch          These updates allow us to avoid forming V −1 or U −1
+norm would effectively use the user’s future behavior, which may already
+encode their current action in its input feature, to predict their current behavior,      explicitly. In practice we use small ε (e.g., 10−6 × trace(U
+                                                                                                                                                  M
+                                                                                                                                                       )
+                                                                                                                                                         )
+leading to catastrophic overfitting.                                                      and a momentum m ∈ [0.9, 0.99] for stable online tracking.
+
+
+
+
+                                                                                       1372
+   To minimize overhead, LoKA Probe activates every 100
+training iterations and asynchronously saves statistical parame-
+ters every 10,000 iterations, translating to a negligible (≤ 1%)
+throughput overhead. This provides comprehensive coverage
+of distribution evolution throughout training while maintaining
+minimal performance impact.
+Sampling learned distributions. Given the tracked statistics                                               Diverging                           Oscillating
+(µ, Σ) for activations and (M, U, V ) for weights, LoKA Probe
+can synthesize representative inputs and weights for offline
+benchmarking.
+   (a) Input sampling. We draw a synthetic activation batch
+T ′ ∈ RB×K by sampling
+Z ∼ N (0, IK ),         T ′ = 1B µT + Z LTΣ ,          LΣ LTΣ = Σ + εI,
+                                                                                                            Vanishing                           Cycling
+where LΣ is the Cholesky factor of the (regularized) covari-
+ance.3
+  (b) Weight sampling. For weights modeled as W ∼
+MN (M, U, V ), we sample
+       Z ∼ N (0, IM ×N ),        W ′ = M + LU Z LTV ,
+              LU LTU = U + εI, LV LTV = V + εI.
+                                                                                                            Drifting                           Converging
+This procedure preserves both row-wise and column-wise
+second-order correlations, yielding realistic surrogate weights                        Fig. 6. Typical behaviors of bias norm of in Wukong training. Biases can
+and activations that match the training-time statistics without                        introduce instability during training, especially under low-precision conditions.
+storing full tensors.
+   2) Offline Error Quantification: Using the learned distri-                            dequantization before LayerNorm and requantization after-
+butions, LoKA Probe generates statistically representative                               ward, which is an overhead that often exceeds low-precision
+test cases and compares low-precision kernel outputs and                                 benefits, and prevents low-precision execution of such layers.
+performance against high-precision references. This reveals                              Modern LRMs employs LayerNorms aggressively in between
+layer-specific vulnerabilities that standard random testing                              layers in MLP for training stability, creating a sizable impact
+misses, and helps us prune layers that do not benefit from                               on the end-to-end latency.
+low precision acceleration.                                                            • Sigmoid-based activation instability LRM’s heavy use
+   For each linear layer, we compute MERE and speedup using                              of sigmoid functions (Swish activation [62]: x · σ(x),
+inputs and weights sampled from learned distributions rather                             SwishNorm: x·σ(Norm(x))) involves exponential operations
+than synthetic ones. Layers with high MERE scores or low                                 that amplify large elements while diminishing small ones,
+speedups are flagged as problematic for low-precision execution.                         dramatically increasing quantization loss.
+Figure 5 summarizes this workflow.
+                                                                                       B. LoKA Mods: Precision-Aware Model-Hardware Co-design
+   3) LoKA Probe Key Findings: We use LoKA Probe to
+analyze the Wukong model used in §II-C, sampling 100                                  The vulnerabilities identified by LoKA Probe (problematic
+realistic input-weight pairs for each linear layer and identified                  bias terms, normalization overhead, and sigmoid instability)
+three critical patterns that result in large losses and unoptimal                  cannot be fixed by tightening kernel precision alone. Instead,
+performance:                                                                       we take a model-kernel co-design approach, introducing
+• Problematic bias terms Figure 6 shows different modes of
+                                                                                   LoKA Mods: redesigned building blocks that improve both
+  L2 bias norm evolution during training. A significant portion                    numerical stability and execution efficiency under low-precision
+  of biases never converge, with some reaching values ≥ 0.1.                       conditions.
+  These diverging biases cascade through subsequent modules,                          1) No Bias: We draw inspiration from recent LLM archi-
+  causing out-of-bounds errors. When clamped and quantized,                        tectures that have moved away from bias terms. Models like
+  they can cause smaller values to vanish entirely.                                DeepSeek eliminate biases from all feedforward and normal-
+• Normalization overhead and errors LayerNorm [10]
+                                                                                   ization layers, while PaLM [4] and Falcon [2] remove them
+  operations require complex variance computations prone                           from feedforward layers while retaining them in normalization
+  to mean cancellation when values are similar. This forces                        components. Following this trend, we remove all bias terms
+  normalization to run in higher precision, requiring expensive                    from Wukong modules except the final prediction layers,
+                                                                                   where bias terms can be beneficial for different prediction
+   3We add a small jitter εI (e.g., 10−6 ×   trace(Σ)
+                                                      ) to maintain numerical      tasks. This modification also provides the benefit of potentially
+                                                K
+stability.                                                                         reduced communication overheads: with FSDP per-parameter
+
+
+
+
+                                                                                1373
+               K                                   N                     (Figure 7a), the entire feature vector required for normalization
+                                                                         fits within a single thread block. In this regime, BlockNorm
+                                                                         behaves identically to standard normalization layers, as all
+      B                   @               =                     (a)
+                                                                         statistics are computed locally. Additional operations such
+                                                                         as activation and (de)quantization can also be fused together
+                                                                         before the final output is written to HBM.
+                                       Cross-SM normalization            Case 2: Small batch, large output dimension. When N is
+                                                                         large, however, a single thread block can no longer hold an
+                                                                         entire output row in shared memory. Computing RMS statistics
+                          @               =                     (b)      now requires cross-block synchronization (Figure 7b), which
+                                                                         negates most of the performance gains of fusion. One possible
+                                                                         mitigation is to reduce the tile size along the batch dimension,
+                                       Single tile on output dim         but this incurs SM wave quantization effects [1] and lowers
+                                                                         the L2 cache hit rate for the W matrix, yielding negligible
+                                                                         end-to-end speedup (Figure 7c).
+                          @               =                     (c)      Tradeoff and design choice. We further explored semi-
+                                                                         fused approaches where GEMM outputs partial statistics for
+                                                                         later normalization, or tiling assignments aligned with the
+                                       In-block normalization            normalization axis at the SM level. While these approaches
+                                                                         offer limited gains, they require extensive manual tuning for
+                                                                         each new shape, which reduces generality. To achieve robust
+                          @               =                     (d)      performance across diverse tensor shapes, LoKA deliberately
+                                                                         relaxes full mathematical equivalence in favor of efficiency,
+                                                                         leading to the final BlockNorm formulation (Figure 7d).
+                   Active block     Normalization Block                     Concretely, BlockNorm normalizes over fixed-size blocks
+                                                                         (e.g., 256 elements) rather than the full output dimension.
+                        Fig. 7. BlockNorm design                         During both training and inference, the same block size is
+                                                                         used, and normalization statistics are computed independently
+padding [44], bias tensors smaller than the world size can incur         per block to ensure train-test consistency.
+significant overheads.                                                   Striking a Better Numerical and Performance Tradeoff
+   2) Block-wise Normalization: Our objective is to fuse nor-            with Model Co-design While the actual computation differs
+malization directly into the GEMM epilogue to minimize HBM               between BlockNorm and standard normalization practices, we
+I/O. While similar to epilogue fusion [65], our application is in        argue that it does not break RMSNorm: it is mathematically
+a different context. By performing normalization immediately             equivalent to an unparameterized Grouped RMSNorm [71].
+after GEMM completion while the output tiles still reside in on-         Global RMSNorm couples all channels to a single statistic,
+chip memory (L1/L2 caches or registers), we avoid costly global          meaning one outlier suppresses all features. BlockNorm de-
+memory traffic. However, conventional normalization layers               couples feature subspaces, preventing catastrophic cancellation
+operate along the feature dimension, which often misaligns               (which can prove important [39], [72]) and increasing the
+with the physical data layout of GEMM outputs.                           model’s representational capacity via more independent degrees
+   To address this, we proposes BlockNorm, a normalization               of freedom. Because block size is strictly consistent between
+approach inspired by GroupNorm [71] which is originally                  training and inference, the model natively adapts to this
+designed to apply normalization within individual channels of            grouped topology without requiring global, hardware-inefficient
+a feature map. In our version of BlockNorm, instead of com-              synchronization. Empirically, BlockNorm improves stability
+puting statistics across the full output dimension or individual         over baselines (Figure 13), and convergence is insensitive
+feature, it applies root-mean-square normalization [77] across           to block size provided it is sufficiently large (e.g. 256) and
+predefined blocks along the feature dimension, which happens             identical across train/test phases. This approach also aligns
+within each computational block of the GEMM kernel:                      closely with emerging Microscaling (MX) hardware standards,
+                                                                        which utilize block-shared scaling to preserve dynamic range
+   RMSNorm (W x + b).view(−1, BlockN) .view(B, N ).                      without the overhead of global synchronization [63]. The
+                                                                         idea is also supported by prior work in the machine learning
+We adopt RMSNorm over LayerNorm because it only normal-                  community. For example, pRMSNorm was proposed alongside
+izes by the L2-norm of activations, avoiding mean subtraction            RMSNorm [77] which assumes the identical distribution of
+and thus reducing catastrophic cancellation errors under low-            the neurons and estimates RMS using as little as 6.25% of
+precision execution.                                                     them. GroupNorm also found that normalizing over groups
+Case 1: Large batch, small output dimension. When the                    of output neurons remains effective for training stability and
+batch size B is large and the output dimension N is small                model quality. To demonstrate this, we compare training of
+
+
+
+
+                                                                      1374
+                            0.02                                                             as drop-in replacements for standard layers (TorchAO). Within
+% Relative Log Loss (RLL)
+
+
+                                                                                             each library, multiple recipes provide fine-grained control over
+                                                                          Hard Swish         forward and backward pass datatypes, quantization strategies
+                            0.01                                          BlockNorm 256
+                                                                                             (tensorwise, rowwise, blockwise), and other features like fast
+                                                                          Hard Swish
+                                                                          BlockNorm 512      accumulation.
+                             0                                            Hard Swish            This diversity, while providing flexibility, creates a challeng-
+                                                                                             ing optimization problem. Selecting the optimal combination of
+                                   25   30       35       40    45   50                      library and recipe for each GEMM operation requires balancing
+                                             Billion Examples
+                                                                                             accuracy constraints with performance objectives, a task that
+                                                                                             becomes intractable to perform manually across hundreds of
+Fig. 8. Hard Swish and BlockNorm with sufficiently large block size converges                modules in production models.
+to minimal loss.                                                                             Library and Recipe Selection LoKA Dispatch addresses this
+                                                                                             challenge through a lightweight runtime system that leverages
+a production Wukong model using a BlockNorm of size 256
+                                                                                             the statistical insights from LoKA Probe to make optimal kernel
+with RMSNorm in Figure 8, demonstrate its ability to preserve
+                                                                                             selection decisions. Rather than applying uniform low-precision
+model quality.
+                                                                                             policies across all operations, LoKA Dispatch treats each
+   3) Hard Swish: Sigmoid-based swish activation and normal-
+                                                                                             GEMM as an independent optimization opportunity, selecting
+ization come with large overheads and numerical challenges
+                                                                                             the fastest implementation that satisfies accuracy requirements.
+due to the expensive exponential operations [29], making Swish
+                                                                                                The core algorithm operates through constrained optimiza-
+significantly slower than lightweight activations such as ReLU.
+                                                                                             tion. For each GEMM operation, candidate implementations
+   We replace normal swish function with Hard Swish [61],
+                                                                                             are first filtered by accuracy constraints derived from LoKA
+a piecewise linear, close approximation to Swish that signifi-
+                                                                                             Probe’s MERE analysis. Only libraries and recipes whose
+cantly reduces computational cost while maintaining similar
+                                                                                             expected error falls below a conservative threshold (typically
+representational power. The Hard Swish function is defined as
+                                                                                             MERE < 0.2) and whose speedup (per LoKA Probe analysis)
+follows:
+                                  ReLU6(x + 3)                                               exceeds a minimum improvement factor (typically > 1.05×)
+                h-swish(x) = x ·                                                             are considered. From this filtered set, LoKA Dispatch selects
+                                         6
+                                                                                             the implementation with the highest measured throughput.
+   where ReLU6 provides a bounded ReLU operation that                                        The heterogeneous nature of this mapping underscores the
+outputs zero for negative inputs,                                                            importance of fine-grained, per-operation optimization rather
+   The elimination of exponential operations reduces com-                                    than global policies.
+putational overhead, while the piecewise linear nature of                                    Trainer Integration The technical implementation of LoKA
+Hard Swish makes it naturally amenable to low-precision                                      Dispatch centers on providing a unified interface across diverse
+computation. Additionally, Hard Swish integrates seamlessly                                  low-precision libraries while maintaining compatibility with
+with BlockNorm, allowing both operations to be fused within                                  existing training frameworks. We implement a custom autograd
+the same kernel for maximum efficiency.                                                      function that serves as a universal adapter, allowing the same
+   The representational power of Hard Swish remains compara-                                 high-level interface to route to different underlying kernel
+ble to standard Swish for the typical input ranges encountered                               implementations.
+in recommendation models, while providing substantially                                         During model initialization, we perform a transformation
+better behavior under limited numerical range. This trade-                                   pass that identifies target linear layers and replaces them with
+off of slightly simplified activation dynamics in exchange for                               LoKA-aware linear wrappers. These wrappers encapsulate the
+dramatically improved low-precision stability proves highly                                  dispatch logic while maintaining identical semantics to standard
+beneficial in practice.                                                                      PyTorch linear layers, ensuring compatibility with existing train-
+C. LoKA Dispatch: Per-Operator Kernel Orchestration                                          ing pipelines and optimization strategies. The autograd function
+                                                                                             called by the wrappers handles both forward and backward
+   With improved low-precision accuracy enabled by LoKA                                      pass routing, maintaining separate optimization decisions for
+Probe’s targeted analysis and LoKA Mods’ architectural                                       each direction when beneficial. This granular control proves
+improvements, the final challenge is achieving optimal end-to-                               particularly valuable because forward and backward passes
+end throughput. Even with numerically stable components,                                     often have different optimal implementations due to varying
+the diversity of GEMM shapes, hardware characteristics,                                      tensor shapes, layouts, datatypes and computational patterns.
+and available libraries means that no single low-precision                                      It’s worth noting that LoKA Dispatch does not need to
+implementation performs best across all scenarios.                                           operate dynamically per-iteration once static profiling results
+   Modern low-precision ecosystems present a complex op-                                     are obtained. For inference, kernel selection is entirely statically
+timization landscape. Libraries differ fundamentally in their                                determined, and distribution shifts are handled naturally via on-
+design philosophy: some provide bare kernels with maximum                                    line continuous training. For training, Dispatch’s dynamism acts
+agility (e.g., DeepGEMM), others offer comprehensive quanti-                                 purely as a safeguard against massive distribution shifts (e.g.,
+zation pipelines (e.g., FBGEMM), while still others function                                 sudden user behavior changes during a holiday). Dynamically
+
+
+
+
+                                                                                          1375
+switching precision mid-training does incur a recompilation                                                                    0.3
+                                                                                                                                                                      Wukong
+tax and is often not worthwhile.
+
+
+
+
+                                                                                                   % Relative Log Loss (RLL)
+                                                                                                                               0.2
+                               IV. E VALUATION
+   We comprehensively evaluate LoKA across representative                                                                      0.1
+
+LRM architectures in production settings, demonstrating its
+effectiveness in enabling stable low-precision training and                                                                     0
+inference while delivering substantial throughput improvements.
+Our evaluation addresses three key questions: Can LoKA                                                                         -0.1
+                                                                                                                                      10       20       30       40       50         60        70        80
+achieve lossless low-precision training? What end-to-end
+                                                                                                                                                             Billion Examples
+performance gains does it deliver across different scales and                                                                              FP8        Hard Swish      BlockNorm      No Bias        Full LOKA
+hardware? How do individual LoKA components contribute to                                                                                  Baseline   Only            Only           Only           Mods
+
+overall effectiveness?
+                                                                                                                               0.02             Interformer                         ELFM (SUM, DLRM,
+
+
+
+
+                                                                                              % Relative Log Loss (RLL)
+A. Setup                                                                                                                                                                 0.01          DCN, DHEN)
+                                                                                                                               0.01
+   Our evaluation focuses on three families of state-of-the-art                                                                 0
+                                                                                                                                                                          0
+
+LRM architectures that represent different points in the design                                                                                                         -0.01
+                                                                                                                               -0.01
+space: Wukong [78], InterFormer [74] and External Large
+                                                                                                                               -0.02                                    -0.02
+Foundation Model [43]. This selection provides a complete
+coverage of industry-scale recommenders that also assess                                                                       -0.03                                    -0.03
+open-source components (e.g., Wukong’s FMB and LCB [5],
+InterFormer’s Transformer [67] components, and integration of                                                                         10       30      50        70             5         15    25        35
+                                                                                                                                              Billion Examples                        Billion Examples
+DCN [70], DHEN [79], DLRM [53] and SUM [80] architecture
+in ELFM). All experiments are conducted on industry-scale
+datasets that contains tens of billions of examples, each with                            Fig. 9. Lossless full-trajectory FP8 training of Wukong, Interformer and
+                                                                                          ELFM with LoKA.
+thousands of features, following the practice in [78].
+   We conduct experiments across diverse hardware config-                                 B. Lossless FP8 LRM Training
+urations (Nvidia H100/B200 and AMD MI300X clusters                                       The fundamental test of LoKA effectiveness is whether it
+with 16-256 GPUs) to capture performance characteristics                              can enable stable FP8 training without accuracy degradation.
+across different generations and scales. Our implementation                           Figure 9 demonstrates this capability on the three models,
+integrates LoKA with the PyTorch framework and supports                               compared to original, unmodified baselines. We plotted the
+three major low-precision libraries: TorchAO, DeepGEMM,                               relative log loss curve with respect to the baseline, excluding
+and FBGEMM. All experiments focus on FP8 training and                                 model warmup time and we train enough examples until the
+inference, representing the most practical current low-precision                      relative log loss curve converges. Evidently, LoKA was not
+target for production deployment. We use TorchRec [37], hybrid                        only able to achieve quality neutrality at the end, it was able
+parallelism [50] with balanced sharding [75] and FSDP [81] for                        to do so during the full training trajectory, meaning that within
+training to minimize communication overheads. We also enable                          each sampling window, LoKA has delivered on par quality
+quantized communication [73] for all models in BF16 format                            consistently. This is especially important for LRMs that process
+regardless of compute datatype to ensure fair comparisons                             streaming data with shifting distributions. Notably, Figure 9
+across all experiments.                                                               (top) repeated the same model setup, and the dramatic FP8
+   We evaluate LoKA across three model configurations and                             training failure in Figure 3 has succeeded with LoKA.
+model families representing different scales and computational                        Ablation To quantify the contribution to training stability
+characteristics in Table IV.                                                          from each LoKA Mod, we quantify its effect in Figure 9
+ Model                                               Batch Size & GPU Count           (top): no Bias reduces early training instability, BlockNorm
+               GFLOPs/sample   Params (B)
+ Family                                     H100      B200/MI 300X GB200/MI 350X
+                                                                                      provides better numerical conditioning, and Hard Swish reduces
+ Wukong             24            257       6K&32       12K&16        20K&16
+ Interformer        28            566       4K&64        8K&64        20K&32          activation-related errors. However, none of these modifications
+ ELFM               40           1343       2k&256      6K&128        20K&32          alone achieves full stability. Instead, when all LoKA Mods are
+                                                                                      combined, the full system achieves complete loss neutrality
+                                TABLE IV
+                M ODEL SPECIFICATIONS AND T RAINING S ETUP                            throughout training, matching the accuracy of high-precision
+                                                                                      baselines while operating in FP8.
+   The experimental methodology emphasizes production real-
+                                                                                          C. End-to-end Speedup
+ism. We use actual training data (our dataset contains thousands
+of features), realistic batch sizes, and production-scale model                              Figure 10 shows the end-to-end training and (in-trainer)
+configurations. This approach ensures that our results reflect                            inference speedup results, over strong baselines (i.e., models
+the performance characteristics that would be observed in real                            that have been rewritten with LoKA Mods), revealing several
+world scenarios.                                                                          important patterns. LoKA achieves speedups up to 1.19× and
+
+
+
+
+                                                                                   1376
+                                                                                                                         Inference Speedup
+              Training Speedup
+                                 1.5                                                                                                         1.5
+                                                                                                                                                           1.39 1.41                        1.36
+                                 1.4                                                                                                         1.4                       1.31                                             1.32
+                                                                                        1.26                                                                                         1.28          1.28
+                                 1.3                        1.22                                                                             1.3    1.24                      1.21                               1.21          1.23
+                                              1.19
+                                 1.2   1.13          1.15                 1.13                                    1.14                       1.2                                                          1.14
+                                                                   1.08          1.08                 1.09 1.07
+                                 1.1                                                           1.02                                          1.1
+                                   1                                                                                                           1
+                                 0.9                                                                                                         0.9
+                                              Wukong                  Interformer                      ELFM                                                Wukong                Interformer                      ELFM
+
+
+
+                                                               Fig. 10. End-to-end Speedup of LoKA Training (Left) and Inference (Right)
+
+                                                                                                                                                                                 Faulty Test Code                Fixed Test Code
+                                                                                                                                                     Normal Distribution                    0.42                         0.42
+                                                                                                                                                     LoKA Probe                             17.04                        0.37
+                                                                                                                                                                        TABLE V
+                                                                                                                                                   N UMERICAL ERROR DETECTION VIA L O KA P ROBE ’ S MERE.
+
+
+                                                                                                                            communication [14], [46]–[48], the results confirm LoKA’s
+                                                                                                                            effectiveness and practicality in large-scale distributed training.
+
+                                                                                                                            D. Component Analysis
+Fig. 11. End-to-end latency breakdown of training with and without LoKA
+                                                                                                                              We conduct detailed component-level studies examining each
+                                                                                                                           LoKA component’s impact on both accuracy and performance
+1.4× respectively in training and inference, with performance                                                              on representative benchmarks.
+gains varying systematically based on model and hardware                                                                      1) LoKA Probe: We validate LoKA Probe’s core value of
+characteristics.                                                                                                           higher sensitivity in detecting numerical errors through realistic
+   LoKA’s effectiveness correlates strongly with the compute-                                                              distribution modeling by expanding the MERE measurements
+to-communication ratio. Models trained at smaller scales                                                                   study in Table II to cover all 27 linear layers from the subject
+with higher computational intensity benefit more from low-                                                                 model and summarize the overall results in Table V.
+precision acceleration, while larger-scale training with more                                                                 Coincidentally, with the help of LoKA Probe, we were also
+communication overhead sees reduced benefits.                                                                              able to discover a faulty implementation in the FBGEMM
+   More recent GPU architectures (B200 vs H100) show larger                                                                library’s production benchmark: when generating tests with
+LoKA speedups, primarily due to increased memory capacity                                                                  random inputs, the MEREs from correct and incorrect imple-
+enabling larger batch sizes which improves the cost-benefit                                                                mentation are almost identical, but when using LoKA Probe-
+ratio of low-precision computation.                                                                                        generated inputs, the MEREs differed by 47×, which prompted
+   All tested model architectures benefit substantially from                                                               us to investigate and fix with its developers.
+LoKA, demonstrating that the framework generalizes across                                                                     2) LoKA Mods: Figure 13 quantifies the individual and
+different LRM design approaches rather than being specific to                                                              combined effects of LoKA Mods on computational latency
+particular architectural choices.                                                                                          using representative GEMM shapes with batch size 1024
+Ablation. To quantify LoKA’s contribution to end-to-end                                                                    (typical choice), with torch compile [6] enabled. The analysis
+training latency, we profile the iteration-level runtime break-                                                            separates linear layer latency from activation and normalization
+down before and after applying LoKA, using iteration 706 (a                                                                overhead to isolate the impact of each modification. No Bias
+representative iteration with stable throughput) averaged across                                                           provides the largest single contribution to latency reduction,
+all ranks. Figure 11 reports the component-wise latency for                                                                eliminating parameter overhead and simplifying computa-
+the Wukong model trained on 16 B200 GPUs. The majority of                                                                  tion paths. BlockNorm delivers substantial improvements
+the observed speedup originates from reduced GEMM latency                                                                  by enabling fusion optimizations impossible with standard
+(approximately 2×). Since LoKA does not modify the sparse                                                                  LayerNorm. Hard Swish contributes meaningful but smaller
+embedding pipeline or inter-GPU communication pattern, the                                                                 gains through elimination of expensive exponential operations.
+slight difference in sparse communication time is attributed to                                                            The combined effect achieves over 2× latency reduction.
+normal run-to-run variability rather than systematic change.                                                                  3) LoKA Dispatch: To isolate LoKA Dispatch’s contribution,
+Scalability. We further evaluate end-to-end throughput scal-                                                               we compare it against uniform application of single-library
+ability using the same Wukong model on 16–256 GPUs. As                                                                     recipes using the same Wukong setup in compute-only mode
+shown in Figure 12, LoKA maintains substantial performance                                                                 (eliminating communication effects). The baseline approaches
+gains at scale, achieving a 10% throughput improvement at                                                                  apply consistent recipes across all GEMM operations: TorchAO
+256 GPUs despite increased communication overhead. While                                                                   with tensorwise (TW), rowwise (RW), or a mixed recipe that
+the relative gain diminishes with larger cluster sizes, primarily                                                          uses rowwise scaling in the forward but high precision for input
+due to the rising proportion of synchronization and embedding                                                              gradient and tensorwise scaling for weight in the backward
+
+
+
+
+                                                                                                                  1377
+                                                                                                              NVLink Scale-out Domain
+
+                                  1.30                                                                             1.24                                                         1.22 1.24 1.20
+                                                                                  1.19                                    1.20 1.20                                                              1.18
+                                  1.20               1.13 1.12 1.12                      1.16 1.15                                           1.15       1.15 1.13
+                                                                                                     1.11 1.09                        1.12                          1.12 1.10                           1.13
+                                                                      1.08
+                                  1.10
+                                  1.00
+                                  0.90
+                                                        H100                                  B200                     GB200 (NVL72)                       MI 300X                     MI 350X
+                                                                                              16        32        64      128     256               Invalid Configuration
+
+
+                                                Fig. 12. Scalability of LoKA on Wukong training, varying number of GPUs. N/A: configuration invalid.
+
+                                                                                                                              cost, and implementation complexity. Comprehensive sur-
+                    60
+                                                                             14                                               veys [32], [51] and adaptive schemes such as layer-wise or
+     Latency (us)
+
+
+
+
+                    40
+                                                                 19                             10                            adaptive quantization [24], [26] further analyze these trade-offs.
+                                                                                         11
+                                     9                    6                                                                   More recently, direct low-precision (DLP) training has emerged,
+                                                                                                          5
+                                                                             49                                               pushing computation into low-bit formats such as FP8 and FP4.
+                    20                                           35                             40
+                                                         32                              33
+                                     27         11                                                        25                  Examples include industrial-scale FP8 deployments [19] and
+                           6                    7
+                     0                                                                                                        native FP4 training frameworks [12], [16], [23]. While these
+                          (256,    (7680,
+                                        (512, (7680, (4096, (4096, (2048, (2560, (256,
+                           256)     256) 512)    512) 2048) 2560) 4096) 4096) 7680)                                           efforts establish the feasibility of sub-8-bit arithmetic, they
+                                          (Input features, Output features)                                                   focus on homogeneous transformer or CNN workloads. In
+                         Optimized Latency     No Bias      BlockNorm       Hard Swish
+                                                                                                                              contrast, LoKA targets large-scale recommendation models
+                                                                                                                              whose small-GEMM kernels, normalization-heavy dataflow,
+Fig. 13. Assessing LoKA Mods’ effectiveness on reducing latency of common
+GEMM sizes, by ablating the latency reduction of each component.                                                              and statistical heterogeneity violate the assumptions underlying
+                                                                                                                              existing quantization strategies.
+(RW GW HP); DeepGEMM with blockwise (BW) scaling; and                                                                         Libraries. Several production-grade libraries implement low-
+FBGEMM with rowwise scaling.                                                                                                  precision inference and training across diverse hardware
+   As shown in Table VI, LoKA Dispatch’s 1.12× speedup                                                                        backends. FBGEMM [41] pioneered high-performance INT8
+exceeds the best single-recipe approach (1.08×), demonstrating                                                                and FP16 kernels optimized for x86 and GPU architectures,
+the value of per-operation optimization. The performance                                                                      forming the foundation of many industrial recommendation
+advantage stems from matching each GEMM’s characteristics                                                                     deployments. DeepGEMM [17] and TorchAO [60] extend this
+to the most appropriate implementation rather than applying                                                                   direction to FP8 training, providing fine-grained scaling recipes
+uniform policies that may be suboptimal for specific tensor                                                                   at both CUDA and PyTorch-level. Other frameworks such as
+shapes or computational patterns.                                                                                             NVIDIA’s Transformer Engine [55] and AMD Quark [3] expose
+                                                                                                                              similar quantization abstractions.
+                          TorchAO                        DeepGEMM            FBGEMM             LoKA Dispatch
+    TW                   RW    RW GW HP                     BW                 RW                  Mixed                         While these systems significantly advance kernel-level
+    1.05                 1.01            1.08                 0.85                0.98                  1.12                  efficiency, they rely on synthetic benchmarks and generic
+                                                  TABLE VI                                                                    GEMM shapes for accuracy validation, which often diverge
+                                         S PEEDUP OF L O KA D ISPATCH                                                         from real LRM distributions. As shown in [32], kernel accuracy
+                                                                                                                              depends strongly on input statistics, a factor largely unmodeled
+                                  V. P RODUCTION D EPLOYMENTS                                                                 in current implementations. Consequently, production LRMs
+                                                                                                                              continue to train predominantly in BF16 or TF32 precision,with
+   We have successfully deployed LoKA to the flagship models
+                                                                                                                              FP8 adoption limited to post-training inference. LoKA com-
+of production advertising recommendation services at a major
+                                                                                                                              plements these libraries by introducing a statistical probing
+social media company serving billions of users. LoKA has
+                                                                                                                              and runtime selection layer (LoKA Probe) that characterizes
+demonstrated 5-20% end-to-end training throughput and 10-
+                                                                                                                              per-layer distributions online and dispatches to the optimal
+17% speedup in production inference across various launches.
+                                                                                                                              low-precision kernel at runtime (LoKA Dispatch).
+                                    VI. F URTHER D ISCUSSIONS                                                                 Generalizability. LoKA demonstrates strong generalizability
+                                                                                                                              across a wide spectrum of large recommendation model
+A. Related Work                                                                                                               architectures and operators. Its techniques apply seamlessly
+Quantization. Early work on quantized neural networks                                                                         to the factorization-machine and linear-compression modules
+demonstrated that models can be trained end-to-end with                                                                       in Wukong [78], the transformer-based sequence processors
+low-precision weights and activations [36]. Building on this                                                                  and interleaved non-sequential components in InterFormer [74],
+foundation, a large body of research has explored quantization                                                                as well as the compound architectures used by ELFM [43],
+to improve model efficiency across training and inference.                                                                    which integrate DHEN [79], SUM [80], DLRM [52], FMB [5]
+Existing methods span post-training quantization (PTQ) [11],                                                                  and DCN [70]. LoKA operates directly on the common
+[45], [72], quantization-aware training (QAT) [38], and mixed-                                                                computational primitives of LRMs—linear transformations,
+precision techniques [49], each balancing accuracy, retraining                                                                normalization, and activation functions— making its methods
+
+
+
+
+                                                                                                                       1378
+agnostic to architectural topology. This property allows LoKA                                          R EFERENCES
+to extend naturally to emerging hybrid or foundation-scale
+                                                                           [1] “Matrix multiplication background user’s guide - nvidia
+recommendation models that combine sequential, graph-based,                    docs,”     [Online;     accessed      2025-09-11].    [Online].   Avail-
+and multimodal components.                                                     able: https://docs.nvidia.com/deeplearning/performance/dl-performance-
+                                                                               matrix-multiplication/index.html#wave-quant
+   A key test of LoKA’s principles is whether they transfer
+                                                                           [2] E. Almazrouei, H. Alobeidli, A. Alshamsi, A. Cappelli, R. Cojocaru,
+to hardware unseen during framework development. LoKA                          M. Debbah, Étienne Goffinet, D. Hesslow, J. Launay, Q. Malartic,
+was designed and validated on H100, B200, and MI300X                           D. Mazzotta, B. Noune, B. Pannier, and G. Penedo, “The
+clusters. Subsequently, without any modification to LoKA’s                     falcon series of open language models,” 2023. [Online]. Available:
+                                                                               https://arxiv.org/abs/2311.16867
+methodology or components, we evaluated on GB200 NVL72                     [3] AMD, “Introduction — amd quark 0.10 documentation,” [Online;
+and MI350X — hardware that was not available during LoKA’s                     accessed 2025-10-29]. [Online]. Available: https://quark.docs.amd.com/
+development. As shown in Figures 10 and 12, LoKA delivered                     latest/onnx/tutorial microexponents quantization.html
+                                                                           [4] R. Anil, A. M. Dai, O. Firat, M. Johnson, D. Lepikhin, A. Passos,
+comparable speedups on both new platforms, confirming that                     S. Shakeri, E. Taropa, P. Bailey, Z. Chen, E. Chu, J. H. Clark,
+its principles are not overfit to specific hardware characteristics.           L. E. Shafey, Y. Huang, K. Meier-Hellstern, G. Mishra, E. Moreira,
+                                                                               M. Omernick, K. Robinson, S. Ruder, Y. Tay, K. Xiao, Y. Xu, Y. Zhang,
+                                                                               G. H. Abrego, J. Ahn, J. Austin, P. Barham, J. Botha, J. Bradbury,
+B. Limitations                                                                 S. Brahma, K. Brooks, M. Catasta, Y. Cheng, C. Cherry, C. A.
+                                                                               Choquette-Choo, A. Chowdhery, C. Crepy, S. Dave, M. Dehghani,
+   LoKA Probe’s benchmarks cannot fully capture real-world                     S. Dev, J. Devlin, M. Dı́az, N. Du, E. Dyer, V. Feinberg, F. Feng,
+performance due to compute-communication overlap, though                       V. Fienber, M. Freitag, X. Garcia, S. Gehrmann, L. Gonzalez, G. Gur-Ari,
+                                                                               S. Hand, H. Hashemi, L. Hou, J. Howland, A. Hu, J. Hui, J. Hurwitz,
+SM carveout [54] techniques help mitigate this. The framework                  M. Isard, A. Ittycheriah, M. Jagielski, W. Jia, K. Kenealy, M. Krikun,
+requires models to use standard building blocks, as novel                      S. Kudugunta, C. Lan, K. Lee, B. Lee, E. Li, M. Li, W. Li, Y. Li,
+architectures may need additional kernel development. LoKA                     J. Li, H. Lim, H. Lin, Z. Liu, F. Liu, M. Maggioni, A. Mahendru,
+                                                                               J. Maynez, V. Misra, M. Moussalem, Z. Nado, J. Nham, E. Ni,
+Dispatch may require manual intervention when introducing                      A. Nystrom, A. Parrish, M. Pellat, M. Polacek, A. Polozov, R. Pope,
+new low-precision kernels to ensure proper integration with                    S. Qiao, E. Reif, B. Richter, P. Riley, A. C. Ros, A. Roy, B. Saeta,
+compilation frameworks like torch.compile [6] for best per-                    R. Samuel, R. Shelby, A. Slone, D. Smilkov, D. R. So, D. Sohn,
+                                                                               S. Tokumine, D. Valter, V. Vasudevan, K. Vodrahalli, X. Wang, P. Wang,
+formance. Additionally, error-based probing [45] including                     Z. Wang, T. Wang, J. Wieting, Y. Wu, K. Xu, Y. Xu, L. Xue, P. Yin,
+LoKA lacks a mechanism to reason about error propagation                       J. Yu, Q. Zhang, S. Zheng, C. Zheng, W. Zhou, D. Zhou, S. Petrov,
+throughout the network, making it more conservative than                       and Y. Wu, “Palm 2 technical report,” 2023. [Online]. Available:
+                                                                               https://arxiv.org/abs/2305.10403
+needed: for example, even large errors at each operator may                [5] Anonymous, “Dot product matrix compression for machine learning,”
+cancel out at the end leading to neutral quality, but LoKA                     Technical Disclosure Commons, 2019.
+Dispatch will disable low precision for all such layers, leading           [6] J. Ansel, E. Yang, H. He, N. Gimelshein, A. Jain, M. Voznesensky,
+to potential missed opportunities.                                             B. Bao, P. Bell, D. Berard, E. Burovski, G. Chauhan, A. Chourdia,
+                                                                               W. Constable, A. Desmaison, Z. DeVito, E. Ellison, W. Feng, J. Gong,
+                                                                               M. Gschwind, B. Hirsh, S. Huang, K. Kalambarkar, L. Kirsch, M. Lazos,
+C. Future Work                                                                 M. Lezcano, Y. Liang, J. Liang, Y. Lu, C. K. Luk, B. Maher,
+                                                                               Y. Pan, C. Puhrsch, M. Reso, M. Saroufim, M. Y. Siraichi, H. Suk,
+   We focus on FP8 as the most practical current target                        S. Zhang, M. Suo, P. Tillet, X. Zhao, E. Wang, K. Zhou, R. Zou,
+                                                                               X. Wang, A. Mathews, W. Wen, G. Chanan, P. Wu, and S. Chintala,
+for production deployment. While FP4 and other ultra-low                       “Pytorch 2: Faster machine learning through dynamic python bytecode
+precisions show promise, they remain active research areas                     transformation and graph compilation,” in Proceedings of the 29th ACM
+for dense model training [12], [16], [23], [25], [36], [56],                   International Conference on Architectural Support for Programming
+                                                                               Languages and Operating Systems, Volume 2, ser. ASPLOS ’24. New
+[69]. Recent study shows Random Hadamard Transform [8],                        York, NY, USA: Association for Computing Machinery, 2024, p.
+[9], [20], [42] and quantized communication [28] can further                   929–947. [Online]. Available: https://doi.org/10.1145/3620665.3640366
+improve LoKA efficacy. Orthogonally, AutoML [21], [68] may                 [7] N. Ardalani, C.-J. Wu, Z. Chen, B. Bhushanam, and A. Aziz, “Un-
+                                                                               derstanding scaling laws for recommendation models,” arXiv preprint
+aid in bridging the gap between MERE and final accuracy.                       arXiv:2208.08489, 2022.
+                                                                           [8] S. Ashkboos, A. Mohtashami, M. L. Croci, B. Li, P. Cameron, M. Jaggi,
+                       VII. C ONCLUSION                                        D. Alistarh, T. Hoefler, and J. Hensman, “Quarot: Outlier-free 4-bit
+                                                                               inference in rotated llms,” Advances in Neural Information Processing
+                                                                               Systems, vol. 37, pp. 100 213–100 240, 2024.
+   Applying low-precision training to LRMs faces challenges                [9] S. Ashkboos, M. Nikdan, S. Tabesh, R. L. Castro, T. Hoefler, and
+from numerical instability and suboptimal throughput gains.                    D. Alistarh, “Halo: Hadamard-assisted lower-precision optimization for
+We propose LoKA, a systematic framework built on three                         llms,” arXiv preprint arXiv:2501.02625, 2025.
+                                                                          [10] J. L. Ba, J. R. Kiros, and G. E. Hinton, “Layer normalization,” 2016.
+generalizable principles: (1) distribution-aware profiling to                  [Online]. Available: https://arxiv.org/abs/1607.06450
+identify where low precision is safe, (2) precision-aware model-          [11] R. Banner, Y. Nahshan, E. Hoffer, and D. Soudry, “Post-training
+hardware co-design to expand where it is safe, and (3) per-                    4-bit quantization of convolution networks for rapid-deployment,” 2019.
+operator kernel orchestration to maximize the resulting gains.                 [Online]. Available: https://arxiv.org/abs/1810.05723
+                                                                          [12] R. L. Castro, A. Panferov, S. Tabesh, O. Sieberling, J. Chen, M. Nikdan,
+Our evaluation across three model families and five GPU                        S. Ashkboos, and D. Alistarh, “Quartet: Native fp4 training can
+architectures demonstrates up to 20% training throughput                       be optimal for large language models,” 2025. [Online]. Available:
+improvements and 40% inference acceleration with no quality                    https://arxiv.org/abs/2505.14669
+                                                                          [13] T. F. Chan, G. H. Golub, and R. J. LeVeque, “Algorithms for computing
+loss. LoKA has been deployed to flagship models at a major                     the sample variance: Analysis and recommendations,” The American
+social media company, serving billions of users.                               Statistician, vol. 37, no. 3, pp. 242–247, 1983.
+
+
+
+
+                                                                       1379
+[14] J. Chen, H. Zhang, W. Zhang, L. Luo, J. Chase, I. Stoica,                            S. Zhou, T. Sun, X. Q. Li, X. Jin, X. Shen, X. Chen, X. Song, X. Zhou,
+     and D. Zhuo, “NetHint: White-Box networking for Multi-Tenant                         Y. X. Zhu, Y. Huang, Y. Li, Y. Zheng, Y. Zhu, Y. Ma, Z. Huang, Z. Xu,
+     data centers,” in 19th USENIX Symposium on Networked Systems                         Z. Zhang, D. Ji, J. Liang, J. Guo, J. Chen, L. Xia, M. Wang, M. Li,
+     Design and Implementation (NSDI 22). Renton, WA: USENIX                              P. Zhang, R. Chen, S. Sun, S. Wu, S. Ye, T. Wang, W. L. Xiao, W. An,
+     Association, Apr. 2022, pp. 1327–1343. [Online]. Available: https:                   X. Wang, X. Sun, X. Wang, Y. Tang, Y. Zha, Z. Zhang, Z. Ju, Z. Zhang,
+     //www.usenix.org/conference/nsdi22/presentation/chen-jingrong                        and Z. Qu, “Deepseek-v3.2: Pushing the frontier of open large language
+[15] W. Cheng, Y. Shen, and L. Huang, “Adaptive factorization network:                    models,” 2025. [Online]. Available: https://arxiv.org/abs/2512.02556
+     Learning adaptive-order feature interactions,” in Proceedings of the AAAI       [21] K. Deng, H. Zheng, M. Qing, K. Zhu, G. Li, Y. Xiao, L. E. Zhang,
+     Conference on Artificial Intelligence, vol. 34, no. 04, 2020, pp. 3609–              L. Guo, B. Hui, Y. Wang, G. Yuan, G. Agrawal, W. Niu, and
+     3616.                                                                                X. Ma, “From bits to chips: An llm-based hardware-aware quantization
+[16] B. Chmiel, M. Fishman, R. Banner, and D. Soudry, “Fp4 all the                        agent for streamlined deployment of llms,” 2026. [Online]. Available:
+     way: Fully quantized training of llms,” 2025. [Online]. Available:                   https://arxiv.org/abs/2601.03484
+     https://arxiv.org/abs/2505.19115                                                [22] T. Dettmers, M. Lewis, Y. Belkada, and L. Zettlemoyer, “Llm.int8():
+[17] DeepSeek, “Deepgemm: clean and efficient fp8 gemm kernels with                       8-bit matrix multiplication for transformers at scale,” 2022. [Online].
+     fine-grained scaling,” [Online; accessed 2025-08-29]. [Online]. Available:           Available: https://arxiv.org/abs/2208.07339
+     https://github.com/deepseek-ai/DeepGEMM                                         [23] K. Devleker, “Nvfp4 trains with precision of 16-bit and speed and effi-
+[18] DeepSeek-AI, “Deepgemm numerical test,” https://github.com/deepseek-                 ciency of 4-bit — nvidia technical blog,” 8 2025, [Online; accessed 2025-
+     ai/DeepGEMM/blob/main/tests/test bf16.py#L38, [Accessed 17-02-                       08-31]. [Online]. Available: https://developer.nvidia.com/blog/nvfp4-
+     2026].                                                                               trains-with-precision-of-16-bit-and-speed-and-efficiency-of-4-bit/
+[19] DeepSeek-AI, A. Liu, B. Feng, B. Xue, B. Wang, B. Wu, C. Lu,                    [24] R.-G. Dumitru, V. Yadav, R. Maheshwary, P.-I. Clotan, S. T.
+     C. Zhao, C. Deng, C. Zhang, C. Ruan, D. Dai, D. Guo, D. Yang,                        Madhusudhan, and M. Surdeanu, “Layer-wise quantization: A pragmatic
+     D. Chen, D. Ji, E. Li, F. Lin, F. Dai, F. Luo, G. Hao, G. Chen, G. Li,               and effective method for quantizing llms beyond integer bit-levels,”
+     H. Zhang, H. Bao, H. Xu, H. Wang, H. Zhang, H. Ding, H. Xin,                         2024. [Online]. Available: https://arxiv.org/abs/2406.17415
+     H. Gao, H. Li, H. Qu, J. L. Cai, J. Liang, J. Guo, J. Ni, J. Li, J. Wang,       [25] S. K. Esser, J. L. McKinstry, D. Bablani, R. Appuswamy, and D. S.
+     J. Chen, J. Chen, J. Yuan, J. Qiu, J. Li, J. Song, K. Dong, K. Hu,                   Modha, “Learned step size quantization,” 2020. [Online]. Available:
+     K. Gao, K. Guan, K. Huang, K. Yu, L. Wang, L. Zhang, L. Xu, L. Xia,                  https://arxiv.org/abs/1902.08153
+     L. Zhao, L. Wang, L. Zhang, M. Li, M. Wang, M. Zhang, M. Zhang,                 [26] F. Faghri, I. Tabrizian, I. Markov, D. Alistarh, D. Roy, and A. Ramezani-
+     M. Tang, M. Li, N. Tian, P. Huang, P. Wang, P. Zhang, Q. Wang,                       Kebrya, “Adaptive gradient quantization for data-parallel sgd,” 2020.
+     Q. Zhu, Q. Chen, Q. Du, R. J. Chen, R. L. Jin, R. Ge, R. Zhang,                      [Online]. Available: https://arxiv.org/abs/2010.12460
+     R. Pan, R. Wang, R. Xu, R. Zhang, R. Chen, S. S. Li, S. Lu, S. Zhou,            [27] FBGEMM, “Fbgemm numerical test,” https://github.com/pytorch/
+     S. Chen, S. Wu, S. Ye, S. Ye, S. Ma, S. Wang, S. Zhou, S. Yu, S. Zhou,               FBGEMM/blob/main/fbgemm gpu/test/quantize/fused 8bit rowwise
+     S. Pan, T. Wang, T. Yun, T. Pei, T. Sun, W. L. Xiao, W. Zeng, W. Zhao,               test.py#L61)rely, [Accessed 17-02-2026].
+     W. An, W. Liu, W. Liang, W. Gao, W. Yu, W. Zhang, X. Q. Li, X. Jin,             [28] W. Feng, “Enabling float8 all-gather in fsdp2 - distributed - pytorch
+     X. Wang, X. Bi, X. Liu, X. Wang, X. Shen, X. Chen, X. Zhang,                         developer mailing list,” 8 2024, [Online; accessed 2025-10-29]. [Online].
+     X. Chen, X. Nie, X. Sun, X. Wang, X. Cheng, X. Liu, X. Xie, X. Liu,                  Available: https://dev-discuss.pytorch.org/t/enabling-float8-all-gather-in-
+     X. Yu, X. Song, X. Shan, X. Zhou, X. Yang, X. Li, X. Su, X. Lin,                     fsdp2/2359
+     Y. K. Li, Y. Q. Wang, Y. X. Wei, Y. X. Zhu, Y. Zhang, Y. Xu, Y. Xu,             [29] M. Fishman, B. Chmiel, R. Banner, and D. Soudry, “Scaling fp8 training
+     Y. Huang, Y. Li, Y. Zhao, Y. Sun, Y. Li, Y. Wang, Y. Yu, Y. Zheng,                   to trillion-token llms,” arXiv preprint arXiv:2409.12517, 2024.
+     Y. Zhang, Y. Shi, Y. Xiong, Y. He, Y. Tang, Y. Piao, Y. Wang, Y. Tan,           [30] X. Gao, S. Acharya, S. Han, Y. Ren, Y. Zhao, L. Luo, C. Wang,
+     Y. Ma, Y. Liu, Y. Guo, Y. Wu, Y. Ou, Y. Zhu, Y. Wang, Y. Gong,                       P. Fernando, S. Mishra, S. Yan et al., “Deck: Experiences on delta
+     Y. Zou, Y. He, Y. Zha, Y. Xiong, Y. Ma, Y. Yan, Y. Luo, Y. You, Y. Liu,              checkpointing for industrial recommendation systems,” Proceedings of
+     Y. Zhou, Z. F. Wu, Z. Z. Ren, Z. Ren, Z. Sha, Z. Fu, Z. Xu, Z. Huang,                the VLDB Endowment, vol. 18, no. 12, pp. 4978–4990, 2025.
+     Z. Zhang, Z. Xie, Z. Zhang, Z. Hao, Z. Gou, Z. Ma, Z. Yan, Z. Shao,
+                                                                                     [31] S. Geng, J. Tan, S. Liu, Z. Fu, and Y. Zhang, “Vip5: Towards
+     Z. Xu, Z. Wu, Z. Zhang, Z. Li, Z. Gu, Z. Zhu, Z. Liu, Z. Li, Z. Xie,
+                                                                                          multimodal foundation models for recommendation,” arXiv preprint
+     Z. Song, Z. Gao, and Z. Pan, “Deepseek-v3 technical report,” 2025.
+                                                                                          arXiv:2305.14302, 2023.
+     [Online]. Available: https://arxiv.org/abs/2412.19437
+                                                                                     [32] A. Gholami, S. Kim, Z. Dong, Z. Yao, M. W. Mahoney, and K. Keutzer,
+[20] DeepSeek-AI, A. Liu, A. Mei, B. Lin, B. Xue, B. Wang, B. Xu, B. Wu,
+                                                                                          “A survey of quantization methods for efficient neural network inference,”
+     B. Zhang, C. Lin, C. Dong, C. Lu, C. Zhao, C. Deng, C. Xu, C. Ruan,
+                                                                                          2021. [Online]. Available: https://arxiv.org/abs/2103.13630
+     D. Dai, D. Guo, D. Yang, D. Chen, E. Li, F. Zhou, F. Lin, F. Dai,
+                                                                                     [33] X. Guo, J. Pan, X. Wang, B. Chen, J. Jiang, and M. Long, “On the
+     G. Hao, G. Chen, G. Li, H. Zhang, H. Xu, H. Li, H. Liang, H. Wei,
+                                                                                          embedding collapse when scaling up recommendation models,” arXiv
+     H. Zhang, H. Luo, H. Ji, H. Ding, H. Tang, H. Cao, H. Gao, H. Qu,
+                                                                                          preprint arXiv:2310.04400, 2023.
+     H. Zeng, J. Huang, J. Li, J. Xu, J. Hu, J. Chen, J. Xiang, J. Yuan,
+     J. Cheng, J. Zhu, J. Ran, J. Jiang, J. Qiu, J. Li, J. Song, K. Dong,            [34] D. A. Harville, “Matrix algebra from a statistician’s perspective,” 1998.
+     K. Gao, K. Guan, K. Huang, K. Zhou, K. Huang, K. Yu, L. Wang,                   [35] A. Hernández-Cano, D. Garbaya, I. Schlag, and M. Jaggi, “Towards fully
+     L. Zhang, L. Wang, L. Zhao, L. Yin, L. Guo, L. Luo, L. Ma, L. Wang,                  fp8 gemm llm training at scale,” arXiv preprint arXiv:2505.20524, 2025.
+     L. Zhang, M. S. Di, M. Y. Xu, M. Zhang, M. Zhang, M. Tang, M. Zhou,             [36] I. Hubara, M. Courbariaux, D. Soudry, R. El-Yaniv, and Y. Bengio,
+     P. Huang, P. Cong, P. Wang, Q. Wang, Q. Zhu, Q. Li, Q. Chen, Q. Du,                  “Quantized neural networks: Training neural networks with low
+     R. Xu, R. Ge, R. Zhang, R. Pan, R. Wang, R. Yin, R. Xu, R. Shen,                     precision weights and activations,” 2016. [Online]. Available: https:
+     R. Zhang, S. H. Liu, S. Lu, S. Zhou, S. Chen, S. Cai, S. Chen, S. Hu,                //arxiv.org/abs/1609.07061
+     S. Liu, S. Hu, S. Ma, S. Wang, S. Yu, S. Zhou, S. Pan, S. Zhou,                 [37] D. Ivchenko, D. Van Der Staay, C. Taylor, X. Liu, W. Feng, R. Kindi,
+     T. Ni, T. Yun, T. Pei, T. Ye, T. Yue, W. Zeng, W. Liu, W. Liang,                     A. Sudarshan, and S. Sefati, “Torchrec: a pytorch domain library for
+     W. Pang, W. Luo, W. Gao, W. Zhang, X. Gao, X. Wang, X. Bi, X. Liu,                   recommendation systems,” in Proceedings of the 16th ACM Conference
+     X. Wang, X. Chen, X. Zhang, X. Nie, X. Cheng, X. Liu, X. Xie, X. Liu,                on Recommender Systems, 2022, pp. 482–483.
+     X. Yu, X. Li, X. Yang, X. Li, X. Chen, X. Su, X. Pan, X. Lin, X. Fu,            [38] B. Jacob, S. Kligys, B. Chen, M. Zhu, M. Tang, A. Howard, H. Adam,
+     Y. Q. Wang, Y. Zhang, Y. Xu, Y. Ma, Y. Li, Y. Li, Y. Zhao, Y. Sun,                   and D. Kalenichenko, “Quantization and training of neural networks for
+     Y. Wang, Y. Qian, Y. Yu, Y. Zhang, Y. Ding, Y. Shi, Y. Xiong, Y. He,                 efficient integer-arithmetic-only inference,” 2017. [Online]. Available:
+     Y. Zhou, Y. Zhong, Y. Piao, Y. Wang, Y. Chen, Y. Tan, Y. Wei, Y. Ma,                 https://arxiv.org/abs/1712.05877
+     Y. Liu, Y. Yang, Y. Guo, Y. Wu, Y. Wu, Y. Cheng, Y. Ou, Y. Xu,                  [39] M. Jin, K. Mei, W. Xu, M. Sun, R. Tang, M. Du, Z. Liu, and
+     Y. Wang, Y. Gong, Y. Wu, Y. Zou, Y. Li, Y. Xiong, Y. Luo, Y. You,                    Y. Zhang, “Massive values in self-attention modules are the key
+     Y. Liu, Y. Zhou, Z. F. Wu, Z. Z. Ren, Z. Zhao, Z. Ren, Z. Sha, Z. Fu,                to contextual knowledge understanding,” 2025. [Online]. Available:
+     Z. Xu, Z. Xie, Z. Zhang, Z. Hao, Z. Gou, Z. Ma, Z. Yan, Z. Shao,                     https://arxiv.org/abs/2502.01563
+     Z. Huang, Z. Wu, Z. Li, Z. Zhang, Z. Xu, Z. Wang, Z. Gu, Z. Zhu,                [40] J. Kaplan, S. McCandlish, T. Henighan, T. B. Brown, B. Chess, R. Child,
+     Z. Li, Z. Zhang, Z. Xie, Z. Gao, Z. Pan, Z. Yao, B. Feng, H. Li, J. L.               S. Gray, A. Radford, J. Wu, and D. Amodei, “Scaling laws for neural
+     Cai, J. Ni, L. Xu, M. Li, N. Tian, R. J. Chen, R. L. Jin, S. S. Li,                  language models,” arXiv preprint arXiv:2001.08361, 2020.
+
+
+
+
+                                                                                  1380
+[41] D. Khudia, J. Huang, P. Basu, S. Deng, H. Liu, J. Park,                              point (fp8) precision on hopper, ada and blackwell gpus, to provide
+     and M. Smelyanskiy, “Fbgemm: Enabling high-performance low-                          better performance with lower memory utilization in both training
+     precision deep learning inference,” 2021. [Online]. Available: https:                and inference.” [Online; accessed 2025-10-29]. [Online]. Available:
+     //arxiv.org/abs/2101.05615                                                           https://github.com/NVIDIA/TransformerEngine
+[42] H. A. D. Le, S. Joshi, Z. Yang, Z. Xu, and A. Shrivastava, “Scout               [56] NVIDIA, F. Abecassis, A. Agrusa, D. Ahn, J. Alben, S. Alborghetti,
+     before you attend: Sketch-and-walk sparse attention for efficient llm                M. Andersch, S. Arayandi, A. Bjorlin, A. Blakeman, E. Briones, I. Buck,
+     inference,” 2026. [Online]. Available: https://arxiv.org/abs/2602.07397              B. Catanzaro, J. Choi, M. Chrzanowski, E. Chung, V. Cui, S. Dai, B. D.
+[43] M. Liang, X. Liu, R. Jin, B. Liu, Q. Suo, Q. Zhou, S. Zhou, L. Chen,                 Rouhani, C. del Mundo, D. Donia, B. Eryilmaz, H. Estela, A. Goel,
+     H. Zheng, Z. Li, S. Jiang, J. Yang, X. Xia, F. Yang, Y. Badr, E. Wen,                O. Goncharov, Y. Guvvala, R. Hesse, R. Hewett, H. Hum, U. Kapasi,
+     S. Xu, H. Chen, Z. Zhang, J. Nie, C. Yang, Z. Zeng, W. Zhang,                        B. Khailany, M. Khona, N. Knight, A. Kondratenko, R. Krashinsky,
+     X. Huang, Q. Li, S. Wang, E. Lyu, W. Lu, R. Zhang, W. Wang, J. Rudy,                 B. Lanir, S. Layton, M. Lightstone, D. Lo, P. Micikevicius, A. Mishra,
+     M. Hang, K. Wang, Y. Ma, S. Wang, S. Zeng, T. Tang, X. Wei,                          T. Moon, D. Narayanan, C. Ni, A. Paithankar, S. Pasumarthi,
+     L. Jin, J. Zhang, M. Chen, J. Xu, A. Huang, X. Zeng, C. Zhang,                       A. Patel, M. Patwary, A. Poojary, G. Prasad, S. Priyadarshi, Y. Qin,
+     Z. Zhao, J. Yang, Q. Jin, X. Chen, A. A. Amlesahwaram, L. Song,                      X. Ren, O. Rybakov, C. Sakr, S. Satheesh, S. Sergienko, P. Shamis,
+     L. Luo, Y. Hao, N. Xiao, Y. Yetim, L. Pan, G. Liu, Y. Hu, Y. Huang,                  K. Shankar, N. Sharma, M. Shoeybi, M. Siu, M. Smelyanskiy,
+     J. Xu, R. Zhu, X. Zhang, Y. Liu, H. Yin, Y. Chen, B. Zhang, X. Liu,                  D. Stosic, D. Stosic, B.-Y. Su, F. Sun, N. Tajbakhsh, S. Thomas,
+     X. Wang, W. Mao, Z. Li, Z. Zhou, F. Gu, Q. Huang, C. Sun, N. Yu,                     P. Tredak, E. Tsykunov, G. Vaithilingam, A. Vavre, R. Venkatesan,
+     S. Gu, S. Mao, B. Au, J. Qin, P. Yao, J.-W. Choi, B. Gao, E. Wang,                   R. Waleffe, Q. Wan, H. Wang, M. Wang, L. Wei, H. Wu, E. Wu,
+     L. Zhang, W.-Y. Chen, T. Lee, Y. Zha, Y. Meng, A. Gong, E. Gao,                      K. Wyss, N. Xu, J. Xue, C. Yang, Y. Zhai, R. Zhang, J. Zhu, and
+     J. Hsueh, J. Zheng, A. Vahdatpour, Y. Han, Y. Yao, T. Kureha, S. Chang,              Z. Zhu, “Pretraining large language models with nvfp4,” 2025. [Online].
+     M. Sultan, J. Bocharov, S. Chordia, X. Gan, P. Sun, R. Liu, B. Long,                 Available: https://arxiv.org/abs/2509.25149
+     W. Chen, S. Kolay, and H. Li, “External large foundation model: How to          [57] NVIDIA Corporation, “Nvidia a100 gpu datasheet,” [Online; accessed
+     efficiently serve trillions of parameters for online ads recommendation,”            2025-08-25]. [Online]. Available: https://www.nvidia.com/content/dam/
+     2025. [Online]. Available: https://arxiv.org/abs/2502.17494                          en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet.pdf
+[44] W. Liang, T. Liu, L. Wright, W. Constable, A. Gu, C.-C. Huang, I. Zhang,        [58] ——, “Nvidia b200 gpu datasheet,” [Online; accessed 2025-08-25].
+     W. Feng, H. Huang, J. Wang, S. Purandare, G. Nadathur, and S. Idreos,                [Online]. Available: https://nvdam.widen.net/s/wwnsxrhm2w/blackwell-
+     “Torchtitan: One-stop pytorch native solution for production ready llm               datasheet-3384703
+     pre-training,” 2024. [Online]. Available: https://arxiv.org/abs/2410.06511      [59] ——, “Nvidia h100 gpu datasheet,” [Online; accessed 2025-08-
+[45] J. Lin, J. Tang, H. Tang, S. Yang, W.-M. Chen, W.-C. Wang,                           25]. [Online]. Available: https://resources.nvidia.com/en-us-hopper-
+     G. Xiao, X. Dang, C. Gan, and S. Han, “Awq: Activation-aware                         architecture/nvidia-tensor-core-gpu-datasheet?ncid=no-ncid
+     weight quantization for on-device llm compression and acceleration,”            [60] A. Or, A. Jain, D. Vega-Myhre, J. Cai, C. D. Hernandez, Z. Zheng,
+     in Proceedings of Machine Learning and Systems, P. Gibbons,                          D. Guessous, V. Kuznetsov, C. Puhrsch, M. Saroufim, S. Rao, T. Tran,
+     G. Pekhimenko, and C. D. Sa, Eds., vol. 6, 2024, pp. 87–100.                         and A. Samardžić, “Torchao: Pytorch-native training-to-serving model
+     [Online]. Available: https://proceedings.mlsys.org/paper files/paper/2024/           optimization,” 2025. [Online]. Available: https://arxiv.org/abs/2507.16099
+     file/42a452cbafa9dd64e9ba4aa95cc1ef21-Paper-Conference.pdf
+                                                                                     [61] S. A. Pydimarry, S. M. Khairnar, S. G. Palacios, G. Sankaranarayanan,
+[46] L. Luo, J. Nelson, L. Ceze, A. Phanishayee, and A. Krishnamurthy,
+                                                                                          D. Hoagland, D. Nepomnayshy, and H. P. Nguyen, “Evaluating model
+     “Parameter hub: a rack-scale parameter server for distributed deep neural
+                                                                                          performance with hard-swish activation function adjustments,” 2024.
+     network training,” in Proceedings of the ACM Symposium on Cloud
+                                                                                          [Online]. Available: https://arxiv.org/abs/2410.06879
+     Computing, 2018, pp. 41–54.
+                                                                                     [62] P. Ramachandran, B. Zoph, and Q. V. Le, “Swish: a self-gated activation
+[47] L. Luo, P. West, J. Nelson, A. Krishnamurthy, and L. Ceze, “Plink:
+                                                                                          function,” arXiv: Neural and Evolutionary Computing, 2017. [Online].
+     Discovering and exploiting locality for accelerated distributed training
+                                                                                          Available: https://api.semanticscholar.org/CorpusID:196158220
+     on the public cloud,” Proceedings of Machine Learning and Systems,
+     vol. 2, pp. 82–97, 2020.                                                        [63] B. D. Rouhani, R. Zhao, A. More, M. Hall, A. Khodamoradi,
+[48] L. Luo, B. Zhang, M. Tsang, Y. Ma, C.-H. Chu, Y. Chen, S. Li,                        S. Deng, D. Choudhary, M. Cornea, E. Dellinger, K. Denolf,
+     Y. Hao, Y. Zhao, G. Lakshminarayanan et al., “Disaggregated multi-                   S. Dusan, V. Elango, M. Golub, A. Heinecke, P. James-Roxby, D. Jani,
+     tower: Topology-aware modeling technique for efficient large-scale                   G. Kolhe, M. Langhammer, A. Li, L. Melnick, M. Mesmakhosroshahi,
+     recommendation,” arXiv preprint arXiv:2403.00877, 2024.                              A. Rodriguez, M. Schulte, R. Shafipour, L. Shao, M. Siu, P. Dubey,
+[49] P. Micikevicius, S. Narang, J. Alben, G. Diamos, E. Elsen,                           P. Micikevicius, M. Naumov, C. Verrilli, R. Wittig, D. Burger, and
+     D. Garcia, B. Ginsburg, M. Houston, O. Kuchaiev, G. Venkatesh,                       E. Chung, “Microscaling data formats for deep learning,” 2023. [Online].
+     and H. Wu, “Mixed precision training,” 2018. [Online]. Available:                    Available: https://arxiv.org/abs/2310.10537
+     https://arxiv.org/abs/1710.03740                                                [64] J. Tang, Y. Drori, D. Chang, M. Sathiamoorthy, J. Gilmer, L. Wei,
+[50] D. Mudigere, Y. Hao, J. Huang, A. Tulloch, S. Sridharan, X. Liu,                     X. Yi, L. Hong, and E. H. Chi, “Improving training stability for
+     M. Ozdal, J. Nie, J. Park, L. Luo et al., “High-performance, distributed             multitask ranking models in recommender systems,” in Proceedings
+     training of large-scale deep learning recommendation models,” arXiv                  of the 29th ACM SIGKDD Conference on Knowledge Discovery and
+     preprint arXiv:2104.05158, 2021.                                                     Data Mining, ser. KDD ’23. New York, NY, USA: Association
+[51] M. Nagel, M. Fournarakis, R. A. Amjad, Y. Bondarenko, M. van Baalen,                 for Computing Machinery, 2023, p. 4882–4893. [Online]. Available:
+     and T. Blankevoort, “A white paper on neural network quantization,”                  https://doi.org/10.1145/3580305.3599846
+     2021. [Online]. Available: https://arxiv.org/abs/2106.08295                     [65] P. Tillet, H. T. Kung, and D. Cox, “Triton: an intermediate language
+[52] M. Naumov, D. Mudigere, H.-J. M. Shi, J. Huang, N. Sundaraman,                       and compiler for tiled neural network computations,” in Proceedings of
+     J. Park, X. Wang, U. Gupta, C.-J. Wu, A. G. Azzolini, D. Dzhulgakov,                 the 3rd ACM SIGPLAN International Workshop on Machine Learning
+     A. Mallevich, I. Cherniavskii, Y. Lu, R. Krishnamoorthi, A. Yu,                      and Programming Languages, ser. MAPL 2019. New York, NY,
+     V. Kondratenko, S. Pereira, X. Chen, W. Chen, V. Rao, B. Jia, L. Xiong,              USA: Association for Computing Machinery, 2019, p. 10–19. [Online].
+     and M. Smelyanskiy, “Deep learning recommendation model for                          Available: https://doi.org/10.1145/3315508.3329973
+     personalization and recommendation systems,” 2019. [Online]. Available:         [66] TorchAO, “Torchao blockwise triton test,” https://github.com/pytorch/
+     https://arxiv.org/abs/1906.00091                                                     ao/blob/main/test/kernel/test blockwise triton.py#L55, [Accessed 17-02-
+[53] M. Naumov, D. Mudigere, H.-J. M. Shi, J. Huang, N. Sundaraman,                       2026].
+     J. Park, X. Wang, U. Gupta, C.-J. Wu, A. G. Azzolini et al., “Deep              [67] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez,
+     learning recommendation model for personalization and recommendation                 Ł. Kaiser, and I. Polosukhin, “Attention is all you need,” Advances in
+     systems,” arXiv preprint arXiv:1906.00091, 2019.                                     neural information processing systems, vol. 30, 2017.
+[54] Nvidia, “1. nvidia ampere gpu architecture tuning guide — ampere tuning         [68] K. Wang, Z. Liu, Y. Lin, J. Lin, and S. Han, “Haq: Hardware-aware
+     guide 13.0 documentation,” [Online; accessed 2025-09-12]. [Online].                  automated quantization with mixed precision,” in Proceedings of the
+     Available: https://docs.nvidia.com/cuda/ampere-tuning-guide/index.html               IEEE/CVF conference on computer vision and pattern recognition, 2019,
+[55] NVIDIA, “Github - nvidia/transformerengine: A library for accelerating               pp. 8612–8620.
+     transformer models on nvidia gpus, including using 8-bit floating               [69] R. Wang, Y. Gong, X. Liu, G. Zhao, Z. Yang, B. Guo, Z. Zha,
+
+
+
+
+                                                                                  1381
+     and P. Cheng, “Optimizing large language model training using fp4                       Proceedings of the 41st International Conference on Machine Learning,
+     quantization,” 2025. [Online]. Available: https://arxiv.org/abs/2501.17116              ser. Proceedings of Machine Learning Research, R. Salakhutdinov,
+[70] R. Wang, R. Shivanna, D. Cheng, S. Jain, D. Lin, L. Hong, and E. Chi,                   Z. Kolter, K. Heller, A. Weller, N. Oliver, J. Scarlett, and F. Berkenkamp,
+     “Dcn v2: Improved deep & cross network and practical lessons for web-                   Eds., vol. 235. PMLR, 21–27 Jul 2024, pp. 58 484–58 509. [Online].
+     scale learning to rank systems,” in Proceedings of the web conference                   Available: https://proceedings.mlr.press/v235/zhai24a.html
+     2021, 2021, pp. 1785–1797.                                                         [77] B. Zhang and R. Sennrich, “Root mean square layer normalization,”
+[71] Y. Wu and K. He, “Group normalization,” 2018. [Online]. Available:                      2019. [Online]. Available: https://arxiv.org/abs/1910.07467
+     https://arxiv.org/abs/1803.08494                                                   [78] B. Zhang, L. Luo, Y. Chen, J. Nie, X. Liu, D. Guo, Y. Zhao,
+[72] G. Xiao, J. Lin, M. Seznec, H. Wu, J. Demouth, and S. Han,                              S. Li, Y. Hao, Y. Yao, G. Lakshminarayanan, E. D. Wen,
+     “Smoothquant: Accurate and efficient post-training quantization                         J. Park, M. Naumov, and W. Chen, “Wukong: Towards a scaling
+     for large language models,” 2024. [Online]. Available: https:                           law for large-scale recommendation,” 2024. [Online]. Available:
+     //arxiv.org/abs/2211.10438                                                              https://arxiv.org/abs/2403.02545
+[73] J. A. Yang, J. Park, S. Sridharan, and P. T. P. Tang, “Training deep learning
+     recommendation model with quantized collective communications,” in                 [79] B. Zhang, L. Luo, X. Liu, J. Li, Z. Chen, W. Zhang, X. Wei, Y. Hao,
+     Conference on Knowledge Discovery and Data Mining (KDD), 2020,                          M. Tsang, W. Wang, Y. Liu, H. Li, Y. Badr, J. Park, J. Yang,
+     p. 95.                                                                                  D. Mudigere, and E. Wen, “Dhen: A deep and hierarchical ensemble
+[74] Z. Zeng, X. Liu, M. Hang, X. Liu, Q. Zhou, C. Yang, Y. Liu, Y. Ruan,                    network for large-scale click-through rate prediction,” 2022. [Online].
+     L. Chen, Y. Chen, Y. Hao, J. Xu, J. Nie, X. Liu, B. Zhang, W. Wen,                      Available: https://arxiv.org/abs/2203.11014
+     S. Yuan, K. Wang, W.-Y. Chen, Y. Han, H. Li, C. Yang, B. Long, P. S.               [80] W. Zhang, D. Li, C. Liang, F. Zhou, Z. Zhang, X. Wang, R. Li,
+     Yu, H. Tong, and J. Yang, “Interformer: Towards effective heterogeneous                 Y. Zhou, Y. Huang, D. Liang, K. Wang, Z. Wang, Z. Chen, F. Wu,
+     interaction learning for click-through rate prediction,” 2024. [Online].                M. Chen, H. Li, Y. Wu, Z. Shu, M. Yuan, and S. Reddy, “Scaling user
+     Available: https://arxiv.org/abs/2411.09852                                             modeling: Large-scale online user representations for ads personalization
+[75] D. Zha, L. Feng, L. Luo, B. Bhushanam, Z. Liu, Y. Hu, J. Nie, Y. Huang,                 in meta,” in Companion Proceedings of the ACM Web Conference 2024,
+     Y. Tian, A. Kejariwal et al., “Pre-train and search: Efficient embedding                ser. WWW ’24. ACM, May 2024, p. 47–55. [Online]. Available:
+     table sharding with pre-trained neural cost models,” Proceedings of                     http://dx.doi.org/10.1145/3589335.3648301
+     Machine Learning and Systems, vol. 5, 2023.                                        [81] Y. Zhao, A. Gu, R. Varma, L. Luo, C.-C. Huang, M. Xu, L. Wright,
+[76] J. Zhai, L. Liao, X. Liu, Y. Wang, R. Li, X. Cao, L. Gao, Z. Gong, F. Gu,               H. Shojanazeri, M. Ott, S. Shleifer et al., “Pytorch fsdp: experiences on
+     J. He, Y. Lu, and Y. Shi, “Actions speak louder than words: Trillion-                   scaling fully sharded data parallel,” arXiv preprint arXiv:2304.11277,
+     parameter sequential transducers for generative recommendations,” in                    2023.
+
+
+
+
+                                                                                     1382
+

@@ -1,0 +1,95 @@
+                      2026 ACM/IEEE 53rd Annual International Symposium on Computer Architecture (ISCA)
+
+
+
+
+           XtraMAC: An Efficient MAC Architecture for
+            Mixed-Precision LLM Inference on FPGA
+                            Feng Yu* , Hongshi Tan* , Yao Chen†,‡ , Weng-Fai Wong* , Bingsheng He*,‡
+                                    *
+                                  School of Computing, National University of Singapore, Singapore
+          †
+              School of Computer Science and Technology, Huazhong University of Science and Technology, Wuhan, China
+                         {yuf, hongshi}@u.nus.edu, {dcswwf, dcsheb}@nus.edu.sg, chenyao cs@hust.edu.cn
+
+
+
+      Abstract—The widespread adoption of mixed-precision quan-                                                   TABLE I
+   tization in large language models (LLMs) has created demand                             D IVERSITY OF MAC S ACROSS LLM QUANTIZATION SCHEMES .
+   for hardware that can efficiently perform multiply–accumulate                           Category               Examples                 Projection / FFN MACs              Attention MACs
+
+   (MAC) operations across mixed datatypes and switch datatypes                      Weight-only quant.     AWQ, GPTQ, SpQR                 INT × FP + FP → FP               FP × FP + FP → FP
+
+   at runtime. Existing FPGA-based MAC solutions fall short due                      Weight–act quant.      SmoothQuant, Atom             INT × INT + INT → INT              FP × FP + FP → FP
+
+   to limitations in fixed-datatype design, inefficient spatial or                     Native LLMs           GPT-oss-20b, 120b         MXFP4/BF16*× FP + FP → FP             FP × FP + FP → FP
+
+   temporal resource sharing, and poor support for mixed-precision               *
+                                                                                     In GPT-oss models, the MoE blocks use MXFP4, others use BF16 datatypes.
+   execution. These limitations collectively lead to under-utilization
+   of DSP resources, limiting achievable parallelism and throughput.
+                                                                                                          BF16 × BF16 + BF16         INT4 × BF16 + BF16    INT8 × INT8 + INT32
+   In this work, we present XtraMAC, a novel MAC architecture                                             FP8 × FP8 + BF16           FP4 × BF16 + BF16     UE8M0 × BF16 + BF16
+   that unifies integer, floating-point, and mixed-precision operations          100%
+
+   within a single, datatype-adaptive microarchitecture. XtraMAC                     80%
+
+   decomposes all supported MAC formats into a shared integer                        60%
+   mantissa product with lightweight sign and exponent handling,                     40%
+   enabling dynamic operand packing and efficient DSP resource                       20%
+   sharing with constant latency and initiation interval of one
+                                                                                     0%
+   across all datatypes. Evaluated on an AMD Xilinx U55c FPGA,
+   XtraMAC achieves 1.4–2.0× higher compute density, reduces                                 Qwen-3-8b-AWQ       Llama-3.1-8b-w8a8       Qwen-3-8b-FP8    Llama-3.1-8b-FP8       GPT-oss-20b
+
+   per-operation LUT, FF, and DSP consumption by 27–51%, and                                                                            Context length
+   delivers up to 1.9× greater energy efficiency and 1.2× speedup on
+   representative mixed-precision LLM workloads. The implemen-                   Fig. 1. Distribution of MAC operations during the decode stage for various
+   tation of XtraMAC is open-sourced at https://github.com/Xtra-                 quantized LLM checkpoints in Table VI across different context lengths. Each
+   Computing/XtraMAC.                                                            segment represents a unique MAC configuration; non-MAC operations are
+      Index Terms—MAC architecture, mixed-precision arithmetic,                  omitted as they account for less than 1% of total operations.
+   runtime datatype switching, DSP packing, FPGA.
+
+                           I. I NTRODUCTION                                         However, this proliferation of mixed-precision quantization
+                                                                                 introduces a new challenge for hardware design. We define
+      Multiply–accumulate (MAC) operations are the fundamen-
+                                                                                 a MAC operation as P = A×B + C, and identify two
+   tal building blocks for a broad spectrum of computational
+                                                                                 distinct computational patterns that arise in practice. The
+   tasks, ranging from digital signal processing to deep learning.
+                                                                                 first is mixed-precision MAC, in which the multiplicands
+   In recent years, large language models (LLMs) have emerged
+                                                                                 A and B are represented in heterogeneous numeric formats
+   as the most prominent and demanding consumers of MAC
+                                                                                 or bitwidths (e.g., INT4×BF16). The second is runtime
+   computation, as their inference workloads are dominated by
+                                                                                 datatype switching, in which a single hardware unit must
+   matrix multiplications involving billions of parameters. This
+                                                                                 alternate among distinct MAC datatypes as execution traverses
+   explosive growth in MAC demand has catalyzed the adop-
+                                                                                 different model components. For example, a single forward
+   tion of low-precision quantization techniques to reduce both
+                                                                                 pass may transition from INT4×BF16 in projection layers to
+   memory footprint and computational energy. Quantization
+                                                                                 BF16×BF16 in attention layers. As shown in Figure 1, Qwen-
+   methods [6], [11], [13], [22], [39], [44] target different model
+                                                                                 3-8B-AWQ executes over 68% of its decode-stage MACs in
+   components (weights, activations, MoE experts) with mixed
+                                                                                 INT4×BF16 for projection layers while its attention layers
+   numeric formats and assign different datatypes across layers
+                                                                                 retain BF16×BF16, exemplifying the coexistence of both
+   based on their quantization sensitivity, e.g., lower-bit integers
+                                                                                 patterns within a single model. This dynamic heterogeneity
+   for compute-intensive layers and floating-point formats for
+                                                                                 demands hardware that can natively support both patterns
+   numerically sensitive ones [13], [22], [39]. As summarized
+                                                                                 without performance degradation.
+   in Table I, this results in diverse MAC datatype combinations
+   across different quantization schemes and model components.                      Field-programmable gate arrays (FPGAs) have emerged as
+                                                                                 a promising platform for addressing these challenges, owing to
+     ‡ Yao Chen and Bingsheng He are the corresponding authors.                  their ability to implement customized compute pipelines with
+
+
+979-8-3315-5065-3/26/$31.00 ©2026 IEEE                                    2536
+DOI 10.1109/ISCA66397.2026.00177
+

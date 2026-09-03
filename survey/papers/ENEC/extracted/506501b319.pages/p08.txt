@@ -1,0 +1,155 @@
+        12
+
+
+
+
+                                 TR: Transpose                ET: Extract BC: Broadcast                                                                     inter-row ones. A parallel prefix sum is then performed on
+                                 M                            N                                                 M                 Last Column               each of the N columns using vectorized additions in log2 (M )
+                     0 1 0 1 1 0         0 0         0   1 1 0 0   1 0 1                                0 1 1   2 3 3 3   3
+
+
+
+
+                                                                                       summation
+ Column
+
+
+
+
+                                                                                        Row-wise
+                     1 0 0 1 0 1 1 0
+
+ Operations
+                     1 1 0 0 1 0 0 1
+                     0 0 1 0 0 1 1 0
+                                               TR
+                                                     1
+                                                     0
+                                                     1
+                                                         0 1 0 1
+                                                         0 0 1 0
+                                                         1 0 0 1
+                                                                   1 1 1
+                                                                   0 1 1
+                                                                   0 0 1
+                                                                                                   TR
+                                                                                                        1 1 1   2 2 3 4
+                                                                                                        1 2 2 2 3 3 3
+                                                                                                        0 0 1 1 1 2 3
+                                                                                                                          4
+                                                                                                                          4
+                                                                                                                          3
+                                                                                                                                                            steps. The matrix is transposed back to its original N × M
+                                                                                                                                   Each Row
+ Locked by           0 1 0 1 0 0 0
+                     1 1 0 0 1 1 0
+                                           1
+                                           0
+                                                     1
+                                                     0
+                                                         0 1 0 0
+                                                         1 0 1 0
+                                                                   1 1 0
+                                                                   1 0 0
+                                                                                                        0 1 1 2 2 2 2
+                                                                                                        1 2 2 2 3 4 4
+                                                                                                                          3
+                                                                                                                          4           Max                   orientation, resulting in an intermediate matrix R where each
+ Alignment           0 1 1 0 1 0 0 1                 0   1 0 1 0   0 0 1                                0 1 2 2 3 3 3     4        Prefix Sum
+                     1 1 1 1 0 0 1 0                                                                    1 2 3 4 4 4 5     5
+
+
+                   Local Tensor
+                                                     0   0 1 0 1   0 1 0
+                                                                                                                                                            row contains its correct local prefix sum.
+                                                    doubling intervals: 1 2 4                           Row Prefix Sum Matrix (R)
+
+                                                                                                                                  Copy
+                                                                                                                                                               Stage 2: Inter-Row Propagation and Final Update.
+                                                                        0    add top                            R’
+                                                                                                                                                            The intermediate matrix R contains row-local sums but
+             0 0                 0 0
+             3 3                 3   3                   0                             3                                      3
+                                                                                                                                                            lacks exclusive cumulative offsets from previous rows. A
+
+
+
+
+                                                                                                                                         summation
+                                                                                                                                          Row-wise
+             7 7                 7 7                     3              3              7                                      4
+             11 11     ... ...   11 11                   7              7          11                                         4
+   R+        14 14     ... ...   14 14                   11             11         14                                         3
+                                                                                                                                                            temporary copy C of R is created. A hierarchical scan is
+             17 17               17 17                   14             14         17                                         3
+             21 21               21 21                                  17         21                                         4
+                                                         17
+                                                                                                   ET
+             25 25               25 25         BC        21
+                                                         25
+                                                                        21
+                                                                        25
+                                                                                   25
+                                                                                   30
+                                                                                                                              4
+                                                                                                                              5
+                                                                                                                                                            performed on C’s rows in log2 (N ) steps: at step k, each
+                                                                                                                                                            row C[i] adds values from row C[i − 2k ] element-wise.
+                     =
+  Final Prefix Sum Matrix                                          29       drop bottom                 doubling intervals: 1 2 4
+
+                                                                                                                                                            After completion, the last column of C holds the inclusive
+Fig. 8: Prefix sum process. This figure illustrates the step-by-step
+implementation of the prefix sum algorithm, using an 8 × 8 binary                                                                                           cumulative offsets for all rows. Subsequently, the exclusive
+local tensor M as a working example.                                                                                                                        cumulative offsets are derived from the inclusive cumulative
+modulo 2n+1 and clear higher-bit information, restricting all                                                                                               offsets by removing the bottom element and adding a zero
+output values to the predefined range [0, 2n+1 − 1]. Negative                                                                                               element at the top. This N × 1 vector is broadcast across all
+values −c are converted to 2n+1 − c to achieve a wrapping                                                                                                   columns to form an offset matrix. The final result is obtained
+effect. For instance, in the case where n = 5, the previous                                                                                                 by adding offset matrix element-wise to the saved matrix R.
+intermediate result of −2 is converted to 26 − 2 = 62, while                                                                                                E. Parameter Tuning
+the positive result of 1 remains unchanged. This approach
+                                                                                                                                                               This procedure analyzes exponent statistics to derive pa-
+ensures computational efficiency while maintaining injectiv-
+                                                                                                                                                            rameters that minimize the average compressed bit-length
+ity, fully leveraging the vectorized computing capabilities of
+                                                                                                                                                            under a specialized cost model, following systematic phases:
+Ascend NPUs and avoiding inefficient branching operations.
+                                                                                                                                                               Phase 1: Statistical Pre-Analysis. The initial phase in-
+                                                                                                                                                            volves constructing a histogram of the exponents extracted
+D. Intra-Segment Dependency Decoupled Scan                                                                                                                  from the source data to obtain a frequency distribution for
+   The prefix sum (or scan) is a fundamental parallel primi-                                                                                                each unique exponent x. This distribution allows for the cal-
+tive. However, its straightforward implementation on modern                                                                                                 culation of the probability p(x) of each value occurring and
+SIMD architectures, such as Ascend NPUs, is often hindered                                                                                                  the identification of the global minimum (l) and maximum
+by stringent hardware constraints. The target operation is to                                                                                               (h) values in the exponents.
+compute the global prefix sum of all elements in an N × M                                                                                                      Phase 2: Global Search for a Suitable Linear Mapping
+tensor (where M = 16), which is logically treated as a                                                                                                      Parameter (b) and Base Bit-Width (n). The algorithm
+flattened 1D array. The primary bottleneck lies in the Ascend                                                                                               performs an exhaustive search for a linear mapping parameter
+NPUs’ memory model, particularly the 32-byte alignment                                                                                                      b across its feasible integer domain. For each candidate b, the
+requirement for operands in AscendC. Given that the data                                                                                                    requisite base bit-width n is computed as the minimal number
+type used here is half-precision floating-point (half, 2                                                                                                    of bits required to span the data range relative to b:
+bytes), each row of M elements in the tensor exactly occupies
+32 bytes. Architectural constraints prohibit direct SIMD com-                                                                                                         n = max (⌊log2 (b − l)⌋ + 1, ⌈log2 (h − b)⌉) + 1   (1)
+putation between elements residing within the same 32-byte                                                                                                     For each (b, n) pair, all original exponents x are trans-
+memory segment. This effectively “locks” the direct intra-                                                                                                  formed via a mapping:
+row prefix sum computation (e.g., row[i] += row[i − 1]),
+as it requires operations between adjacent elements within a                                                                                                                      y = (2n − x + b)%2n                    (2)
+single hardware-indivisible block.                                                                                                                            A cost function D, defined as the probability-weighted sum
+   To decouple this forbidden intra-segment dependency,                                                                                                     of the transformed values, is evaluated:
+we propose the Intra-Segment Dependency Decoupled Scan
+(IDD-Scan), a multi-stage algorithm that transforms the                                                                                                                              D=
+                                                                                                                                                                                          X
+                                                                                                                                                                                                p(x) · y                 (3)
+computation-bound problem into a series of hardware-                                                                                                                                        x
+friendly operations. The workflow of IDD-Scan is detailed                                                                                                      The pair (b∗ , n∗ ) that results in the minimum value for D
+below and illustrated in Figure 8.                                                                                                                          is selected. Using the selected parameters (b∗ , n∗ ), the orig-
+   Stage 1: Intra-Row Scan via Matrix Transposition.                                                                                                        inal exponents are transformed via Equation 2. A statistical
+IDD-Scan first computes the prefix sum for each row by                                                                                                      analysis of the bit-widths required for the transformed values
+transforming it. The local N ×M tensor is transposed into an                                                                                                y is then performed. This yields the cumulative distribution
+M × N matrix. This distributes each original row’s elements                                                                                                 function p(m), representing the probability that a value y can
+across M new rows, converting intra-row dependencies into                                                                                                   be represented using m or fewer bits.
+
+
+
+
+                                                                                                                                                     1326
+

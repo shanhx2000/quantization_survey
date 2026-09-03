@@ -1,0 +1,53 @@
+                                                                          Fig. 8: Modified multiplexer PE supporting both binary and
+ Fig. 7: Overall architecture of the SingularBit accelerator.             group-wise quantized operations.
+
+                                                                          overall compression ratio. To this end, we use a linearly
+map At ∈ RH×Nt is aggregated via head-wise max pooling
+                                                                          increasing capacity schedule:
+followed by normalization to produce ãt ∈ RNt . This resulting
+vector is appended to the window Mt ∈ Rk×Nt , while                                 li · 2b+i = m · i + c,   i ∈ {0, 1, 2, 3, 4}.      (8)
+the oldest entry is evicted to maintain the fixed window
+size. Head-wise max pooling preserves tokens required by                  Here, m controls the increase in capacity for higher-
+any attention head at higher precision, as different heads                importance regions, and c sets the baseline capacity.
+                                                                                                                            P4The inter-
+may attend to complementary information [48]. The window                  val lengths are obtained by solving Eq. (8) with i=0 li = 1,
+provides sufficient temporal context to smooth out transient              after which the boundaries are recovered as cumulative sums
+attention patterns while maintaining computational efficiency.            of li .
+   (2) Importance Score Calculation. From the recent-k                       Second, the SingularBit-W rank precision policy is ap-
+attention maps in Mt , we compute per-token importance                    plied within each token’s allocated maximum bitwidth. Rank
+scores by taking the query-wise maximum:                                  components with larger singular values retain higher precision,
+                                                                          while less significant components are assigned progressively
+                     Ii =      max        ãj [i]            (7)          lower precision according to the SingularBit-W rank bound-
+                            j∈[t−k+1,t]
+                                                                          aries. This nested policy enables two-dimensional mixed pre-
+We use max pooling instead of averaging due to the irre-                  cision over token importance and rank significance.
+versibility of online quantization: once a token is stored at a
+                                                                                  V. P ROPOSED H ARDWARE A RCHITECTURE
+lower bitwidth, recovering the discarded information requires
+recomputing its higher-precision KV representation, incurring             A. Overall Architecture
+substantial inference overhead. This motivates a conservative                Figure 7 presents the overall architecture of the SingularBit
+strategy that captures each token’s peak attention over recent            accelerator. The system interfaces with 80GB of external
+steps, ensuring that tokens critical to any recent decoding step          DRAM through HBM controllers, providing 2.0 TB/s off-
+are preserved with sufficient precision.                                  chip bandwidth, and receives commands via a PCIe-based host
+   (3) KV Bit Precision Allocation. The precision allocation              interface. The accelerator consists of two main components:
+follows two nested policies. First, the SingularBit-KV token              SingularBit Tensor Cores for mixed-precision matrix multipli-
+precision policy maps each token importance score to one                  cation and a SingularBit Compression Engine for online KV
+of five bitwidth levels, from b to b + 4, where b is the base             cache compression. Each SingularBit Tensor Core includes
+precision. Let 0 = s0 < s1 < · · · < s5 = 1 denote the interval           a 32 × 32 PE array that performs bit-serial mixed-precision
+boundaries over the normalized importance-score range, and                weight computation with FP16 activations. The SingularBit-W
+let li = si+1 − si be the length of the interval assigned                 Compute FSM coordinates mixed-precision execution, while
+to bitwidth b + i. Since a b + i bit quantizer provides 2b+i              the core scheduler manages data movement and buffer oper-
+representable levels, li 2b+i represents the effective capacity           ations. Each core also includes local GeMV units for matrix-
+allocated to that importance region.                                      vector operations and SIMD units for element-wise operations
+   Considering the heavy-tailed nature of attention-based im-             such as bias addition and nonlinear functions. The SingularBit
+portance scores, where a small fraction of tokens receives                Compression Engine handles attention computation and KV
+dominant attention while the majority receives low atten-                 compression. Its global GeMV and SIMD units compute atten-
+tion [10], a desirable allocation should provide higher capac-            tion scores and softmax, and the SingularBit-KV Compressor
+ity to high-importance regions without letting high-precision             compresses the KV cache based on token importance and rank
+intervals absorb too many tokens, which would degrade the                 information.
+
+
+
+
+                                                                   1007
+

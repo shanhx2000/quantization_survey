@@ -1,0 +1,100 @@
+and layers to avoid introducing additional hyper-parameters                                                    32
+                                                                                           1         or
+into training.                                                                             2
+                                                                                   32B          32
+                                                                                                               3                   4      SPE1 8
+
+
+
+
+                                                                        Crossbar
+   The channel-wise scaling factor, sc , could require the costly                                                                                5 8B
+                                                                                                                    ×              float_to_int
+
+
+
+
+                                                                          GPU
+
+
+
+
+                                                                                                                                                           Alignment
+                                                                                                                                                              Buffer
+calculation of the maximum of each channel in the activation                       32B
+                                                                                                                                                      8B
+map. To avoid this, the maximum can be calculated efficiently                                                                      int_to_float
+                                                                                       7                                                               6
+using the activation statistics (mean and variance) already
+determined by batch normalization [24]. Alternatively, prior                                                                                SPE8
+
+work on integer quantization has shown that activation statis-          Fig. 11: The SFPR unit showing 8 SFPR Processing Elements
+tics do not vary significantly between batches [49], making             (SPEs). In forward mode (grey arrows), 8× 32-bit float values
+a sampling-based method a promising approach. We do not                 are multiplied by sc and cast to 8× 8-bit integers, and in
+measure scaling factor calculation due to the many solutions            backward mode (green arrows), the integers are cast to floats
+with little or no performance or hardware overhead.                     and multiplied by 1/sc .
+   SFPR, when used as a pre-stage to JPEG, has the benefit of
+scale normalization. We find that without scale normalization,
+compression ratios vary greatly during training, and across             The buffer is sized to hold enough JPEG blocks to prevent
+different networks. Compression variation across channels also          duplicate cache line accesses. This requires that activations
+reduces trained network accuracy. This appears to result from           be padded and aligned such that the start of each cache line
+different input ranges to JPEG compression: activations with a          coincides with a JPEG block.
+small range will be truncated, giving a high compression ratio             The size of the alignment buffer is determined by the JPEG
+but also high compression error. For instance, activations with         block size, cache line size, activation data type, and SFPR
+a range smaller than 1.0 result in zeros after integer casting.         compression ratio. We assume an NCHW memory layout
+Scale normalization ensures that the entire 8-bit integer range         (batch, channel, height, width) for activation tensors, as it
+is utilized for all activation channels with SFPR and JPEG.             has the highest performance for training CNNs [50], and is
+   The SFPR compression unit used in the JPEG-BASE and                  the default for many frameworks [22], [23], [51]. As each
+JPEG-ACT accelerator designs is divided into eight identical            JPEG block has a height of eight elements, a single block can
+SFPR Processing Elements (SPE1 to SPE8), each of which                  span at most eight cache lines. A single 128B cache line [48]
+handle the conversion of one integer or float (Figure 11).              can contain values from up to four JPEG blocks with 32-bit
+   During the forward pass, sc is loaded when starting each             activations. Hence, the alignment buffer is sized to cover eight
+new channel ( 1 ). Then, after the return of a cache sector             cache lines compressed to eight bits per activation, i.e. 256B
+(32B) through the GPU crossbar, the eight 32-bit floating-              or four JPEG blocks (Figure 12). A smaller buffer would result
+point values on this sector are split among the SPEs ( 2 ). sc          in duplicate cache line accesses.
+is multiplied with the activation using a 2-stage floating-point           The JPEG-ACT CDU requires that blocks are aligned with
+multiplier ( 3 ), and cast to an 8-bit integer ( 4 ). Casting of out-   cache line boundaries. The access stride depends on whether
+of-range values saturates, rather than truncates the resulting
+value. The results of each SPE are concatenated and saved to
+the alignment buffer ( 5 ) to await JPEG compression.                   a) 5x1x6x6 Activation Tensor                      b) 1x2x7x14 Activation Tensor
+                                                                                                                                                W
+   During the backward pass, the inverse of the scaling factor                  W               C                                      C
+(1/sc ) is loaded ( 1 ). Inverse scaling factors can be calculated
+                                                                        H                                                          H
+at run time without significant overhead, as the computation
+cost is amortized for each channel due to the large spatial                                             N
+                                                                         Reshaped Act.                                                          N
+dimensions of the activations. Eight 8-bit integers (having been                   W                                           Reshaped Act.
+decompressed using JPEG) are loaded and split among the                                                                            W
+                                                                                                        1st Cache                                   1st Cache
+SPEs ( 6 ) and converted back to 32-bit floating-point values.                                             Line                                        Line
+                                                                                                                    ⋯                                           ⋯
+                                                                         NCH
+
+
+
+
+The values are multiplied by 1/sc ( 3 ) and concatenated before
+                                                                                                    ⋯                                           ⋯
+                                                                                                                         NCH
+
+
+
+
+being sent to the GPU crossbar ( 7 ).
+   SFPR has some similarities to DPR [13] and BFP [32].
+                                                                                   ⋯
+                                                                                                                        NCH
+                                                                                                                        Pad
+SFPR reduces hardware area versus DPR by converting to 8-                              W Pad
+bit integers instead of floats. The channel-wise scaling of BFP                                Alignment Buffer                            Alignment Buffer
+is similar to SFPR, however, SFPR adds scale normalization,
+                                                                            8
+which allows for better utilization of the integer data type.
+                                                                                                        32                       Block 1 Block 2 Block 3 Block 4
+C. Alignment Buffer
+   The alignment buffer is a structure designed to convert              Fig. 12: Memory layout and padding examples. Colors cor-
+between the linear address space and the 8×8 blocks (H ×W )             respond to different 8 × 8 JPEG blocks and padding. White
+required by JPEG. As the DCT is a 2D operation, it requires             outline: First cache block boundary, Black outline: Original
+that all 64 elements in a block be available before processing.         activation tensor boundary.
+

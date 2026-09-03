@@ -1,0 +1,106 @@
+Si characterization data as input, to determine the throttling                                                                         As shown in Figure 7, each AI core equipped with MPE
+levels for individual layers, which pushes the power closest to                                                                     arrays and SFU arrays along with the 2-tiered scratchpad
+the power envelope. As this can be done during compilation,                                                                         hierarchy has all the necessary features to be used as a single-
+the overhead is not in the critical path of the inference, and                                                                      core edge accelerator, and at the same time can be used as
+is also amortized over multiple inferences for a given DNN.                                                                         a fundamental building block of a larger system comprising
+   R A P I D includes an on-chip power control module via                                                                           multiple cores.
+clock-edge skipping which uses the throttling rate recom-
+                                                                                                                                    E. Data Communication Among Cores and Memory
+mended by the compiler to reduce the overall execution time
+while operating within power and thermal limits.                                                                                       To communicate with the external memory and to be
+                                                                                                                                    able to scale to a chip with multiple cores, we adopted
+   
+                                                                                                                                    a bi-directional ring interconnection with a bandwidth of
+                                           
+                                                                                                                               128 bytes/cycle in each direction to communicate data
+                                                                          
+                                                                                                                           between cores and memory. Each core has a programmable
+     
+      
+                                                                                               
+                                                                                                                                    Memory-Neighbor Interface (MNI) unit to facilitate data
+                                                                                                        
+
+                                                                                                                               communication with memory and neighbors via a ring-
+                                                                                                              
+                                                                                                                                    interface unit (RIU). We have enabled asynchronous clock
+                                                  
+                                                                                                                   domain crossing support to allow the ring and the core to
+                                                    
+                                                                                                                                    operate at different frequencies.
+                 Figure 6: Workload-Aware Power Throttling                                                                             Figure 8 shows the overview of the MNI and the ﬂow of
+                                                                                                                                    requests and data returns between cores and memory using
+D. Ultra-low Precision Core with 2 corelets                                                                                         separate programmable load and store units (MNI-LU and
+                                                                                                                                    MNI-SU). As the data access patterns in DNNs are both
+                                                                         
+                                                                                                                                    static and regular, data fetch latency can be effectively hidden
+                                                                                             
+                                                                                                                                    by double-buffering data in the L1 scratchpad overlapped in
+           
+
+
+
+
+                                                                
+
+
+
+
+                                                                                                                  time with computations in the core. The compiler blocks and
+                                                                                                                                    tiles the program loops to guide the granularity of data
+                                                                                             
+                                                                                                                                    fetches/stores by balancing the scratch-pad capacity and
+                                                                                             
+                                                                                                                                    available bandwidth.
+                                                                                                                                       Each load/store request is assigned a unique identiﬁcation
+                                                                                                                  tag which is generated as part of the execution of the
+                                                                                     
+                                                                                                                                    send/receive primitives supported by the MNI-SU and MNI-
+                                                                                             
+                                                                                                            LU, respectively. Using load and store queues, MNI supports
+                                                                               
+                                                                                                                                    multiple outstanding requests to neighbors and memory, and
+                                                                                                                                    MNI-LU allows out-of-order data returns as the local scratch-
+                                                                                                                          pad address to be written is tracked in the load queue. MNI-
+                                                                                                                                    LU and SU programs stall once the limit on the allowed
+   Figure 7: AI core: 2 corelets and shared L1 scratchpad                                                                           outstanding requests is reached. To exploit the bi-directional
+   To maximize re-use of data from the L1 scratchpad and to                                                                         ring bandwidth, the MNI-LU is designed to receive up to 2
+exploit the reduction in capacity requirements due to ultra-                                                                        data returns in any cycle, exploiting the banked architecture
+low precision, the AI core combines 2 sets of MPE arrays,                                                                           of the L1 scratchpad and the reservation management policy
+SFU arrays and L0 scratchpad, each referred to as a corelet,                                                                        in the RIU to avoid bank conﬂicts in the L1 scratchpad.
+with a shared 2MB L1 scratchpad. As shown in Figure 7,
+the shared L1 scratchpad communicates with independent                                                                                                             Outgoing Data Resp.                       Incoming Data Resp.            Incoming Data Resp.
+                                                                                                                                             clockwise ring
+programmable load/store units with each of the corelet with                                                                           counterclockwise ring                      Incoming                     Outgoing Req.                      Outgoing Req.
+                                                                                                                                                request ring                     Req.
+a bandwidth of 128 bytes/cycle. The large 2MB capacity of                                                                                                                         RIU                             RIU                                 RIU
+                                                                                                                                                                                                                                           
+the L1 scratchpad allows the intermediate outputs to be held                                                                             MNI-LU Primitives             Ring
+                                                                                                                                                                     Selection                         Flow Control                       Flow Control
+                                                                                                                                                                                         Request
+                                                                                                                                      Send{grpid, SrcAddr}                                                                                                        
+on-chip especially in ultra-low precision inference use-cases.                                                                        Resp{data, <destids>}
+                                                                                                                                                                                        Aggregation
+                                                                                                                                                                                                         Request        Consume             Request         Consume
+                                                                                                                                                                     Unicast /                          Generation      Response           Generation       Response
+Similarly, the bandwidth from L1 to the 2 corelets is balanced                                                                           MNI-SU Primitives
+                                                                                                                                                                     Multicast
+                                                                                                                                                                    Response
+                                                                                                                                                                                         Program
+to meet the speeds vs. feeds for the dataﬂows across different                                                                       Req{grpid, srcid, #sharers}    Generation
+                                                                                                                                                                                          Buffer         Program                            Program
+                                                                                                                                     Recv{grpid, DestAddr}                                               Buffer                            Buffer 
+precisions. For example, with a modiﬁed weight stationary
+                                                                                                                                                                    Data         Read Address                Write Address         Data         Write Address      Data
+dataﬂow, the INT4 computations of the MPE still consume                                                                                                                From L1 memory                                   To L1 memory                      To L1 memory
+only 5/8th of the available L1 bandwidth of 128 bytes/cycle.                                                                                                              MNI-SU [CoreA]                     MNI-LU [CoreB]                     MNI-LU [CoreC]
+
+As the precision is scaled to INT2, each cycle a partial sum                                                                        Figure 8: Multi-cast Support in Memory-Neighbor Interface
+is written to the L1 scratch-pad reaching the limits of the                                                                           DNN workloads exhibit high-degree of parallelism allow-
+available L1 bandwidth.                                                                                                             ing spatial partitioning of the work with data sharing across
+
+
+
+
+                                                                                                                              
+

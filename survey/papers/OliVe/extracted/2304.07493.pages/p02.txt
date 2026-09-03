@@ -1,0 +1,101 @@
+ISCA ’23, June 17–21, 2023, Orlando, FL, USA                                                                                                                                                 Guo and Tang, et al.
+
+
+                                                                                           Unaligned                            4-bit   8-bit and 16-bit) outlier values can be compressed with sparsity-
+
+
+                             Compress Outliers
+                                                                          8-bit
+
+
+                              Quantization &
+
+
+
+
+                                                  Coordinate List
+                                                  Sparse Outlier:
+                                                                                                                                        based encoding. Such encoding unfortunately leads to unaligned
+
+
+
+
+                                                                                                    Dense Normal
+                                                                           -98          (0,3)                      2   3   -5    0
+                                                                                                                                        memory access. For example, GOBOs [85] and OLAccels [61] use
+                                                                            18          (1,0)   +                  0   4    7    -7
+                                                                                                                                        the coordinate list to indicate the location of each outlier value in
+          Matrix
+ 1.5     2.6   -5.2   -98
+                                                                            31          (2,2)                      1   6    0    6
+                                                                                                                                        the matrix, as shown in Fig. 1a. BiScaled-DNNs [39] exploits block
+                                                                         (a) Sparsity-Based Encoding (GOBO)                             sparse indices format to store the outlier indices, and DRQ [75]
+17.6     4.2   7.1    -6.8
+                                                                                                                                        uses the direct bitmap for outliers. These outlier-aware solutions
+                                                                                          Aligned                          1000 1111
+                                                  1.5          2.6         0      -98                 2     3                           require complex architectural designs with significant hardware
+                                 Prune Victims
+
+
+
+
+ 1.2     6.3   30.7   5.9                                                                                                   (0, -96)
+                                                                                       Quantize &
+                                                 17.6               0     7.1    -6.8 Embed Outliers
+                                                                                                     0010 1000
+                                                                                                      (16, 0)
+                                                                                                                            7    -7     overheads to accommodate outliers. Moreover, due to the random
+ 1      Normal Value                              1.2          6.3        30.7    0                                1   6
+                                                                                                                           0100 1000    and unaligned memory access, the sparsity-based encoding is in-
+                                                                                         4-bit OVP                          (32, 0)
+ 1      Outlier Value                                                                    Encoding
+                                                                                                                                        compatible with the memory sub-systems of existing accelerators,
+                                                 4-bit                    OV Pair                                           8-bit
+                                                                                                                                        such as GPU and TPU. Specifically, GOBO [85] can only de/com-
+    0   Victim Value                                                    (b) Outlier-Victim Pair Encoding (Ours)
+                                                                                                                                        press weight tensors on the off-chip DRAM, it still relies on the
+                                                                                                                                        original on-chip memory and computation architecture of GPU
+Figure 1: Outlier-aware encoding comparison. (a) Prior                                                                                  with high precision FP16/32.
+quantization works adopt sparsity-based encoding that                                                                                      The aforementioned outlier-aware architectures separate nor-
+store normal and outlier values separately. (b) Our proposed                                                                            mal values from outliers in a global way. For instance, GOBO [85]
+outlier-victim pair encoding stores normal and outlier val-                                                                             involves a global sparse coordinate list in the quantization and
+ues locally.                                                                                                                            computation, leading to a large hardware overhead and low perfor-
+                                                                                                                                        mance benefits. In this work, we aim to design an architecture to
+                                                                                                                                        handle outliers in a localized way with high hardware efficiency.
+1       INTRODUCTION                                                                                                                    To achieve that, we group two consecutive fixed-size values in a
+Transformer-based large language models (LLMs) [77] have demon-                                                                         tensor and analyze their impact to model accuracy. There can be
+strated great success in the past years. Such success is often achieved                                                                 three kinds of pairs: i) a normal pair with two normal values, ii)
+with the increasingly larger model size: the model size grows                                                                           one-outlier pair with one normal value and one outlier value, iii)
+by 240× every two years, significantly outpacing the hardware                                                                           two-outlier pair with two outlier values. We observe that the third
+progress (3.1× per two years) [24]. As a result, the inference of                                                                       two-outlier pair almost never shows up in well-trained LLMs. For
+LLMs becomes challenging and costly. For instance, OPT-175B [90],                                                                       the second one-outlier pair, we find that only keeping its outlier
+a recent Transformer-based LLM, has 175 billion parameters, which                                                                       value while pruning its normal value (i.e., treating it as zero) is
+cannot fit in the latest high-end H100 GPU with 80GB memory.                                                                            sufficient to maintain the model accuracy.
+   Quantization [6, 7, 21, 22, 72, 74, 79, 93] is one of the most                                                                          Based on the above observations, we propose a novel outlier-
+hardware-efficient ways to reduce inference costs for large models.                                                                     aware quantization architecture, called OliVe, based on the outlier-
+It uses low-precision data types to compress models and accelerate                                                                      victim pair (OVP) encoding. The salient feature of OliVe is memory-
+the computation with practical hardware implementations, e.g.,                                                                          aligned and therefore hardware-friendly. As illustrated in Fig. 1b,
+TPU [42] and GPU tensor core [60].                                                                                                      OliVe first prunes normal values that are adjacent to the outliers
+   However, existing quantization schemes [18, 74, 86] are less ef-                                                                     as zero. These pruned normal values are called victims, which
+fective in Transformer-based LLMs. Recent studies show when the                                                                         sacrifice themselves and make space for outliers. Then, we exploit
+model size exceeds a threshold (e.g., 6 billion), the model perfor-                                                                     the extra space provided by victims and embed the outliers into the
+mance is vulnerable to only a tiny fraction (< 0.1%) of outliers,                                                                       low-precision matrix.
+whose values are much more significant than normal values [18].                                                                            OliVe is able to maintain a high accuracy for large Transformer
+Indiscriminately clipping both outlier and normal values will lead                                                                      models with a low hardware overhead due to the following reasons.
+to significant drops in model accuracy [18, 82]. As a result, the                                                                       First, OliVe incorporates victims to tackle outliers in LLMs. The
+common practice is to adopt a larger bit-width, e.g., 8-bit or 16-bit,                                                                  effects of victims resemble model pruning [36]. Although clipping
+to quantize Transform-based models, compared to convolutional                                                                           a few (0.1%) outliers will lead to a disastrous accuracy drop [18, 82],
+networks (CNNs).                                                                                                                        pruning the same amount of “normal” values will only impact
+   Researchers have proposed various quantization/architecture                                                                          model accuracy slightly (< 0.1% drop). Therefore, OliVe sacrifices
+co-design works [39, 61, 75, 82, 85] to deal with the outliers in Trans-                                                                (“prunes”) those insignificant values as victims for the outliers,
+former models. For example, outlier suppression [82] proposes to                                                                        allowing a more aggressive encoding scheme to accommodate ex-
+suppress the outliers. But it still has significant accuracy loss in the                                                                tremely significant values. Second, the OVP encoding follows a spe-
+lower bit-width (4-bit), suggesting the difficulty in accommodating                                                                     cific outlier-victim (or victim-outlier) pattern to achieve memory
+the effects of outliers. In addition, architecture researchers have de-                                                                 alignment with little hardware overheads. Each victim is adjacent
+signed sophisticated outlier-aware hardware architectures to store                                                                      to an outlier, and the outlier-victim pair must align the memory
+outliers with high precision to maintain model accuracy. These                                                                          access pattern. For example, in Fig. 1b, right outlier −98 in the OV
+outlier-aware quantization frameworks divide the tensor into nor-                                                                       pair needs a left victim, and left outliers 17.6 and 30.7 require the
+mal and outlier values, and encode them separately using different                                                                      right victims. That can align 8-bit (1-byte) memory accesses with
+ways. For normal values, a dense matrix with low precision (e.g., 4-                                                                    high efficiency. This design enables a completely localized outlier
+bit) quantization is adopted. And the sparse and high-precision (e.g.,                                                                  decoding/encoding process.
+

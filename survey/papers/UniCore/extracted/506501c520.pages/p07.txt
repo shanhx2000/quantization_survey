@@ -1,0 +1,90 @@
+              ...
+                                                                                       Weight                  Unified Format Converter
+                              W4        W4                                                                                                                               Ctrl
+                              A4        A4                                             Buffer                           PreAdd
+   PE PE PE PE PE PE
+                              PE        PE   PE   PE   PE       PE                     Unified
+
+
+
+
+                                                                                                                          Rescale & Accum
+
+
+
+
+                                                                                                                                                                  Rescale & Accum
+                                                                                       Buffer       Tile           Tile                     Tile           Tile
+
+
+
+
+                                                                            DRAM
+                                         W4A4               =   +
+                                                                                      Vector Unit
+                                                                                                           Group                                   Group
+
+
+           (a) Partial-sum accumulation in W4A4 mode.                                               Tile           Tile                     Tile           Tile
+                                                                                        Accum
+              ...                  W8                                                   Buffer                                  Accumulator
+                                   A8
+    C-PE C-PE C-PE
+                               C-PE          C-PE       C-PE                       Fig. 10: U NI C ORE-based LLM accelerator architecture.
+                                                        Concat
+                                         W8A8           =
+                                                                            Conversely, in W8A8 mode (Figure 9b), the fused-PE (F-PE)
+                                                                            acts as a single wide MAC unit with an activated internal
+           (b) Partial-sum accumulation in W8A8 mode.                       carry chain. Therefore, the outputs from the two chains are
+Fig. 9: The adaptive dual-chain partial-sum (S) accumulation                simply concatenated to produce the final wide-bit-width result
+datapath that supports W4A4 (summing) and W8A8 (concate-                    (S||∗ ). This dual-chain routing scheme allows the partial-sum
+nating) modes without multiplexer overhead.                                 connections between PEs to be fixed, eliminating the need for
+                                                                            multiplexers or other complex routing logics and achieving
+partial sum (S) to generate the new partial sum (S ′ ), which               high bit-width adaptability in a hardware-efficient manner.
+then propagates to the next PE.
+                                                                            D. UniCore for LLM Inference
+   In W4A4 mode (Figure 8b), the Left and Right slices
+function as distinct, parallel MACs. Each slice independently                  Figure 10 provides the system architecture of U NI C ORE-
+receives its respective E3M2 operands (W and T ), performs                  based LLM accelerator. At its core is the GEMM Unit
+the T + W operation, and concatenates the fine-grained                      (U NI C ORE), implemented as a scalable 2D array of Tiles, each
+compensation value Cf g , the only compensation needed to                   composed of multiple S-FPMA-based composable PEs. Tiles
+preserve fidelity in this low-bit mode, to produce an E4M4                  are organized into Groups whose PE column counts match the
+product. This product is then converted into sign-magnitude                 quantization group size, enabling each Group to process one
+via shifting before being accumulated with an incoming partial              group in parallel and naturally support low-bit per-group quan-
+sum (S), avoiding a costly FP adder. This configuration results             tization. Within each Group, partial sums are accumulated and
+in two independent partial sums (S ′ ) being generated and                  rescaled using the group’s scale factor, and the outputs from
+propagated separately from each slice.                                      all Groups are merged in the global Accumulator. Surrounding
+   In W8A8 mode (Figure 8c), the two PE slices are dy-                      the GEMM Unit, a Weight Buffer supplies quantized weights,
+namically fused via carry chains to process the wider E4M3                  while a Unified Buffer streams activations and intermediate
+operands. This fused operation requires both fine-grained com-              results for both GEMM and the Vector Unit that handles
+pensation (Cf g ) and coarse-grained compensation (Ccg ). As                layer-wise operations. The Control Unit schedules instructions,
+our design employs only a 1-bit Ccg , it is efficiently injected            manages on-chip buffers and DRAM traffic, and controls the
+into the adder chain using the carry logic. The E5M4 product’s              precision-dependent muxes that select between independent
+exponent (E5) is used to drive both shifters in parallel: the               and fused PE operation, ensuring scalable, systolic-friendly
+lower 4 bits (E5[3:0]) control the right shifter, while the left            inference under group-wise quantization.
+shifter is driven by the non-negative value of exponent minus                      VII. D ISTRIBUTION - ADAPTIVE Q UANTIZATION WITH
+a fixed offset (E5−δ). The final output is obtained by clipping                            DYNAMIC F LOATING -P OINT F ORMAT
+the left shifter’s result and concatenating it with the right
+                                                                               Aggressive low-bit quantization (e.g., 3–4 bits) is essen-
+shifter’s result, prepared for later accumulation.
+                                                                            tial for reducing GEMM compute cost, yet standard low-bit
+C. Bit-width-Composable Dataflow                                            floating-point formats (FP4/FP3) struggle to represent the
+                                                                            highly diverse, fine-grained data distributions seen in modern
+   To efficiently accumulate partial sums generated by the                  LLMs. U NI C ORE therefore integrates a distribution-aware
+composable PEs in different bit-width modes, U NI C ORE in-                 quantization framework that co-designs the numerical format
+troduces an adaptive dual-chain accumulation datapath. As                   with the S-FPMA datapath to achieve high fidelity under ultra-
+detailed in Figure 9, partial sums (S) are accumulated hor-                 low bit precision.
+izontally via the dual-chain datapath, which implements two
+independent accumulation chains within each row: one con-                   A. Non-uniform Data Distribution in LLMs
+necting the Left PE slices and another connecting the Right PE                 Although tensor-wise activation or weight distributions ap-
+slices. This chain dynamically adapts to operational modes.                 pear well-behaved, their per-group distributions (e.g., 32-
+   In W4A4 mode (Figure 9a), where all PEs in each row                      element groups used in modern scaling quantization) are
+contribute to a single result, the outputs of the two chains are            highly non-uniform and vary dramatically across layers and
+                                                             ∗
+summed by a final adder to produce a unified output (S+        ).           channels. Figure 11 shows that while tensor-level CDFs are
+
+
+
+
+                                                                     2526
+

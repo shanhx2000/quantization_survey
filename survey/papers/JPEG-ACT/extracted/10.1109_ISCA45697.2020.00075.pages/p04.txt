@@ -1,0 +1,95 @@
+                                                                            7                  9      A. Overview
+  1                 2           3       DIV           6      RLE
+                                                                           3,1              1110 1
+                             10 12 -9           4   3 2 -1
+              DCT            6 5 10
+                             10 10 10
+                                            ÷       0 0 0
+                                                    1 0 0
+                                                             Run-length
+                                                              Encoding
+                                                                           2,0
+                                                                          -1,1
+                                                                                  Huffman
+                                                                                  Coding
+                                                                                             110 0
+                                                                                              10 1
+                                                                                                         The baseline system comprises a GPU with High Bandwidth
+                                                                           1,3 10              0 3    Memory (HBM) and DMA over PCIe to CPU DRAM (Figure
+ 8x8
+Block                                 3 5 9                                                      11   7a) [45]–[47]. We assume each Streaming Multiprocessor
+                                 DQT: 13 15 30 5      Encoding          Huffman 1 0 2 110
+                                                       Order:            Table: -1 10 3 1110 8        (SM), L2 cache/memory controller partition (L2/MC), and
+                                        15 20 40
+
+                                                                                                      DMA unit, are connected using symmetric links to the GPU
+Fig. 5: JPEG encoding example. This illustration uses smaller
+                                                                                                      crossbar. Training using vDNN on this system involves off-
+blocks (3 × 3 instead of 8 × 8) due to space limitations.
+                                                                                                      loading each activation over DMA after its usage in the
+                                                                                                      forward pass (Figure 1). Similarly, in the backward pass,
+                                                                                                      activations are loaded over DMA into GPU HBM before their
+the convolution of images would also resemble images. To                                              first use and freed after use. This process is overlapped with
+test this hypothesis, we analyze the Shannon information                                              compute.
+entropy [44] in the spatial (before DCT) and frequency (after
+DCT) domains (Figure 6). Our experiments demonstrate that                                                  GPU HBM                        HBM                       HBM
+the spatial correlations persist deep into the network, even
+                                                                                                          MC         MC                   MC                        MC
+after 40 convolution layers. Frequency domain entropy is                                                  L2   ...   L2              ..   L2    CDU
+                                                                                                                                                    Collect,     . L2 CDU Buffers
+lower, especially in the early layers of the network, where                                                 crossbar      DMA
+                                                                                                                                                CDU Split
+                                                                                                                                                                              &
+                                                                                                                                                      &
+activation storage requirements are higher. This implies that                                             SM   ... SM                .. SM      CDU
+                                                                                                                                                CDU DMA          .. SM       DMA
+
+the frequency domain is a more compact representation for                                                                  PCIe
+                                                                                                           CPU DRAM                    DRAM                        DRAM
+convolution activations. We do not observe this trend for sparse
+activations (e.g. ReLUs).                                                                               a) Baseline GPU           b) DMA-side compr.           c) Cache-side compr.
+                                                                                                           (vDNN, GIST)              (cDMA+, JPEG-ACT)            (cDMA)
+   JPEG-ACT is a compressing offload accelerator, similar to
+cDMA (Figure 1). However, the goals of JPEG-ACT are to                                                Fig. 7: Compression/Decompression Unit (CDU) locations.
+address the issues introduced by modern networks. Offloading                                          a) supports no compression, or software compression. CDUs
+using cDMA or vDNN has a high overhead due to low                                                     represent ZVC/ZVD for cDMA or cDMA+, or the JPEG-
+PCIe bandwidth and, in networks such as ResNets, due to                                               BASE or JPEG-ACT CDU
+a low sparsity and/or high proportion of dense activations.
+GIST avoids the PCIe bottleneck by compressing to GPU                                                    For compressed offload, we augment the DMA with several
+memory instead. This removes offload times but uses precious                                          Compression/Decompression Units (CDUs), and a collector/
+computation resources to perform activation compression. As                                           splitter between the CDUs and DMA (Figure 7b). With this
+well, the compression rates provided by GIST (2.2× - 4.0×)                                            system, the maximum effective offload rate is the compression
+result in only moderate relief from activation storage, and                                           ratio multiplied by the PCIe bandwidth. We use a multi-link,
+still require large amounts of costly GPU memory. JPEG-ACT                                            multi-CDU design to avoid being limited by crossbar link
+instead addresses the PCIe bottleneck through an aggressive                                           bandwidth, explored further in Section VI-E. It is also possible
+lossy compression scheme, allowing for a cheaper memory                                               to store compressed data in the GPU HBM, however, we do
+solution, and addresses compute overheads through a custom                                            not investigate this as activations can be as large as 1GB,
+hardware implementation, avoiding the use of general compute                                          requiring a large amount of HBM. In this system, compressed
+resources.                                                                                            traffic from the multiple CDUs is aggregated by the collector
+   In this section, we present an overview of the system                                              when transferring to the CPU, and uncompressed traffic is
+and JPEG-ACT offload accelerator (Section III-A), how 2D                                              distributed among CDUs by the splitter when transferring to
+activations map onto the accelerator (Section III-C), and                                             the GPU.
+the implementations of the JPEG-ACT components (Sections                                                 DMA-side compression (Figure 7b) in this work differs
+III-B, and III-D to III-G).                                                                           from the cache-side compression (Figure 7c) used by cDMA
+                                                                                                      [21]. Cache-side compression requires a large area and power
+                                                                                                      overhead due to the replication of CDUs across the many
+                                                                                                      cache partitions on modern GPU architectures (e.g., 48 on
+                         8
+        Entropy (Bits)
+
+
+
+
+                                                                                                      Volta, [48]). Additionally, for load balancing, sequential cache
+                         7                                                                            lines are typically distributed across memory partitions [47].
+                         6                                                                            JPEG compression operates on eight rows of the activation,
+                                                              Spatial           Frequency             hence spans up to eight cache lines. This would require inter-
+                         5
+                                                                                                      cache communication across memory partitions for a cache-
+                                0       5      10 15 20 25 30 35 40
+                                                                                                      side design, thus we perform JPEG exclusively at the DMA-
+                                              Convolution Layer (0: input)
+                                                                                                      side. We examine locating parallel portions of the CDU at
+Fig. 6: Convolution activation entropy averaged over all epochs                                       the cache in Section VI-E. For comparison, we re-implement
+and activations in each layer for ResNet50/CIFAR10.                                                   cDMA (Figure 7c) as a DMA-side technique, cDMA+ (Figure
+

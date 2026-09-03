@@ -1,0 +1,90 @@
+                              Weight / Activation Buffer    ①                                                                                              E3M2 (W)           E3M2 (W)
+                                                                                                                    PreAdd                                 E3M2 (A)           E3M2 (A)
+
+                           Unified Format Converter         ②                                                                                                   +                  +
+                                                                                                        +                      +                                +                  +
+                           PA    PA      ....    PA   PA    ③
+       PreAdd
+                                                                     ⑤                                                                                     E4M4 (P)           E4M4 (P)
+                                                                                                                                                           E4       M4        E4       M4
+                          PE       PE           PE     PE                                                                                                       <<              <<
+        carry                                                                                                                             LUT
+                                                                                                                                                                +                  +
+                                                                                                        +                      +
+                          ~        ~
+
+
+
+
+                                                                          Accumulator
+                          ×        ×            PE     PE                                                                                        (b) W4A4 mode’s datapath.
+                     ④    +        +
+
+
+
+
+                                                                Rescale
+                                                                                                      Concat        LUT      Concat        LUT
+
+      S-FPMA                                                                                                (FP)                   (FP)
+                                                                                                                                                                     E4M3 (W)
+                                                                                                                                                                     E4M3 (A)
+                          PE       PE           PE     PE                                              <<                     <<                                +                  +
+                                                                                                            (Sign-Magn)            (Sign-Magn)                  +                  +
+                                                                                                        +                      +                                     E5M4 (P)
+                          PE       PE           PE     PE
+Dual Partial-sum Chains                                                                                       PE (L)               PE (R)         max(0,
+                                                                                                                                                  E5 - )
+                                                                                                                                                                         M4                  E5
+                                                                                                                                                                                            [3:0]
+                                                                                                                                                             <<                 <<
+                                                                                                                                                                    clip
+         Fig. 7: U NI C ORE systolic array architecture.                                                                                                        +                  +
+                                                                                                     (a) Composable PE slices
+                                                                                                                                                 (c) W8A8 mode’s datapath.
+the upper slice processes the next 4 bits, with the carry from                                            (Left and Right).
+the first feeding the second. FG compensation remains in the                                   Fig. 8: Composable Processing Element (C-PE) efficiently
+lowest slice so that the restored fine detail propagates through                               supports W4A4 and W8A8 MAC by reusing operators.
+the fused adder chain, while CG compensation uses the empty
+bits of B to participate in addition to coarse mantissa bits.                                  compute two separate low-bit MACs (e.g., two W4 lanes).
+This extends naturally to W16×A16, where four slices form a                                    In fused mode, the same slices are combined through an
+16-bit FPMA operator (Figure 6c). Carries ripple through all                                   internal carry chain so that WL and WR form the low/high
+slices, and compensation remains correctly aligned. Because                                    bits of a single wider operand (e.g., W8), enabling dynamic
+the fused datapath is still a single addition, area and delay                                  precision scaling. The outputs of PEs feed into a dual-chain
+scale linearly with bit-width.                                                                 accumulation datapath, where separate SL and SR horizontal
+   S-FPMA therefore allows the same hardware to operate ef-                                    chains maintain bit-width-adaptive partial sums. Finally, the
+ficiently in W4A4, W8A8, and W16A16 modes, providing full                                      post-processing pipeline performs dequantization via Rescale
+utilization and multi-precision capability without duplicating                                 and combines the scaled results with previously stored values
+FPUs or widening multiplier arrays.                                                            in the Accumulator.
+
+                 VI. U NI C ORE A RCHITECTURE                                                  B. Composable Processing Elements
+                                                                                                  U NI C ORE’s PEs are designed as composable pairs based
+A. Overview
+                                                                                               on the S-FPMA primitive. As illustrated in Figure 8a, two
+   Figure 7 illustrates the U NI C ORE architecture using 4/8-                                 adjacent PEs can either operate in parallel or dynamically
+bit support as an example; this is for clarity only, and the                                   fuse into a single, wider computational unit. The internal
+design naturally generalizes to other bit-widths. U NI C ORE                                   datapath of each PE is mostly identical, and switching between
+employs a weight-stationary dataflow where both weights (W )                                   modes requires only minimal mux logic. Each PE receives
+and activations (A) are fed vertically in the column direction.                                the stationary weight (W ) and a corrected activation (T ),
+Before entering the array, both are processed by the Unified                                   the latter of which is generated beforehand by the PreAdd
+Format Converter, which performs the dual role of translating                                  block applying an exponent bias correction to the original
+low-bit inputs into an internal format to normalize subnormal                                  activation (T = A − B). Inside the PE, it performs an addition
+values (i.e., E3M2) as well as supporting our quantization                                     on these inputs (T + W ), and then enhances the accuracy
+framework to enhance data representation (Section VII). All                                    through both fine-grained and coarse-grained compensation.
+tensors remain stored and transferred in their original low-                                   Both compensation terms are generated by lightweight look-
+bit formats; the E3M2 encoding is confined to the compute                                      up tables (LUTs): FG compensation (Cf g ) is directly con-
+datapath. Following this unified conversion, their data paths                                  catenated to the FPMA output to restore the missing fine
+diverge: weights are pre-loaded and held stationary within the                                 bits, while CG compensation (Ccg ) provides a 1-bit coarse
+PE columns, while activations are first routed to a PreAdd (PA)                                adjustment injected as a carry-in at the lowest adder slice,
+unit. This PA unit computes an intermediate value T = A − B                                    consistent with the FP8 case where only one coarse bit is
+by applying an exponent bias correction (−B). This corrected                                   required. The resulting approximation product R in floating-
+activation T is then streamed continuously downward for                                        point format will pass through a shifter and be converted
+column-wide reuse. Each PE is built from a dual-slice S-                                       into a sign-magnitude representation. Finally, a specialized
+FPMA that supports bit-flexible approximate multiplication.                                    adder performs a mixed-format accumulation, summing this
+In independent mode, the Left (L) and Right (R) slices                                         sign-magnitude product with the incoming two’s complement
+
+
+
+
+                                                                                        2525
+

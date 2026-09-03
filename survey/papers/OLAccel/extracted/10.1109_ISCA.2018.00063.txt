@@ -1,0 +1,945 @@
+                         2018 ACM/IEEE 45th Annual International Symposium on Computer Architecture
+
+
+
+
+                                  Energy-efﬁcient Neural Network Accelerator
+                               Based on Outlier-aware Low-precision Computation
+
+
+                                              Eunhyeok Park, Dongyoung Kim, Sungjoo Yoo
+                                             Department of Computer Science and Engineering
+                                               Neural Processing Research Center (NPRC)
+                                                 Seoul National University, Seoul, Korea
+                                        {eunhyeok.park, dongyoungkim42, sungjoo.yoo}@gmail.com
+
+
+
+      Abstract—Owing to the presence of large values, which                      energy efﬁciency.
+   we call outliers, conventional methods of quantization fail to                   Note that we target multi-bit quantization for the weights
+   achieve signiﬁcantly low precision, e.g., four bits, for very
+                                                                                 and activations of deep neural networks. Although binary- or
+   deep neural networks, such as ResNet-101. In this study,
+   we propose a hardware accelerator, called the outlier-aware                   ternary-weighted networks [9], [10] are useful for medium-
+   accelerator (OLAccel). It performs dense and low-precision                    sized neural networks, e.g., AlexNet, it is known that very
+   computations for a majority of data (weights and activations)                 deep neural networks, such as ResNet-101, require more bits
+   while efﬁciently handling a small number of sparse and high-                  for weights and activations to maintain the quality of the
+   precision outliers (e.g., amounting to 3% of total data). The
+                                                                                 output.
+   OLAccel is based on 4-bit multiply-accumulate (MAC) units
+   and handles outlier weights and activations in a different                       Our proposed accelerator is based on a novel quantiza-
+   manner. For outlier weights, it equips SIMD lanes of MAC units                tion method called outlier-aware quantization [11], which
+   with an additional MAC unit, which helps avoid cycle overhead                 divides the distribution of data (weights or activations) into
+   for the majority of outlier occurrences, i.e., a single occurrence            two regions, of low and high precision. It applies reduced
+   in the SIMD lanes. The OLAccel performs computations using
+   outlier activation on dedicated, high-precision MAC units. In                 precision, e.g., 4-bit representation, to the low-precision
+   order to avoid coherence problem due to updates from low-                     region that contains a majority of the data. The high-
+   and high-precision computation units, both units update partial               precision region contains only a small portion (e.g., 3%) of
+   sums in a pipelined manner. Our experiments show that the                     the total data, and maintains the original, high precision, e.g.,
+   OLAccel can reduce by 43.5% (27.0%), 56.7% (36.3%), and                       16-bit representation. We call the data in the high-precision
+   62.2% (49.5%) energy consumption for AlexNet, VGG-16,
+   and ResNet-18, respectively, compared with a 16-bit (8-bit)                   region outliers, as they are far fewer in number and larger
+   state-of-the-art zero-aware accelerator. The energy gain mostly               in size than data in the low-precision region. Outlier-aware
+   comes from the memory components, the DRAM, and on-chip                       quantization enables low precision, e.g., four bits, for very
+   memory due to reduced precision.                                              deep models, such as ResNet-101 and DenseNet-121, with a
+      Keywords-neural network; accelerator; quantization;                        very small (3%) ratio of outliers at a negligible (<1%) loss
+                                                                                 of accuracy.
+                           I. I NTRODUCTION                                         In this study, we propose a hardware accelerator that
+                                                                                 performs dense and reduced precision computations on a
+      Hardware accelerators for neural networks have been                        majority of data in the low-precision region while perform-
+   extensively studied in recent years [1]–[6]. Of their ben-                    ing sparse and high-precision computation on outliers. The
+   eﬁts, such as low latency and low cost (in case of mass                       proposed accelerator, called the outlier-aware accelerator
+   production), energy efﬁciency is critical to determining the                  (OLAccel), achieves a signiﬁcant reduction in energy con-
+   suitability of neural networks for use in servers and mobile                  sumption by reducing the amount of memory access, and by
+   devices.                                                                      using smaller units of computation.
+      Reducing precision is a viable means of improving energy
+   efﬁciency. Migacz recently reported that 8-bit quantization                     The contributions of this paper are as follows:
+   is possible without loss of accuracy in deep neural net-                        • We propose an accelerator called OLAccel that imple-
+   works [7]. Park et al. proposed weighted entropy-based                            ments 4-bit computations on very deep neural networks,
+   quantization that enables 5-bit weight/6-bit activation for                       e.g., ResNet-101 and DenseNet-121.
+   such deep neural networks as ResNet-101 [8]. In our study,                      • OLAccel differently handles outlier activations and
+   we aim to further reduce bitwidth. We propose a hardware                          weights for computational efﬁciency.
+   accelerator that allows for 4-bit implementations in very                       • OLAccel performs sparse high-precision computation
+   deep models with a negligible loss of accuracy while yield-                       for outlier activations in parallel with dense low-
+   ing the beneﬁts obtained by reducing precision, i.e., higher                      precision computation for a majority of activations.
+
+
+2575-713X/18/$31.00 ©2018 IEEE                                             688
+DOI 10.1109/ISCA.2018.00063
+        Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:04:35 UTC from IEEE Xplore. Restrictions apply.
+                             (a) Full precision                                                                                                   Top-1   Top-5
+                                                                                               80
+
+
+                                                                                               60
+
+
+
+
+                                                                                Accuracy [%]
+                                                                                               40
+
+
+                                                                                               20
+
+
+                                                                                                0
+                                                                                                    0             0.01        0.02         0.03    0.04     0.05
+                                                                                                                                Outlier ratio
+
+                                                                                                    Figure 2: Accuracy vs. outlier ratio: AlexNet.
+
+                                                                                     100
+
+                                                                                               90
+
+
+
+
+                                                                               Accuracy [%]
+                                                                                                    Top-5
+                                                                                               80
+
+                                                                                               70
+
+                                                                                               60   Top-1
+
+                                                                                               50
+
+                                                                                               40
+                                                                                                    Top-1 Top-5 Top-1 Top-5 Top-1 Top-5 Top-1 Top-5 Top-1 Top-5
+                                                                                                        AlexNet          VGG-16   ResNet-18 ResNet-101 DenseNet
+                                                                                                         3.5%             1%         3%        3%         3%
+
+                                                                               Figure 3: Accuracy of AlexNet, VGG-16, ResNet-18,
+                                                                               ResNet-101, and DenseNet-121 with 4-bit outlier-aware
+                                                                               quantization. The dashed lines represent the top-5 accuracy
+                                                                               of a full-precision network.
+Figure 1: Weight distributions of full precision (a), linear
+quantization (b), and outlier quantization (c).
+                                                                               quantization errors, which makes quantization fail at such
+                                                                               low precision.
+  • OLAccel reduces the number of additional execution
+    cycles due to outlier weights by equipping SIMD lanes                         The basic idea underlying outlier-aware quantization [11]
+    with an outlier MAC unit that runs in parallel with                        is to divide a given distribution into two regions, low-
+    them to reduce latency in most cases of outlier weight                     and high-precision ones, as shown in Figure 1 (c). The
+    occurrence.                                                                low-precision region covers a majority (e.g., 97%) of data,
+  • OLAccel skips computations with zero-input activation,
+                                                                               and represents them with reduced precision, e.g., four bits.
+    thereby further improving energy efﬁciency.                                Compared with conventional quantization methods [7], [13],
+  • We designed OLAccel in Verilog and compare it with
+                                                                               [14], given the same bitwidth, the low-precision region
+    prevalent accelerators, Eyeriss [12] and ZeNA [5] at                       has more ﬁne-grained levels with small inter-level spacing,
+    reduced precision.                                                         which contributes to reducing the quantization errors in a
+                                                                               majority of data. The high-precision region contains outliers
+   II. M OTIVATION : O UTLIER - AWARE Q UANTIZATION                            with large values that are, thus, considered important. The
+   Figure 1 shows the distribution (in log scale) of weights                   outliers maintain their original high precision, e.g., 16 bits.
+in the second convolutional layer of a trained AlexNet. As                     Thus, outlier-aware quantization reduces the quantization
+the ﬁgure shows, the distribution is wide due to a small                       errors in a majority of small data items by using ﬁne-
+number of outliers with large absolute values. Most existing                   grained quantization levels while preserving the precision
+quantization methods divide the distribution into multiple                     of important, large values, i.e., the values of the outliers,
+levels with uniform inter-level spacing while often truncating                 without additional retraining or ﬁne-tuning.
+large values [7], [13], [14]. As Figure 1 (b) shows, they                         Handling outliers is typically more expensive than normal
+waste most levels due to those outliers while assigning only a                 dense data in terms of memory usage and computation.
+small number of levels to the majority of small data items. In                 To reduce the cost of outlier handling, it is important to
+case of very low precision, e.g., four bits, such an inefﬁcient                keep the outlier ratio as small as possible. Figure 2 shows
+allocation of quantization levels incurs prohibitively large                   the relationship between accuracy and outlier ratio (for 16-
+
+
+
+
+                                                                         689
+
+      Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:04:35 UTC from IEEE Xplore. Restrictions apply.
+                                                                     "                                                         "
+
+                                                                                ## $
+
+
+
+
+                                                                                                                                       
+                                                                                                                            
+                                                                                                                              
+                                             
+                                                                    
+                                                                              
+                                 &' $
+                                                                                                      
+
+                                             *$
+                                                                                                                                        
+                                                                                                     
+
+
+
+
+                                                                                                                        +* $
+                                                                                                                                         
+                                                         
+
+
+
+
+                                                                                                                                                        , 
+                                                                                                       
+                                                                                                                                     ! 
+                                                         
+
+                      
+                                                                           
+                                                       
+                                                                                                  
+                      
+
+
+                                                                                     
+                      
+
+                                                                                     
+                                                
+                                                                                                                              
+                                                                                                                  
+                                                                                                         
+                                                                                                                                         
+                                                                                                                                                     
+                                                                                
+
+                                                         Figure 4: Overall structure of OLAccel.
+
+
+bit outliers) for a 4-bit AlexNet. As the ﬁgure shows, an                                   8-bit weights at the ﬁrst convolutional layer to meet the
+outlier ratio of 3.5% (3.5% of total weights and non-zero                                   accuracy constraint while 4-bit weights are used for the other
+activations are outliers) yields less than a 1% loss in top-                                layers. It is often the case that a larger bitwidth is needed
+5 accuracy. Note that an outlier ratio of 0% corresponds                                    for the weights of the ﬁrst layer(s), as it is more sensitive to
+to conventional linear quantization without truncation and                                  such optimizations as quantization than the other layers [14],
+retraining, i.e., ﬁne-tuning. As the ﬁgure shows, conventional                              [15].1 Note also that our proposed 4-bit accelerator supports
+4-bit quantization without ﬁne-tuning suffers from signiﬁ-                                  4-/8-/16-bit data, as is explained in the next section.
+cant loss (76.57%) of accuracy.
+                                                                                                                III. P ROPOSED A RCHITECTURE
+   In the case of activation, we calculate the outlier ratio for
+non-zero activations. Thus, when rectiﬁed linear unit (ReLU)                                A. Overall Structure
+is used as activation function, as it transforms negative                                      The computational micro-architecture is important, espe-
+values into zero, the effective outlier ratio can decrease. For                             cially for performance. We use 4-bit data that reduce buffer
+instance, when an outlier ratio of 3% is used, the effective                                size and MAC unit overhead signiﬁcantly. This emphasizes
+outlier ratio (= number of non-zero outliers/total number of                                the control overhead of the accelerator, and thus an SIMD
+activations) can be lower than 3%.                                                          structure is needed to minimize overhead. However, the con-
+   When applying the outlier ratio during neural network                                    ventional SIMD structure is not appropriate for outlier-aware
+execution, we need to compute the histogram of activations,                                 quantization. For instance, if we use 4-bit precision in 16-
+which is expensive. Thus, for a given neural network, we                                    way SIMD accelerators like DianNao [1] and SCNN [6], the
+apply sample inputs (100 randomly sampled images in our                                     performance overhead for outlier handling can be signiﬁcant
+experiments) to the network and obtain a threshold value of                                 owing to the high probability of outlier occurrence, e.g.,
+activation for each layer, which corresponds to the magni-                                  27.5% (= 1 − 0.9932 ), even with 1% of outliers. OLAccel
+tude of activation along the boundary of the outlier, i.e., the                             addresses this with two following novel solutions: outlier
+high-precision region. We then compare the activations with                                 PEs and outlier PE groups, and by supporting data structures
+a threshold value to determine outliers at runtime.                                         for sparse and dense data.
+   Figure 3 shows the accuracy and outlier ratio of deep                                       Figure 4 shows the overall structure of OLAccel. At the
+neural networks. As the ﬁgure shows, 4-bit quantization with                                top of the hierarchy is a PE swarm consisting of multiple
+an approximately 3% outlier ratio maintains the accuracy of                                 PE clusters, a swarm buffer, and a controller. As the ﬁgure
+the deep neural networks. Note that, in all the networks,                                   shows, each PE cluster has cluster activation/weight buffers
+the ﬁrst convolutional layer takes the raw input activations                                   1 Although we apply retraining-free quantization in this paper, ﬁne-tuning
+in 16 or 8 bits while 4-bit input activations are used in the                               can reduce the bitwidth of weights from 8 to 4 bits for the ﬁrst convolutional
+other layers. In addition, ResNet-18 and ResNet-101 require                                 layer.
+
+
+
+
+                                                                                    690
+
+    Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:04:35 UTC from IEEE Xplore. Restrictions apply.
+(left), PE groups (center), and a cluster output buffer (right).                                               
+                                                                                                                 
+                                                                                                                                                                
+                                                                                                                                                                  
+Each PE group consists of multiple MAC units and group                                                                                                                        
+
+activation/weight/output buffers. OLAccel is based on 4-
+
+
+
+
+                                                                                          
+                                                                                                                                                  
+
+bit MAC units2 (and a small number of full precision                                                                                                                            
+
+                                                                                                                                                    
+MAC units), and supports computation with 4-/8-/16-bit                                                                                        
+                                                                                                                                                         
+                                                                                                                                                                                             
+                                                                                                                                                                                                           
+
+activations and 4-/8-bit weights.
+   As the ﬁgure shows, there are two types of PE groups,
+normal and outlier. The normal PE group contains 17 (16                                                                                           
+                                                                                                                                                                      
+normal and one outlier) 4-bit MAC units while the outlier PE                                   
+                                                                                                                                                      
+group contains 17 mixed-precision MAC units that support                                                                                                 
+                                                                                                                                                                                                       
+
+16-bit × 4-bit operations. Note that each normal 4-bit or 16-
+                                                                                                                                                                 
+bit MAC unit is in charge of producing a partial sum of its                                                     ! 
+                                                                                                                                                                   
+
+associated output channel. Thus, on each cycle, it receives its                                                                    
+                                                                                                                                                                 
+associated weight and a broadcast activation and produces                                                                                                         
+                                                                                                         
+a partial sum. As will be explained in Section III-D, the                                                                                                        
+                                                                                                                                                                  
+additional outlier MAC unit in the PE group is involved
+                                                                                                                                                              
+in multiplication using outlier weights. Thus, the group
+weight buffer contains both normal (4-bit) and outlier (8-bit)                         Figure 5: Data structure associated with normal/outlier
+weights while the group activation buffer contains only 4-bit                          weight and normal activation.
+activations. As the ﬁgure shows, the outlier PE group reads
+4-bit or 8-bit weights from the cluster weight buffer, and 8-
+bit or 16-bit outlier activations from the swarm buffer. It then                       kernel weights, e.g., Kw×h×16×16 . As shown in the box of
+performs computations using outlier activations. Note that                             the cluster weight buffer in the ﬁgure, the weights are stored
+the outlier activations are stored only in the swarm buffer                            at a granularity of 80-bit weight chunks (entries in the table).
+while outlier weights can be stored in the swarm buffer and                            The weight chunk consists of 16 4-bit weights (= 4b×16), an
+the cluster/group weight buffers.                                                      8-bit pointer (OLptr ), a 4-bit pointer (OLidx ), and the most
+   The ﬁgure shows two (normal and outlier) accumulation                               signiﬁcant four bits of an outlier weight (OLM SB ). As the
+units connected to the tri-buffer containing the output of                             ﬁgure shows, the cluster weight buffer contains 200 weight
+the cluster. Each accumulation unit adds the results of the                            chunks. The PE group receives these chunks and stores them
+associated (normal or outlier) PE group with the associated                            in the group weight buffer for its execution.
+partial sum stored in the tri-buffer. To resolve the issue of                             The weight chunk represents a set of 16 kernel weights,
+coherence between the accumulation units, their execution                              each of which belongs to one of 16 output channels. In case
+is pipelined. The outlier accumulation unit accesses partial                           there is no outlier weight among the 16 weights, the two
+sums only once the normal accumulation unit ﬁnishes adding                             pointers, OLptr , and OLidx , and the 4-bit ﬁeld OLM SB
+the partial sums. Thus, both accumulation units run in                                 are all zero. When an outlier weight exists, OLidx points to
+parallel in a pipeline. To support the required bandwidth                              the index (of the 16) of the weight in the given chunk and
+for the normal and outlier accumulation units, the tri-buffer                          OLM SB contains the most signiﬁcant four bits of the 8-bit
+containing the cluster output consists of three buffers, two                           outlier weight. The remaining least signiﬁcant three bits and
+for the normal accumulation unit and one for the outlier                               a sign bit of the outlier weight are stored in the associated
+accumulation unit.                                                                     position of 4 × 16 weight bits in the chunk. In case there is
+B. Dataﬂow                                                                             more than one outlier weight among the 16 weights, their
+                                                                                       most signiﬁcant four bits are stored in (the 64b ﬁeld of the
+   Figure 5 shows the data structures of the normal/outlier
+                                                                                       input weight of) another weight chunk, and OLptr points
+weights and normal activations. In the ﬁgure, we use the
+                                                                                       to that chunk in the cluster weight buffer (or group weight
+following notation for the sake of a clear and concise
+                                                                                       buffer). Thus, the PE group checks OLptr to see if there
+description. In the case of activation, the width, height, and
+                                                                                       are more than one outlier weights in the weight chunk. We
+the number of channels of the 3D tensor are expressed
+                                                                                       explain this in detail in Section III-D.
+as Aw×h×c . The kernel weight uses a similar notation,
+                                                                                          Figure 5 also shows how low-precision input activations
+Kw×h×i×o , which represents the width, height, and the
+                                                                                       are stored in the PE cluster and group. The cluster activation
+numbers of input and output channels of a 4D tensor. As
+                                                                                       buffer stores a subset of input activations of Aiw×h×16 , which
+the ﬁgure shows, the cluster weight buffer stores a subset of
+                                                                                       consist of activation chunks each of which has 16 × 4-bit
+    2 In this paper, we explain OLAccel based on 4-bit MAC units. However,             input activations. The PE group receives input activations at
+it is not limited to 4-bit precision, and can be easily extended to other base         the granularity of the chunk. As the ﬁgure shows, the cluster
+bitwidths, e.g., 2 or 8 bits.
+                                                                                       activation buffer stores 64 activation chunks while the group
+
+
+
+
+                                                                                 691
+
+     Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:04:35 UTC from IEEE Xplore. Restrictions apply.
+                            Input activation                                                                                                                    Outlier MAC
+                                                                                  Group activation buffer                                                                                  1
+    16                                                                                                                                                                *            =
+                                                                                            skip                      skip
+                                                                                                                                                                  0       (0,      )
+
+
+
+
+                                                                                                                                        Broadcast
+                       ¢                                                               0                          3          15
+                       £
+                                                                                                                                                                Normal MACs
+                                                                                 1 – 2 , 4 – 14 :
+                                                                                                                                                                                               8
+
+                                                                                                                                                                      *            =
+                                                                                      Group weight buffer                                                         0        (0,0)                       0
+
+
+
+
+                                                                                 ( , )⋯     ( ,       )                       ( ,   )
+    16                                                                                                                                                                *            =
+                                                                                                                                                                  0        (0,3)                   3
+
+
+
+
+                                                                             Figure 7: PE group operation in case that there is an outlier
+                           Output activation                                 weight among 16 weights.
+
+              Figure 6: Operation of PE cluster.
+                                                                                       Group weight buffer                                                       Normal MACs
+
+
+
+
+                                                                                                                                                    Broadcast
+                                                                                                                                                                  ¢        *           =
+activation buffer stores two chunks. As shown at the bottom
+                                                                                   ( , )⋯
+                                                                                                                                                                      0         (3,0)
+                                                                             ¢                ( ,             )
+of the ﬁgure, the cluster output tri-buffer manages output
+                                                                                                                                                                  £                    =
+partial sums with a larger chunk size, 24b × 16, as a partial                £    (   , )⋯        (       ,       )                                                   0
+                                                                                                                                                                           *
+                                                                                                                                                                                (19,0)                 0
+sum requires higher precision (24 bits) than that of the input
+(4/8/16 bits).
+C. PE Cluster                                                                Figure 8: PE group in the case of more than one outlier
+                                                                             weight.
+  Figure 6 shows how the PE cluster controls the execution
+of its PE groups. As the ﬁgure shows, a PE group takes as
+input an activation chunk Ai1×1×16 and generates as output
+a partial sum chunk of Ao1×1×16 . The ﬁgure illustrates a                    is three. Thus, the outlier MAC unit takes as input the most
+scenario where four PE groups run in parallel.                               signiﬁcant four bits of the outlier weight OLM SB from the
+  The PE group skips computations with zero-input acti-                      weight chunk and multiplies it with the broadcast activation
+vations. Thus, owing to the different numbers of non-zero                    a0 . Then, the result is broadcast to all normal MAC units
+values in the input activation chunks, some PE groups can                    and the normal MAC unit pointed by OLidx receives it. As
+ﬁnish earlier than others. In the ﬁgure, we assume that PE                   the ﬁgure shows, the MAC unit, M AC3 , which performs
+group 1 ﬁnishes followed by group 0 , before the other PE                    computation with the least signiﬁcant four bits of the outlier
+groups. In such a case, as shown on the right-hand side of the               weight (in the input weight ﬁeld of the weight chunk),
+ﬁgure, the PE cluster allocates new input activation chunks                  receives and adds it to its partial sum. The entire operation
+to the PE groups that are ready, which keeps them busy                       of 17 MAC units can be carried out in one clock cycle.
+as far as there are available input activations in the cluster               When there is no outlier weight, the PE group runs in the
+activation buffer. This mechanism is important in OLAccel                    same manner as above, but OLM SB stores the value zero.
+as it enables high utilization of MAC units.                                 Thus, the outlier MAC unit generates a zero result, which
+                                                                             does not affect the partial sum of the normal MAC units.
+D. Normal PE Group                                                              Figure 8 shows how the PE group performs computation
+   Figure 7 shows how the PE group functions when there                      when there are more than one outlier weights in the weight
+is one outlier among the 16 4-bit weights. The group acti-                   chunk. As mentioned above, in such a case, two weight
+vation buffer shows that the input activation chunk has only                 chunks are used. In the ﬁgure, the ﬁrst weight chunk sets the
+three non-zero activations (a0 , a3 , and a15 ) among the 16                 pointer, OLptr , to the index of the second weight chunk, e.g.,
+activations. The PE group selects, from the input activation                 19. In this case, the MAC operation takes two clock cycles
+chunk, a non-zero activation, e.g., a0 , and broadcasts it to the            to perform an 8-bit weight × 4-bit activation. Thus, in the
+16 normal and one outlier MAC units. The PE group also                       ﬁrst clock cycle, the 16 4-bit weights (the least signiﬁcant
+selects a weight chunk from the group weight buffer and                      four bits) of the ﬁrst chunk are provided to the 16 normal
+provides the 16 normal MAC units with their associated                       MAC units. In the next clock cycle, the 4-bit weights of the
+kernel weights. The ﬁgure shows that the selected weight                     second weight chunk are provided. Each normal MAC units
+chunk contains an outlier weight, the index of which, OLidx                  adds the two results. Note that the outlier MAC is not used
+
+
+
+
+                                                                       692
+
+    Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:04:35 UTC from IEEE Xplore. Restrictions apply.
+                                                                                                  
+                                                                                                                                                                                              
+
+
+
+                                                                                                         
+                                                                                                                                                     
+  
+
+
+
+                                                                                                                            
+                                                                                                                                                        
+
+
+
+                                  
+                                                                                                         
+                                                                                                                                                                                                                    
+                                                                                                                                                                                                                                                
+                                                                                                                                                                   
+
+                                     
+                                                                                                                                                                                                                                             
+                                                                                                                                                                                                                                            ! 
+                                                                                                                
+                                                              
+                                                                                                                                                                                                                                                
+                   !  
+                                                                                        
+                                                                                                                                                                                         
+
+                                                                                                                                              
+                                                                                                                                                                                                                                      
+                                                                                                                                                                        
+
+                                                                           
+                                                                                                                                                          
+                                                                                                                                                                                                               
+Figure 9: Data structure associated with outlier activation.                                                                                                       
+
+                                                                                                                                                                                       
+
+                                                                                                                                                                                         !                   #        
+in this scenario. Moreover, MAC units with normal 4-bit                                                                                                               
+                                                                                                                                                                                  "
+                                                                                                                                                                                                              
+                                                                                                                                                                                                                                !
+                                                                                                                                                                                                                                                 #
+weights become idle in the second clock cycle.                                                                                                                                                            
+                                                                                                                                                                                                                         "
+                                                                                                                                                                                                                                             
+
+E. Outlier PE Group and Cluster Output Tri-buffer                                                                                                                                                                                    
+                                                                                                                                                                                                                                     
+   Figure 9 shows the data structure and data ﬂow in the
+outlier PE group. As the ﬁgure shows, input outlier activa-                                                                                                               Figure 10: Cluster output tri-buffer.
+tions are fetched from the swarm buffer to the outlier PE
+group. The activations are sparse data. Thus, as shown in
+the ﬁgure (Outlier activation FIFO), each outlier activation                                                                                        average energy consumption and execution cycles by run-
+is represented by an outlier chunk consisting of a 16-bit                                                                                           ning neural networks on our hardware accelerator models. In
+activation and the three coordinates (OLw.idx , OLh.idx , and                                                                                       case of AlexNet and VGG-16, we used pruned models [15]
+OLc.idx ) of the outlier in the tensor of the input activation.                                                                                     to evaluate the capability of zero skipping while we pruned
+The outlier PE group also fetches weight chunks from the                                                                                            ResNet-18 on our own.
+cluster weight buffer. As mentioned above, the outlier PE                                                                                              For the baseline and our architectures, we developed
+group consists of 17 mixed-precision MAC units and runs                                                                                             cycle-accurate models. We did a Verilog design and syn-
+in the same way as the normal PE group. Thus, the non-zero                                                                                          thesized them using Design Compiler with a commercial
+activation is broadcast to the 17 MAC units and multiplied                                                                                          65-nm LP library (typical) at 250 MHz and 1.0 V. We used
+by the associated weights to produce partial sums for the 16                                                                                        CACTI to estimate SRAM area/power/latency [19] and the
+output channels. The partial sums (16 24-bit data items) are                                                                                        DRAM power model from Micron [20].
+stored in the cluster output tri-buffer as shown in the ﬁgure.                                                                                         We compare our 4-bit OLAccel with the following base-
+   Figure 10 shows how the normal and outlier accumulation                                                                                          lines:
+units accumulate the partial sums of the normal and outlier                                                                                            • 16-bit and 8-bit Eyeriss (denoted by Eyeriss16 and
+PE groups in a pipelined manner while accessing the three                                                                                                Eyeriss8, respectively), which, for zero input, do not
+buffers in the cluster output tri-buffer. The ﬁgure illustrates                                                                                          reduce the number of execution cycles but clock-gate
+a scenario of the pipeline at times t0 and t1 . At t0 , the                                                                                              computations [12].
+normal accumulation unit calculates 16 partial sums by                                                                                                 • 16-bit and 8-bit ZeNAs that reduce the number of
+accessing two buffers, buf f er0 and buf f er1 , in the cluster                                                                                          execution cycles by skipping computations with zero
+output tri-buffers. Then, at t1 , the normal accumulation                                                                                                input weights and activations [5].3
+unit accesses two buffers, buf f er1 and buf f er2 , while the                                                                                         In 16/8-bit comparison, we utilize 16/8-bit raw input
+outlier accumulation unit accesses buf f er0 . Thus, there is                                                                                       activation for all the networks. In [7], Migacz reported that
+no problem of coherence when the outlier accumulation unit                                                                                          the minimum bitwidth for linear quantization (without loss
+accesses the buffer. To complete partial sum calculations for                                                                                       of accuracy) is eight bits for deep networks like ResNet-
+a convolution, e.g., a 3×3 convolution in the ﬁgure, multiple                                                                                       101/152 and GoogLeNet. In case of 8-bit Eyeriss and
+stages of the pipeline operation are needed.                                                                                                        ZeNA, we assume that existing accelerators support eight
+                                                                                                                                                    bits and there is no degradation in accuracy by using the
+                          IV. E VALUATION M ETHODOLOGY                                                                                              aforementioned quantization. In 8-bit comparison, we use
+   We implemented outlier-aware quantization in the Py-                                                                                               3 We chose ZeNA as the baseline for the zero-skipping accelerator as it
+Torch and Caffe environments [16], [17]. We used randomly                                                                                           provides the best speedup for AlexNet by skipping both zero weights and
+selected data in TorchVision [18] and Caffe [17] to calculate                                                                                       activations, compared with other zero-skipping baselines.
+
+
+
+
+                                                                                                                                              693
+
+              Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:04:35 UTC from IEEE Xplore. Restrictions apply.
+8-bit outlier activations for OLAccel based on the same                                                                                      
+                                                                                     
+assumption.                                                                           
+                                                                                   %"## 
+                        Eyeriss              ZeNA            OLAccel                                                                           
+                                                                                                                   !"&%
+                    8-bit     16-bit     8-bit   16-bit   8-bit   16-bit
+                                                                                                                                              $"
+    # PEs           165           165    168     168      576      768                                                                   !     !
+ area (mm2 )        0.96          1.53   1.01    1.66     0.93     1.67               %"##
+                                                                                     
+     On-chip memory           Act        393 kB (16-bit) / 196 kB (8-bit)              
+        (AlexNet)            Weight        16 kB (16-bit) / 8 kB (8-bit)             %"##
+   On-chip memory             Act        4.8 MB (16-bit) / 2.4 MB (8-bit)                                                                      
+ (VGG-16 & ResNet-18)        Weight         16 kB (16-bit) / 8 kB(8-bit)                                          !"& "%
+
+                                                                                        Figure 11: AlexNet cycle and energy breakdown.
+ Table I: Conﬁgurations of Eyeriss, ZeNA, and OLAccel.
+
+
+   Table I shows the architectural conﬁgurations used in our                      Compared with Eyeriss16, OLAccel16 yields a 71.8% re-
+experiments. In case of 16 (8)-bit comparison, OLAccel                            duction in execution cycles.5 This is mainly due to a large
+has 16 (8)-bit outlier activations with 4-bit MAC units and                       number of MAC units (768 in OLAccel versus 165 in
+8-bit outlier weights. We perform an ISO-area compari-                            Eyeriss), which is enabled by reduced precision (from 16
+son between the baselines and OLAccel. Thus, given the                            to 4 bits). Compared with ZeNA16 containing 168 PEs,
+same amount of on-chip memory, which keeps all the data                           OLAccel16 gives a 31.5% reduction in execution cycles.
+required for a layer to avoid off-chip memory accesses,                           The reduction is smaller than in Eyeriss because ZeNA
+each architecture is allocated the same chip area for logic                       skips computations for zero weights and activations, whereas
+and buffer implementations as Eyeriss. In case of 8-bit                           OLAccel skips computations for only zero activations. In
+Eyeriss, we ﬁrst obtain the area of 165 8-bit processing                          addition, OLAccel16 spends a long execution cycle for the
+elements (PEs) [12]4 . We then determine the conﬁguration                         ﬁrst convolutional layer due to the handling of 16-bit raw
+(number of MAC units) of OLAccel to meet the given                                input activation on 4-bit MAC units.
+area target. In 16 (8)-bit comparisons, Eyeriss, ZeNA, and                           OLAccel8 gives an 35.1% reduction in execution cycles
+OLAccel occupy 1.53 (0.96) mm2 , 1.66 (1.01) mm2 , and                            compared with ZeNA8. Due to the smaller number (576) of
+1.67 (0.93) mm2 , respectively. ZeNA has 168 PEs in both                          4-bit MAC units, OLAccel8 slows down from the second to
+the 16- and 8-bit cases. In these cases, we use 393 kB (16-                       ﬁfth convolutional layer compared to OLAccel16. However,
+bit comparison) and 196 kB (8-bit) of on-chip memory for                          the input activation of the ﬁrst layer has 8 bits, which
+AlexNet, and 4.8 MB and 2.4 MB for VGG-16 and ResNet-                             reduces the execution cycle of the ﬁrst convolutional layer
+18, respectively. We use the same memory size for the three                       signiﬁcantly compared with OLAccel16 thereby enabling
+accelerators on each network for fair comparison. A single                        OLAccel8 to outperform OLAccel16.
+large memory for different networks is advantageous for                              Figure 11 also compares energy consumption (normalized
+OLAccel, especially on AlexNet as OLAccel beneﬁts from                            to Eyeriss16) decomposed into DRAM, on-chip memory or
+reduced memory access, and the larger memory renders the                          swarm buffer (Buffer), the local buffer of the PE or PE
+memory more dominant in terms of energy consumption. In                           clusters/groups (local), and logic circuits, e.g., MAC unit and
+case of OLAccel, the on-chip memory is used as the swarm                          bus (logic). OLAccel16 (OLAccel8) yields a 43.5% (27.0%)
+buffer.                                                                           reduction compared with ZeNA16 (ZeNA8). As the ﬁgure
+   In case of 16-bit comparison, OLAccel is equipped with                         shows, the reduction is mainly due to energy reduction in the
+eight PE clusters, six PE groups/cluster, and a total of 768                      memory components (DRAM and SRAM buffers) enabled
+(= 8 × 6 × 16) 4-bit MAC units. However, in case of 8-bit                         by reduced precision.
+comparison, OLAccel has a smaller number of 4-bit MAC                                Figure 12 shows comparisons for VGG-16. Compared
+units, 576 (in six PE clusters), to satisfy the constraint of                     with ZeNA8/16, OLAccel16 and OLAccel8 reduce by
+the reduced area, 0.96 mm2 .                                                      45.3% and 28.3% execution cycles, respectively. OLAccel16
+                                                                                  delivers the best performance owing to a large number
+                                                                                  (768) of MAC units. The performance improvement of
+                    V. E XPERIMENTAL R ESULTS                                     OLAccel16 is greater than in the case of AlexNet because
+  Figure 11 compares the number of execution cycles and                           the effect of the ﬁrst convolutional layer is mitigated due
+energy consumption (normalized to Eyeriss16) on AlexNet.                          to the speedup of the other layers. Meanwhile, OLAccel8
+                                                                                    5 Note that both 16-bit and 8-bit Eyeriss (ZeNAs) yield the same number
+  4 In the case of Eyeriss and ZeNA, the PE consists of a MAC unit and            of execution cycles as we maintain the same number of PEs, 165 (168 in
+internal buffers.                                                                 ZeNA), in both cases.
+
+
+
+
+                                                                            694
+
+     Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:04:35 UTC from IEEE Xplore. Restrictions apply.
+                                                                                                   !        !        %#           '    !"
+                                      :      :      :     :
+                                                                                                                                                       
+   
+                                                                                                                                                             
+&#$$ 
+
+
+
+
+                                                                                                                                                                        %#'
+                                                                                   $&#$!
+                                                                                                    
+                                                                                                                                                    
+                                                                                                   
+                               "# '&
+                                                         %#                           
+                                                                                                                                                                  
+                                                   "       "
+    &#$$                                                                                        
+   
+                                                                                                                                                                   
+     
+   &#$$                                                                                                                                  
+                                                                                                                                  %$ ##$!
+                                                         
+                              "# '!#&                                  Figure 14: Normalized energy and cycle vs. outlier ratio:
+     Figure 12: VGG-16 cycle and energy breakdown.                               AlexNet on OLAccel16.
+
+                                                           
+                                                                          by 25.3% and 29.0% execution cycles, respectively. Consid-
+                                                                            ering the fact that, as the decomposition of execution cycle in
+$!"" 
+                                                                                 OLAccel and ZeNA shows in Figure 13, OLAccel is superior
+                                                          
+                                 !% $                                 to ZeNA in the other layers except the ﬁrst one, we expect
+                                                          #!         that OLAccel can give much better performance than ZeNA
+      
+    $!""
+                                                                         in deeper networks, e.g., ResNet-101.6
+                                                                             OLAccel signiﬁcantly reduces energy consumption in
+                                                                             ResNet-18. Compared with ZeNA, OLAccel16 and OLAc-
+   $!""
+                                                                                 cel8 give energy reductions of 62.2% and 49.5%, respec-
+                                                          
+                                !%!$                                 tively. Note that, aside from the effect of the ﬁrst layer,
+                                                                                 OLAccel gives more reduction in energy consumption for
+    Figure 13: ResNet-18 cycle and energy breakdown.                             VGG-16 and ResNet-18 than AlexNet because the larger
+                                                                                 on-chip memory used for VGG-16 and ResNet-18 (Table
+                                                                                 I) makes the energy consumption of on-chip memory more
+shows worse performance than OLAccel16 because of the                            dominant thereby amplifying the effects of reduced preci-
+small number (576) of PEs. The comparison of energy                              sion, i.e., reduction in on-chip memory trafﬁcs.
+consumption shows that OLAccel16 and OLAccel8 give a                                Figure 14 shows the impact of outliers on the number of
+reduction of 56.7% and 36.3% compared with ZeNA16 and                            execution cycles, energy consumption, and accuracy when
+ZeNA8, respectively. As in the case of AlexNet, the reduced                      running AlexNet on OLAccel16. As the ﬁgure shows, as out-
+precision enables OLAccel to signiﬁcantly reduce energy                          lier ratio increases, both energy consumption and the number
+consumption in the memory components.                                            of execution cycles increase while accuracy improves. In
+   In the case of ResNet-18, as shown in Figure 13, OLAccel                      the case where there are 3.5% outliers, compared with the
+signiﬁcantly reduces the number of execution cycles com-                         case of 0% outlier, the total energy consumption and the
+pared with Eyeriss. As in the case of AlexNet, ResNet-18                         number of execution cycles increase by 20.6% and 10.6%,
+has a long execution cycle for the ﬁrst convolutional layer.                     respectively, while yielding much better accuracy, only 0.8%
+Especially, as shown in Figure 3, the ﬁrst convolutional layer                   drop from the top-5 accuracy of full precision.
+of ResNet-18 requires dense computation with 8-bit weights                          Figure 15 shows scalability on AlexNet. One instance of
+and 16/8-bit input activations in 16/8-bit comparison. Thus,                     neural processing unit (NPU) is equipped with 768 4-bit
+in 16 (8)-bit comparison, the ﬁrst convolutional layer takes                     MAC units in OLAccel (16-bit outliers) and 168 16-bit PEs
+8 (4) times longer execution cycle than a simple 4-bit                           in ZeNA. As the ﬁgure shows, we increase both the number
+dense computation, which makes the ﬁrst convolutional layer                      of NPUs and batch size. The speedup (y-axis) is normalized
+(C1 in Figure 13) occupy half the total execution cycle of                       to ZeNA with a batch size of one. The ﬁgure shows that
+OLAccel16. However, owing to the speedups of the other                           both OLAccel and ZeNA exhibit good scalability when the
+layers where 4-bit dense computation is performed, OLAccel                       batch size is 4 and 16. In case of a single batch, speedup
+is able to reduce execution cycles more signiﬁcantly than in                     tends to saturate in both cases when the number of NPUs
+the case of AlexNet. Speciﬁcally, compared with Eyeriss16                        reaches 16. This is due to low resource utilization. OLAccel
+(Eyeriss8), OLAccel16 (OLAccel8) reduces the numbers of
+                                                                                    6 When ﬁne-tuning is adopted, OLAccel can give further speedup in
+cycles by 80.1% (81.1%) in ResNet-18 while it gives a
+                                                                                 ResNet-18 since ﬁne-tuning can reduce the bitwidth of weights from 8 to 4
+reduction of 71.8% (73.2%) in AlexNet.                                           bits for the dense computation of the ﬁrst convolutional layer as mentioned
+   Compared with ZeNA, OLAccel16 and OLAccel8 reduce                             in Section II.
+
+
+
+
+                                                                           695
+
+    Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:04:35 UTC from IEEE Xplore. Restrictions apply.
+                                                                                                                                                                                         
+
+
+
+
+                                                                                           
+                                     !
+                                     !
+                                   !                                                                       
+                                   !
+"
+
+
+
+
+                                   !                                                                            
+             
+
+                                                                                                                        
+                 
+
+                                                                                                                        
+                 
+                                                                        
+                                                                                                                             
+                                            "                                                                                                        
+                                                                                                                                                         
+Figure 15: Scalability analysis on AlexNet: speedup (y-axis)
+vs. number of NPUs.                                                                        Figure 17: Probability of multiple outlier weights (y-axis)
+                                                                                           vs. outlier ratio.
+                                                                       
+                                                                                                                             !              !                   
+ 
+
+
+
+
+                                                                                                                         
+                 
+                                                                                                                        
+
+
+
+
+                                                                                            " 
+                                                                                                                        
+                 
+                                                                                                                        
+
+                                                                                                                       
+                                                                                                       
+                                                                                                                       "       "          "            "         "
+                                                                                                                                                        #  $
+Figure 16: Histogram of outlier activation: outlier ratio of
+3%.                                                                                                                              Figure 18: Utilization breakdown: AlexNet.
+
+
+yields a slightly better speedup in batch 4 than batch 16,                                 number of channels (on a branch) tends to decrease, e.g., to
+mainly due to the off-chip bandwidth limit because batch                                   32 or 16. Thus, channel-level parallelism can be limited. In
+16 requires more off-chip memory bandwidth than batch 4.                                   such a case, a PE group with a large number of MAC units
+   Figure 16 shows the histogram of outlier activations in                                 can suffer from low resource utilization.
+AlexNet when the outlier ratio is 3%. As explained above,                                     Figure 18 shows the utilization breakdown of the convo-
+to avoid computing histograms at runtime, we obtain a static                               lutional layers in AlexNet. As the ﬁgure shows, the active
+threshold for each layer by utilizing sample inputs during                                 period (Run) is relatively proportional to the ratio of non-
+design time and compare the activation with the threshold                                  zero activations (Non-zero). The ﬁgure also shows that the
+at runtime to identify outlier activations. The ﬁgure shows                                overhead of zero-skip operation (Skip) increases in propor-
+that the distributions have mean values near 0.03, meaning                                 tion to the ratio. This is because in the PE group, the zero-
+that our implementation works relatively well. Although not                                activation skip operation is performed every four activations
+shown in the paper, the neural networks adopting batch                                     while consuming a constant overhead of a clock cycle. Thus,
+normalization layers, e.g., ResNet-101, tend to provide better                             when there is a large number of zero activations, as in Conv4
+distributions with sharp peaks near the target outlier ratio.                              or Conv5, it is often the case that zero skipping, without
+   Figure 17 shows how we determined 16 MAC units in                                       computations, spends cycles only to skip four consecutive
+a single PE group. A large number of MAC units in a                                        zero activations. As the ﬁgure shows, the cycle overhead can
+PE group can improve performance by better exploiting                                      amount to approximately 20%. In future work, we will work
+activation broadcast. However, as the ﬁgure shows, in case                                 to reduce these overhead cycles.
+of 32 and 64 MAC units, the probability of multiple outlier                                   Figure 19 shows the average number of cycles a PE
+occurrences on 32 and 64 weights is higher than 50% at an                                  group spends to process a A1×1×16 input activation chunk
+outlier ratio of 5%. In case of multiple outlier weights in                                in AlexNet. Due to the difference in the number of non-zero
+a PE group, OLAccel suffers from long execution cycles.                                    activations, convolutional layers yield different distributions.
+Thus, we set the number of MAC units in a PE group to                                      For instance, Conv2 has a peak near 15 and 16 cycles owing
+16, which yields a smaller probability, e.g., 20%, even at                                 to the high ratio of non-zero activations shown in Figure 18.
+an outlier ratio of 5%. Another reason for our choice is                                   On the contrary, Conv4 and Conv5 show similar distributions
+recent trends in neural network architectures. In state-of-the-                            with peaks near ﬁve cycles, which can also be explained by
+art architectures like ResNext [21] and Deep Roots [22], the                               the low ratio of non-zero activations in Figure 18.
+
+
+
+
+                                                                                     696
+
+                  Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:04:35 UTC from IEEE Xplore. Restrictions apply.
+                                                                                       skips multiplications with zero-input activations. Only non-
+                                                                 
+                                                                                       zero input activations are broadcast to MAC units while
+ 
+
+
+
+                                                                                          skipping zero-input activations. In [3], Zhang et al. proposed
+                
+                                                                                          Cambricon-X, which skips multiplications with zero weights
+                                                                                       obtained by pruning [15]. In [6], Parashar et al. proposed a
+                                                                                          sparse CNN (SCNN) that exploits both zero weights and
+                
+                                                                                          activations by calculating the Cartesian products of non-
+                                                                                         zero weights and activations, and adding the results to the
+                                                                       
+                                                
+                                                                                          corresponding partial sums. SCNN suffers from low resource
+                                                                                          utilization in case of high sparsity and high area/power
+Figure 19: Execution cycles when processing a chunk of                                    overhead due to accumulator buffers and the crossbar. In [5],
+A1×1×16 input activations.                                                                Kim et al. proposed a zero-aware neural network accelerator
+                                                                                          (ZeNA) that also skips computation with both zero weights
+                                                                                          and activations. They reported that ZeNA gives a speedup
+                                  VI. R ELATED W ORK                                      of 4.4x on AlexNet. In our experiments, we use ZeNA as a
+   Quantization has been extensively studied in recent years.                             baseline.
+Rastegari et al. showed that a binary-weight AlexNet main-
+tains the same accuracy as a full precision one [9]. However,                                                   VII. C ONCLUSION
+the binarization of weights and activations incurs a signiﬁ-
+                                                                                             In this paper, we proposed a hardware accelerator called
+cant loss in accuracy. In [10], Zhu et al. proposed a ternary-
+                                                                                          OLAccel. It implements outlier-aware quantization, which
+weight quantization that can generate a ternary-weight model
+                                                                                          provides a majority of data with ﬁne-grained quantiza-
+of ResNet-18 (with full precision activations) at a 2%
+                                                                                          tion while maintaining the precision of important outliers.
+loss in top-5 accuracy. Zhou et al. proposed a DoReFa
+                                                                                          OLAccel is based on 4-bit MAC units, and performs 4-bit
+network that clips activation to reduce the range of values,
+                                                                                          dense computations on a majority of the data. To efﬁciently
+thereby improving the utility of quantization levels [14].
+                                                                                          handle high-precision outliers, it has two mechanisms at the
+They reported that 1-bit weight and 2-bit activation incur
+                                                                                          levels of the PE group and cluster. The PE group, equipped
+only a 6% loss in top-1 accuracy in AlexNet. However, no
+                                                                                          with an outlier MAC unit, performs computations with a
+study to date has examined very deep models like ResNet-
+                                                                                          single outlier weight without additional cycles, incurring a
+101. Miyashita et al. proposed applying logarithm-based
+                                                                                          cycle overhead only when multiple outlier weights need to
+quantization and showed that AlexNet can be quantized
+                                                                                          be handled. The outlier PE group performs computations
+with 4-bit weights and 5-bit activations at a 1.7% loss in
+                                                                                          with outlier activations using high-precision MAC units.
+top-5 accuracy [23]. No report has examined the results
+                                                                                          The accumulation of partial sums from the normal and
+of logarithm-based quantization in deeper neural networks
+                                                                                          outlier PE groups is performed in a pipelined manner to
+either. In [24], Zhou et al. proposed balanced quantization
+                                                                                          avoid a coherence problem. Our experiments show that
+that maintains a uniform population of quantization levels,
+                                                                                          OLAccel reduces energy consumption by 43.5% and 27.0%
+i.e., keeps it balanced, which contributes to improving the
+                                                                                          on AlexNet compared with the state-of-the-art 16-bit and
+utility of quantization levels. However, their method yields
+                                                                                          8-bit zero-aware accelerators, respectively. It provides fur-
+a large loss in accuracy for 4-bit deep networks, e.g., 3.8%
+                                                                                          ther energy reduction in VGG-16 (56.7%/36.3% with 16/8
+on GoogLeNet.
+                                                                                          bits) and ResNet-18 (62.2%/49.5%), where the performance
+   Migacz recently proposed a method of quantization that
+                                                                                          degradation due to the ﬁrst convolutional layer is mitigated
+minimizes cross-entropy between the distributions of the
+                                                                                          and the energy beneﬁt of reduced precision is ampliﬁed
+original and quantized values, and showed that 8-bit quan-
+                                                                                          due to large on-chip memory. The experiments also show
+tization is possible for deep neural networks [7]. Park et al.
+                                                                                          that OLAccel has the potential for scalability on large-scale
+proposed a more aggressive quantization method that allows
+                                                                                          problems.
+5-bit weights and 6-bit activations for deep neural networks
+like ResNet-101 at a very small loss of accuracy. To this
+                                                                                                              ACKNOWLEDGMENTS
+end, their method maximizes the weighted entropy in weight
+clustering and logarithm-based quantization of activations.                                 This work was supported by the National Research
+They reduced memory and bandwidth consumption, but the                                    Foundation of Korea grant funded by the Ministry of
+method requires full-precision computation units as well as                               Science, ICT & Future Planning (PF Class Heteroge-
+additional LUTs, as the weights are clustered and a full-                                 neous High Performance Computer Development, NRF-
+precision weight represents each cluster.                                                 2016M3C4A7952587), Samsung Research Funding Center
+   Zero skipping is crucial for performance as well as energy                             of Samsung Electronics (SRFC-TC1603-04), and Samsung
+efﬁciency. In [2], Albericio et al. proposed Cnvlutin that                                Advanced Institute of Technology.
+
+
+
+
+                                                                                    697
+
+                 Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:04:35 UTC from IEEE Xplore. Restrictions apply.
+                          R EFERENCES                                        [17] Y. Jia et al., “Caffe: Convolutional architecture for fast fea-
+                                                                                  ture embedding,” in International Conference on Multimedia,
+ [1] T. Chen et al., “Diannao: A small-footprint high-throughput                  2014.
+     accelerator for ubiquitous machine-learning,” ACM Sigplan
+     Notices, 2014.                                                          [18] “Pytorch torchvision,” https://github.com/pytorch/vision, ac-
+                                                                                  cessed: 2018-04-15.
+ [2] J. Albericio et al., “Cnvlutin: Ineffectual-neuron-free deep
+     neural network computing,” International Symposium on                   [19] N. Muralimanohar, R. Balasubramonian, and N. P. Jouppi,
+     Computer Architecture, 2016.                                                 “Cacti 6.0: A tool to model large caches,” HP Laboratories,
+                                                                                  HPL-2009-85, 2009.
+ [3] S. Zhang et al., “Cambricon-x: An accelerator for sparse neu-
+     ral networks,” International Symposium on Microarchitecture,            [20] “Micron dram calculator,” http://www.micron.com/support/t
+     2016.                                                                        ools-and-utilities/power-calc, accessed: 2018-14-15.
+ [4] N. P. Jouppi et al., “In-datacenter performance analysis of             [21] S. Xie et al., “Aggregated residual transformations for deep
+     a tensor processing unit,” International Symposium on Com-                   neural networks,” in Computer Vision and Pattern Recogni-
+     puter Architecture, 2017.                                                    tion, 2017.
+ [5] D. Kim, J. Ahn, and S. Yoo, “Zena: Zero-aware neural                    [22] Y. Ioannou et al., “Deep roots: Improving cnn efﬁciency with
+     network accelerator,” Design & Test, 2018.                                   hierarchical ﬁlter groups,” arXiv preprint arXiv:1605.06489,
+                                                                                  2016.
+ [6] A. Parashar et al., “Scnn: An accelerator for compressed-
+     sparse convolutional neural networks,” International Sympo-             [23] D. Miyashita, E. H. Lee, and B. Murmann, “Convolutional
+     sium on Computer Architecture, 2017.                                         neural networks using logarithmic data representation,” arXiv
+                                                                                  preprint arXiv:1603.01025, 2016.
+ [7] S. Migacz, “NVIDIA 8-bit inference width TensorRT,” GPU
+     Technology Conference, 2017.                                            [24] S.-C. Zhou et al., “Balanced quantization: An effective and
+                                                                                  efﬁcient approach to quantized neural networks,” Journal of
+ [8] E. Park, J. Ahn, and S. Yoo, “Weighted-entropy-based quan-                   Computer Science and Technology, 2017.
+     tization for deep neural networks,” Computer Vision and
+     Pattern Recognition, 2017.
+
+ [9] M. Rastegari, V. Ordonez, J. Redmon, and A. Farhadi,
+     “XNOR-Net: ImageNet classiﬁcation using binary convolu-
+     tional neural networks,” European Conference on Computer
+     Vision, 2016.
+
+[10] C. Zhu et al., “Trained ternary quantization,” arXiv preprint
+     arXiv:1612.01064, 2016.
+
+[11] E. Park, S. Yoo, and P. Vajda, “Value-aware quantization for
+     training and inference of neural networks,” arXiv preprint,
+     2018.
+
+[12] Y.-H. Chen, J. Emer, and V. Sze, “Eyeriss: A spatial archi-
+     tecture for energy-efﬁcient dataﬂow for convolutional neural
+     networks,” International Symposium on Computer Architec-
+     ture, 2016.
+
+[13] I. Hubara et al., “Quantized neural networks: Training neural
+     networks with low precision weights and activations,” arXiv
+     preprint arXiv:1609.07061, 2016.
+
+[14] S. Zhou et al., “DoReFa-Net: Training low bitwidth convo-
+     lutional neural networks with low bitwidth gradients,” arXiv
+     preprint arXiv:1606.06160, 2016.
+
+[15] S. Han, H. Mao, and W. J. Dally, “Deep compression:
+     Compressing deep neural network with pruning, trained quan-
+     tization and huffman coding,” International Conference on
+     Learning Representation, 2016.
+
+[16] “Pytorch: Tensors and dynamic neural networks in python
+     with strong gpu acceleration,” https://github.com/pytorch, ac-
+     cessed: 2018-04-15.
+
+
+
+
+                                                                       698
+
+    Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:04:35 UTC from IEEE Xplore. Restrictions apply.
+

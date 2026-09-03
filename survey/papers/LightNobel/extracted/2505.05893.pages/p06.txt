@@ -1,0 +1,95 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                      Seunghee Han, Soongyu Choi, and Joo-Young Kim
+
+
+                                                                                                                                   Group A                                     Group B                                     Group C
+        Triangular                                                                                                  25           3σ      3σ                  25         3σ                   3σ            25              3σ        3σ
+                         Linear a_g     Sigmoid
+        Multiplication                               ElemMul                                                                   -142.05 144.75                          -2.29                2.31                          -3.24     3.36
+                         Linear a_p                                                                                 20                                       20                                            20
+                                                                   MatMul     LayerNorm
+ (a)                     Linear b_g     Sigmoid
+                                                                                                                    15                                       15                                            15
+                                                     ElemMul
+
+
+
+
+                                                                                                            Count
+
+
+
+
+                                                                                                                                                     Count
+
+
+
+
+                                                                                                                                                                                                   Count
+                                                                                   Linear o
+                         Linear b_p
+                                                                                                                    10                                       10                                            10
+           LayerNorm      Linear g      Sigmoid                                    ElemMul    +
+                                                                                                                    5                                        5                                             5
+                                                                                                      (c)
+        Triangular                                                                            Group                      -200 -100     0   100    200             -6   -4      -2     0 2     4    6            -6   -4    -2     0 2      4   6
+                         Linear bias                                                            A                                    Value                                          Value                                       Value
+        Attention
+                          Linear Q                                                            Group                                         Activation Value Size (Average of Absolute Values)
+                                         MatMul                                                 B
+                                                     +    SoftMax       Linear o                                              Large (82.14)                   Small (4.05)                     Small (3.85)
+ (b)                      Linear K     (Attention)
+                                                                                              Group                        (Higher Precision)              (Lower Precision)               (Lower Precision)
+                                                                                                C
+                          Linear V                        MatMul                                                                              Outlier Existence (Average Number of Outliers)
+                                                                       ElemMul
+           LayerNorm      Linear g      Sigmoid                                           +                                    Exist (2.31)                   Exist (1.69)                   Not Exist (0.64)
+                                                                                                                          (Handling Required)            (Handling Required)            (Handling not Required)
+
+
+Figure 6: Dataflow of (a) Triangular Multiplication Block and (b) Triangular Attention Block. Red, blue, and green lines
+correspond to activations belonging to each group. Black lines correspond to activations in which quantization does not occur
+in our dataflow. (c) Characteristic analysis of activations belonging to each group.
+
+
+outlier handling was applied, the RMSE increase is limited to only                                                       Token 1                 Inlier Quantized Values              Outlier Values       Scaling Factor Outlier Indices
+
+9.76%, corresponding to a negligible real-value difference of 0.0004.                                                      Token 2               1 Channel                            Quantized Token
+This slight difference demonstrates that symmetric quantization                                                               Token 3                                                                           Memory          Quantization
+                                                                                                                            ...                                    Entire Block                                 Address         Information
+becomes effective when combined with outlier handling. Therefore,                                                        Token N                                   Read at Once
+we adopt uniform symmetric quantization with dynamic outlier                                          Memory Channel Width                                             Memory
+handling.
+                                                                                                                     Figure 7: Memory layout of the quantized tokens.
+
+4.2     Activation Adaptive Quantization
+As mentioned in Section 3.4, the activations of PPM exhibit distinct                                  precision can be assigned to inliers without compromising quan-
+characteristics, necessitating quantization schemes tailored to them.                                 tization accuracy. Finally, Group C consists of activations that do
+Therefore, we adaptively optimize various quantization schemes                                        not belong to the previous two groups. These activations undergo
+that refine the baseline quantization scheme to suit each activation’s                                multiplication with relatively small weights, resulting in an average
+characteristic, thereby enhancing the accuracy of quantization.                                       value of 3.85, comparable to Group B. Their distribution has very
+   To classify activations, we focus on two key features essential                                    few outliers, having an average of 0.64 outliers, which is less than
+for quantization: the value range and the existence of outliers. We                                   1. Thus, satisfactory accuracy can be achieved without handling
+sample proteins from the CAMEO [9], CASP14 [11], CASP15 [12],                                         outliers during quantization.
+and CASP16 [13] datasets and analyze every token from activations.                                        The proposed AAQ method dynamically adjusts quantization
+For each token, we compute the average of absolute values and the                                     schemes based on activation characteristics to optimize both ac-
+number of outliers per token. We use the 3𝜎-rule [25, 62] to identify                                 curacy and efficiency. As detailed in Section 7.1, we determine
+outliers [25]. Based on these features, we categorize the activations                                 the most efficient quantization schemes for each group through
+in the PPM block into three groups. Figure 6(a) and (b) show which                                    design space exploration. Based on this result, AAQ dynamically
+group each activation is included in the Triangular Multiplication                                    determines which values should be handled as outliers in each
+Block dataflow and Triangular Attention Block dataflow, which                                         token at runtime, depending on the type of activation. From the
+are the core of the PPM block. Also, Figure 6(c) shows the charac-                                    perspective of outlier handling, AAQ dynamically handles a vari-
+teristics and experiment results of activations within each group.                                    able number of outliers. From the perspective of inlier handling,
+First, activations in Group A are located before the LayerNorm                                        it adopts a multi-precision approach, thereby aligning the quanti-
+layer and are directly connected to residual connections. These                                       zation scheme with the unique characteristics of each activation.
+activations propagate data with large values and outliers through                                     Our adaptive approach strategically aligns with activation char-
+residual connections. The values vary significantly, with an average                                  acteristics, achieving optimal accuracy while significantly reduc-
+of 82.14, while having 2.31 outliers on average. Therefore, during                                    ing memory consumption and computational overhead. From a
+quantization, it is essential to allocate relatively high precision to                                hardware-software co-design perspective, we achieve this by imple-
+inliers to secure a sufficient representation range and implement                                     menting multi-precision dataflow for handling token-wise dynamic
+outlier handling. Activations in Group B have passed through the                                      quantization schemes and supporting top-k functionality for dy-
+LayerNorm layer but have not yet undergone linear layers. Due to                                      namic outlier handling in our hardware.
+the normalization effect of the LayerNorm, the values are reduced
+compared to Group A, resulting in an average value of 4.05. How-                                      4.3                Memory Layout for Quantization
+ever, outliers still exist in the distribution, averaging 1.69 outliers.                              To accommodate diverse quantization schemes, we implement a
+Thus, while outlier handling remains necessary, relatively lower                                      scalable and flexible memory mapping. Figure 7 shows the layout
+

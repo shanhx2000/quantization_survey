@@ -1,0 +1,81 @@
+DNNs can operate with reduced bitwidth without degradation in                           WBUF                                              WBUF
+classification accuracy [2, 32–35, 37]. This opportunity exists across                 BB         BB          BB        BB               F-PE F-PE       F-PE F-PE
+                                                                              Input     +                           +           Input      +                 +
+different classes of real-world DNNs, as shown in Figure 1. One              forward BB   BB                  BB        BB     forward F-PE F-PE         F-PE F-PE
+                                                                                                         +                                           +
+category is Convolutional Neural Networks (CNNs) that usually use                      BB         BB          BB        BB               F-PE F-PE       F-PE F-PE
+                                                                                              +                     +                         +              +
+convolution and pooling layers followed by a stack of fully-connected                  BB         BB          BB   BB                    F-PE F-PE       F-PE F-PE
+layers. AlexNet, Cifar-10, LeNet-5, ResNet-18, SVHN, and VGG-7                                               Psum forward                                Psum forward
+in Figure 1 belong to this category. Recurrent Neural Networks                                                                     (b) 16x Parallelism, Binary (1-bit)
+                                                                                  (a) Fusion Unit with 16 BitBricks
+(RNN) are another sub-class of DNNs that use recurrent layers                                                                              or Ternary (2-bit)
+including Long Short Term Memory (LSTM) and vanilla RNN
+                                                                                        WBUF                                              WBUF
+layers to extract temporal features from time-varying data. The RNN
+and LSTM benchmark DNNs in Figure 1 represent these categories.               Input                                             Input
+
+
+                                                                                                                                           F-PE
+                                                                                                                                              +              +
+
+
+
+
+                                                                                       F-PE
+                                                                                                  F-PE
+                                                                                                             F-PE
+                                                                                                                        F-PE
+                                                                             forward                                           forward
+Furthermore, as the table in Figure 1 shows, most operations in                                                                                      +
+DNNs (> 99%), regardless of their categories, are multiply-adds. As
+                                                                                                                                              +              +
+Figure 1(a) illustrates, on average, 97.3% of multiply-adds require
+four or fewer bits and even in some DNNs a large fraction of the                                             Psum forward                                Psum forward
+operations can be done with bitwidth equal to one. More interestingly,           (c) 4x Parallelism, Mixed-Bitwidth
+                                                                                                                                         (d) No Parallelism, 8-bits
+the bitwidths vary within and across DNNs to guarantee no loss of                    (2-bit weights, 8-bit inputs)
+
+accuracy. Such a variation is not limited to the intermediate operands      Fig. 2: Dynamic composition of BitBricks (BBs) in a Fusion Unit to construct
+                                                                            Fused Processing Engines (Fused-PE), shown as F-PE.
+and exists in trained weights as illustrated in Figure 1(b). To exploit
+this property, a programmable accelerator needs to offer bit-level          and technology node, Bit Fusion offers 3.9× speedup and 5.1× energy
+flexibility at runtime, which leads us to Bit Fusion.                       savings over Eyeriss. Compared to Stripes [2], Bit Fusion provides
+   To harvest the aforementioned opportunities, this paper makes the        2.6× speedup and 3.9× energy reduction at 45 nm node when Bit
+following contributions and realizes a new dimension in the design          Fusion area and frequency are set to those of Stripes. Scaling to GPU
+of DNN accelerators.                                                        technology node of 16 nm, Bit Fusion provides a 16× speedup over
+1) Dynamic bit-level fusion and decomposition. The paper                    the Jetson TX2 mobile GPU. Further, Bit Fusion almost matches the
+    introduces and explores the dimension of bit-level flexible DNN         performance of a 250-Watt Titan Xp, which uses 8-bit vector instruc-
+    accelerator architectures, Bit Fusion, that dynamically matches         tions, while Bit Fusion merely consumes 895 milliwatts of power.
+    bit-level composable processing engines to the varying bitwidths
+    required by DNN layers. By offering this flexibility, Bit Fusion                                II. BIT FUSION ARCHITECTURE
+    aims to minimize the computation and communication required                To minimize the computation and communication at the finest
+    by a DNN at the bit granularity on a per layer basis.                   granularity, Bit Fusion dynamically matches the architecture of the
+2) Microarchitecture design for bit-level composability. To ex-             accelerator to the bitwidth required for the DNN, which may vary
+    plore Bit Fusion, we design and implement a DNN accelerator us-         layer by layer, without any loss in accuracy. As such, Bit Fusion
+    ing a novel bit-flexible computation unit, called BitBricks. The ac-    is a collection of bit-level computational elements, called BitBricks,
+    celerator supports both feed-forward (CNN) and recurrent (LSTM          that dynamically compose to logically construct Fused Processing
+    and RNN) layers. A 2D array of BitBricks constructs a fusible pro-      Engines (Fused-PE) that execute DNN operations with the required
+    cessing engine that can perform the DNN computation at various          bitwidth. Specifically, Fused-PEs provide bit-level flexibility for
+    bitwidths. The microarchitecture also comes with a storage logic        multiply-adds, which are the dominant operations across all types of
+    that allows feeding the BitBricks with different bitwidth operands.     DNNs. Below, we discuss how BitBricks can be dynamically fused
+3) Hardware-software abstractions for bit-flexible acceleration.            together to support a range of bitwidths, yet provide a significant
+    To enable DNN applications to take advantage of these unique            increase in parallelism when operating at lower bitwidths.
+    bit-level fusion capabilities, we propose a block-structured
+    instruction set architecture, called Fusion-ISA. To amortize the        A. Bit-Level Flexibility via Dynamic Fusion
+    cost of programmability, Fusion-ISA expresses operations of DNN            As depicted in Figure 2, Bit Fusion arranges the BitBricks in a
+    layers as bit-flexible instruction blocks with iterative semantics.     2-dimensional physical grouping, called Fusion Unit. Each BitBrick
+   These three contributions define the novel architecture of Bit Fu-       in a Fusion Unit can perform individual binary (0, +1) and ternary
+sion, a possible microarchitecture implementation, and the hardware-        (-1, 0, +1) multiply-add operations. As Figure 2 shows, the BitBricks
+software abstractions to offer bit-level flexibility. Other complemen-      logically fuse together at run-time to form Fused Processing
+tary and inspiring works have explored bit serial computation [2, 6]        Engines (Fused-PEs) that match the bitwidths required by the
+without exploring the fusion dimension. In contrast, Bit Fusion             multiply-add operations of a DNN layer. The BitBricks in a Fusion
+spatially fuses a group of BitBricks together, to collectively execute      Unit multiply an incoming variable-bitwidth input (input forward)
+operations at different bitwidths. Using eight real-world feed-forward      to a variable-bitwidth weight (from WBUF) to generate the product.
+and recurrent real-world DNNs, we evaluate the benefits of Bit Fusion.      The Fusion Unit then adds the product to an incoming partial sum to
+We implemented the proposed microarchitecture in Verilog and syn-           generate an outgoing partial sum (Psum forward in Figure 2(a)).
+thesized in 45 nm technology. Using the synthesis results and cycle            Figures 2(b), 2(c), and 2(d) show three different ways of logically
+accurate simulation, we compare the benefits of Bit Fusion to two           fusing BitBricks to form (b) 16 Fused-PEs that support ternary
+state-of-the-art DNN accelerators, Eyeriss [1] and Stripes [2]. The lat-    (binary); (c) four Fused-PEs that support mixed-bitwidths (2-bits for
+ter is an optimized bit-serial architecture. In the same area, frequency,   weights and 8-bits for inputs), (d) one Fused-PE that supports 8-bit
+

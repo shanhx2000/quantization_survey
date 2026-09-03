@@ -1,0 +1,71 @@
+where r0 = 0, rK is the total rank R, and bk denotes
+the bit-width assigned to the k-th region. Given a target
+average precision, the parameter p can be solved by combining
+Eq. 4 with the boundary conditions in Eq. 3. As shown in
+Figure 5b, this procedure applies consistently to every linear
+layer, requiring no heuristic search.
+   Regarding the precision range, we observed that extending
+the maximum precision beyond 4 bits requires assigning
+a larger portion of ranks to low-precision regions to meet
+the target Bavg , which offsets the benefit of using higher
+precision. We also exclude 0-bit allocation, i.e., pruning,
+because reducing a component from (n + 1) to n bits only
+lowers its representational capacity, whereas assigning 0 bits
+represents a total loss of information. This helps explain why
+rank-truncation methods often suffer from larger accuracy
+degradation than our mixed-precision approach.                              Fig. 6: Proposed SingularBit-KV pipeline for online KV-cache
+   SingularBit-W integrates the proposed algorithm into a                   compression.
+GPTQ error-feedback framework [8] to minimize accuracy
+degradation. Unlike standard GPTQ, which directly quantizes                 ing the assigned bitwidth bk to translate directly into hardware
+the original weight matrix, we apply error compensation to                  latency and energy savings.
+the SVD components. The overall procedure is summarized
+in Algorithm 1.                                                             B. SingularBit-KV for KV Cache Compression
+   After decomposing W into U, S, and VT , we first quantize                   KV cache compression requires an online scheme, as the
+U in sequential blocks using the precision levels bk ∈                      cache grows dynamically during autoregressive generation and
+{4, 3, 2, 1} determined by the boundaries {r1 , r2 , r3 }. This             token importance changes at every decoding step. Attention
+process is guided by the Hessian HU = xT x computed from                    patterns, which indicate token importance, exhibit locality and
+the calibration inputs. For each block, the quantization error              sparsity; thus, not all cached tokens contribute equally to
+Eblock = Ublock − U  b block is multiplied by the inverse Hessian           generation [10], [15]. Existing methods exploit this property
+and used to update the remaining unquantized parameters. This               by either pruning unimportant tokens [10] or assigning lower
+error-feedback mechanism allows later blocks to compensate                  bitwidths to them [33]. However, they treat tokens in a binary
+for the accumulated quantization error from earlier blocks.                 manner—as important or unimportant—and fail to capture
+   For the subsequent quantization of VT , we derive an effec-              intermediate levels of token importance.
+tive Hessian HVT that accounts for the previously quantized                    SingularBit-KV improves the accuracy-compression trade-
+ b From the linear relation xWT ≈ xUSV
+U.                                          b     T
+                                                     = zVT , the            off by compressing the KV cache along two complementary
+Hessian for VT is given by                                                  dimensions. Along the token dimension, it assigns one of
+                                                                            five or more bitwidth levels according to attention-based
+                     HVT = zT z                                             importance. Along the rank dimension, it extends the rank-
+                         = SUb T xT xUS
+                                     b                        (5)           aware quantization principle of SingularBit-W to apply mixed
+                              b T HU US.                                    precision within each token. Specifically, the cache is stored
+                           = SU      b
+                                                                            in intermediate representations K’ and V’, obtained by multi-
+The resulting HVT allows the quantization of VT to account                  plying the input embeddings only with UWK or UWV . Since
+                                                                                                                     T          T
+for both the calibration activations and the previously quan-               K’ and V’ are later multiplied by VW       K
+                                                                                                                         and VW   V
+                                                                                                                                     during
+tized U,
+       b reducing cumulative error across the SVD compo-                    attention computation, respectively, their rank-wise precision
+nents.                                                                      is determined by the singular-value magnitudes of the cor-
+   To represent each precision region, we adopt hierarchical                responding components in these matrices. This enables fine-
+binary quantization based on ARB-LLM [47]. Each quantized                   grained bit allocation across both tokens and rank components,
+block is decomposed into a series of binary bases Bi ∈                      maximizing compression while minimizing information loss.
+{−1, +1}och×ich , scaled by row-wise and column-wise factors                   As illustrated in Figure 6, SingularBit-KV operates in three
+(αr,i and αc,i , respectively. For a region assigned bitwidth bk ,          stages at each decoding step: (1) attention map update to track
+the quantized weights are reconstructed as                                  recent attention patterns, (2) importance score computation
+                                                                            to quantify each token’s contribution to generation, and (3)
+                           bk
+                           X                                                bit precision allocation and compression based on both token
+                     W=           αr,i αc,i Bi .              (6)           importance and rank significance.
+                            i=1                                                (1) Attention Map Update. At each decoding step t, we
+This hierarchical representation is naturally compatible with               maintain a recent-k attention map window (e.g. k = 128)
+the bit-serial execution of the SingularBit Tensor Core, allow-             to capture temporal attention dynamics. The current attention
+
+
+
+
+                                                                     1006
+

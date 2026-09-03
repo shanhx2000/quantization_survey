@@ -1,0 +1,87 @@
+OliVe: Accelerating Large Language Models via
+Hardware-friendly Outlier-Victim Pair Quantization                                                                                  ISCA ’23, June 17–21, 2023, Orlando, FL, USA
+
+
+1. Eliminate the identifier                   2. Outlier-Victim Pair Encoding                     and prune the other. Then, we get the normal-normal pairs and
+                                                                                    Identifier
+                                       FP32
+                                                                                                  outlier-victim pairs in the DNN tensors.
+         7                    Victim      Outlier                 1000      xxxx
+                         7
+         6               6
+                              Outlier     Victim
+                                                       Quant&
+                                                      Encoding    xxxx      1000         4-bit    Outlier Identifier. To distinguish from the normal-normal pair,
+        …       INT4    …
+ INT4   -6              -6
+                                                                                        OV Pair
+                                                                                                  we need a special identifier for the outlier-victim pair. And this
+        -7                      2.6           4.2                 0011      0100         INT4
+        -8
+                        -7                                                                        distinct identifier cannot appear in the normal-normal pair, which
+                                Left          Right                4-bit    4-bit                 means we need to eliminate one number in the representation of
+                                                                                                  normal values. For example, as shown in Fig. 4, we employ the
+         Figure 4: The 4-bit outlier-victim pair encoding.                                        signed int4 (4-bit integer) for the normal value quantization. The
+                                                                                                  original int4 can represent the integers in the range of [−8, 7],
+                                                                                                  where 10002 represents the value of −8. First, we make 10002
+the outlier-outlier pair and have specific locations corresponding
+                                                                                                  the outlier identifier and remove the value of 10002 from int4,
+to the adjacent outlier.
+                                                                                                  whose encoding range becomes [−7, 7]. Second, we quantize the
+   In summary, our analysis indicates that outliers are important
+                                                                                                  outlier-victim pairs with 4-bit OVP encoding. We set the victims
+while the victims are not, so that we can sacrifice victims to ac-
+                                                                                                  with the outlier identifier 10002 and quantize the outlier with the
+commodate the outliers. This motivates us to design the hardware-
+                                                                                                  outlier-specific data type (Sec. 3.3). Naturally, there are two types
+friendly OVP mechanism that provides aligned outlier-aware quan-
+                                                                                                  of OV pair, i.e., left outlier (O-V) and right outlier (V-O) pair. Due to
+tization to accelerate the large Transformer models. In the next
+                                                                                                  the distinct outlier identifier design, we can implicitly distinguish
+section, we will introduce the outlier-victim pair encoding design.
+                                                                                                  them without using an extra index bit (Sec. 4.2).
+                                                                                                     Algo. 1 shows the 4-bit OVP encoding algorithm, which needs to
+3       OUTLIER-VICTIM PAIR ENCODING                                                              read two values simultaneously, where the requirement is very easy
+In this section, we present the details of outlier-victim pair (OVP)                              to meet. For the hardware implementation, we can add a buffer
+encoding that is globally identical but locally distinguishable                                   for the encoder. Also, the OVP encoder can be implemented by
+for outlier and normal values. The OVP encoding can maintain                                      embedding in the quantization unit with ignorable overheads. For
+globally aligned memory access and distinguish the outliers locally                               the software implementation, we can make a thread handle two
+with ignorable overhead. For normal values, we can support multi-                                 values simultaneously. As a result, the encoding algorithm can be
+ple data types to fit the adaptive data type. For encoding outliers, we                           implemented efficiently in both hardware and software, which we
+design an outlier-specific data type, adaptive bias float, abfloat,                               describe more details later.
+which can avoid range overlapping between normal values and
+outliers, thus improving the utilization ratio of the numerical rep-                              3.2    Data Type for Normal Values
+resentation space of outlier encoding. Finally, based on the OVP
+                                                                                                  For normal values, we build upon prior work [32], which can sup-
+encoding, we propose a framework that can automatically select
+                                                                                                  port multiple data types, including int4, flint4 (4-bit flint),
+the outlier threshold for OVP encoding to determine a suitable ratio
+                                                                                                  and int8, as shown in Tbl. 3. The int4 type is one of the most
+of the outlier-victim pair.
+                                                                                                  widely used data types for 4-bit quantization with integers in the
+                                                                                                  value range of [−7, 7]. The flint4 type is proposed by prior work
+3.1      OVP Encoding Algorithm                                                                   ANT [32], which has shown that selecting the data type according
+Based on the previous pair-wise tenor value analysis, there are                                   to a tensor’s distribution achieves the state-of-the-art performance
+three pair types: normal-normal, outlier-normal, and outlier-outlier.                             and accuracy.
+For outlier-normal, the normal value in the pair will be pruned and                                  Based on the above insights, we also adopt the mixed data types
+turned into a victim. For outlier-outlier, we remain the large one                                to quantize normal values in our OVP pair encoding. For flint4,
+                                                                                                  we use the same binary value of 10002 as the outlier identifier.
+                                                                                                  Specifically, 10002 of flint4 corresponds to −0, which is not used
+ Algorithm 1: The 4-bit OVP encoding algorithm.                                                   in the original design. In other words, our OVP encoding seamlessly
+  Input: Values, 𝑣𝑎𝑙 1 , 𝑣𝑎𝑙 2 ; Outlier threshold, 𝑇 .                                           works for flint4 without wasting any number representations.
+  Output: OVP encoding, 𝑜𝑢𝑡 1 , 𝑜𝑢𝑡 2 .                                                           We use the original flint4 encoding algorithm [32] to quantize
+1 def OVPairEncoding(𝑣𝑎𝑙 1 , 𝑣𝑎𝑙 2 , 𝑇 ):                                                         normal values.
+2     if 𝑣𝑎𝑙 1 > 𝑇 and 𝑣𝑎𝑙 1 > 𝑣𝑎𝑙 2 then                                                            Moreover, the OVP encoding can be generally extended to higher-
+3         𝑜𝑢𝑡 1 = OutlierQuantization(𝑣𝑎𝑙 1 );                                                    precision quantization, such as the 8-bit. Similarly, the 8-bit normal
+4         𝑜𝑢𝑡 2 = 10002 ; // Outlier identifier.
+ 5       else if 𝑣𝑎𝑙 2 > 𝑇 then
+ 6           𝑜𝑢𝑡 1 = 10002                                                                          Data Type                  Values                  Outlier Identifier
+ 7           𝑜𝑢𝑡 2 = OutlierQuantization(𝑣𝑎𝑙 2 );
+                                                                                                        int4        0, ±1, ±2, ±3, ±4, ±5, ±6, ±7           10002 (-8)
+ 8       else
+ 9           𝑜𝑢𝑡 1 = NormalQuantization(𝑣𝑎𝑙 1 );                                                    flint4 [32]    0, ±1, ±2, ±3, ±4, ±6, ±8, ±16           10002 (-0)
+10           𝑜𝑢𝑡 2 = NormalQuantization(𝑣𝑎𝑙 2 );
+                                                                                                        int8         0, ±1, ±2, · · · , ±126, ±127     100000002 (-128)
+11       return 𝑜𝑢𝑡 1 , 𝑜𝑢𝑡 2
+                                                                                                    Table 3: Data types for normal values of OVP encoding.
+

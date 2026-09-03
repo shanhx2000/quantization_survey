@@ -1,0 +1,61 @@
+Ecco: Improving Memory Bandwidth and Capacity for LLMs via Entropy-aware Cache Compression                            ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+performance by improving cache utilization and reducing access                    3.2        Model Compression
+latency.                                                                          Compression Requirements. The cache compression target out-
+Takeaway 4: Specialized cache compression techniques with effi-                   lined in the previous section necessitates that all group-wise in-
+cient, customized compressors and decompressors are crucial for                   formation be compressed to a fixed compressed block size.
+LLMs to achieve high compression ratios with minimal overhead,                    This requirement is crucial for maintaining efficient memory trans-
+effectively mitigating memory bandwidth and capacity bottlenecks.                 actions and avoiding additional computational overhead during
+                                                                                  decompression, which occurs on the critical data path of data load-
+                                                                                  ing. To meet these requirements, our compression scheme adheres
+                                                                                  to several key principles:
+                                                                                  • All group-wise data, including quantized values and associated
+3 Entropy-aware Cache Compression                                                   metadata (e.g., outliers and scale factors), must be stored within
+3.1 Compression Target                                                              the target compression granularity. This approach eliminates the
+In our methodology for cache compression, we prioritize the preser-                 need for extra memory transactions during decompression.
+vation of memory bandwidth and efficient utilization of memory                    • Shared metadata is utilized across multiple compressed blocks,
+size. To achieve these goals, we implement a fixed compressed block                 typically at the tensor or channel level, to maximize efficiency.
+size and power-of-two compression ratios.                                         • Decompression is designed to occur on-the-fly, with all data in
+Target Compressed Block Size. The selection of an appropriate                       the compressed block processed simultaneously. This strategy
+compressed block size is critical and must balance several factors.                 precludes the need for additional compute kernels and maintains
+We establish that the compressed block size should exceed 32 bytes,                 computational efficiency.
+which corresponds to one sector, as this is the minimum memory                    Carefully balancing these constraints is essential to avoid compli-
+transaction unit. Compressing to sizes smaller than this thresh-                  cated memory load patterns and substantial compute overhead,
+old could lead to significant decompression overhead or a decline                 which would otherwise undermine the overall compression objec-
+in model performance due to an excess of group-level informa-                     tive.
+tion at this scale. Conversely, we determine that the compressed                  Weight Compression. Existing uniform quantization approaches,
+block size should not exceed 128 bytes, which is equivalent to one                such as AWQ [42], typically employ a group size of 128 and store
+cache line. Larger granularities may reduce memory load flexibility,              an FP16 scale factor and an FP16 zero point, resulting in 32 bits of
+and expansive compressed block sizes encompass more data per                      overhead. Storing these within the compressed block necessitates
+block, potentially obscuring important group-level data features                  the eviction of quantized data, which is problematic for low-bit
+and consequently degrading model performance. Considering that                    quantization scenarios. For instance, in 4-bit quantization AWQ, 8
+the default transaction size from DRAM to L2 cache is 64 bytes                    original data points (32 bits overhead / 4-bit) per group of 128 would
+[47], we opt for a compressed block size of 64 bytes. This choice is              be eliminated, leading to a 6.25% reduction in weights. This signifi-
+optimal for minimizing hardware overhead and maximizing band-                     cant loss of information can severely impact model performance.
+width usage while storing an appropriate amount of compressed                     Non-uniform k-means quantization is generally considered to offer
+data in each block. This size strikes a balance between efficient                 superior performance compared to uniform quantization. Current
+compression and effective data representation, facilitating seamless              methods like SqueezeLLM [37] utilize per-channel group sizes and
+integration with existing GPU cache hierarchies.                                  per-tensor outliers, as the overhead of storing k-means centroids
+Target Compression Ratio. We further refine our cache compres-                    per group is substantial. Extracting global outliers helps preserve
+sion strategy by setting target compression ratios as powers of                   large values and improves k-means fitting. However, this approach
+two as it facilitates easier alignment and more efficient hardware                typically requires implementation in two parts: a dense kernel for
+implementation. Typically, compression ratios of 2× or 4× repre-                  normal values and a sparse kernel for outliers. This dense-and-
+sent an optimal balance between effective data compression and                    sparse approach incurs additional computational overhead, result-
+preservation of model performance. For weights and KV cache, we                   ing in lower throughput and higher latency. Furthermore, storing
+target a 4× compression ratio, resulting in an average of 4 bits per              outliers within the compressed block is challenging, as each outlier
+data point with 128 data points per group. This aggressive compres-               requires both location and value information. This leads to further
+sion exploits the static nature of weights during inference, allowing             data eviction, and the variable number of outliers per block can
+for thorough offline analysis and optimization of the quantization                often exceed the storage capacity of a compressed block.
+process. For KV cache, this ratio leverages its reduced sensitivity                  We propose a novel compression method that combines group-
+to small errors in key and value representations. Conversely, for                 wise non-uniform quantization using predefined shared k-means
+activations, we employ a more conservative 2× compression ratio,                  patterns with clipped/padded Huffman coding. This approach aims
+averaging 8 bits per data point with 64 data points per group. This               to merge the strengths of integer-based uniform and k-means-based
+approach accounts for the dynamic range of activations during                     non-uniform methods while avoiding extra memory transactions or
+inference. These tailored power-of-two ratios optimize memory                     separate compute operations. The compression process is illustrated
+efficiency and model fidelity across different LLM components by                  in Figure 4. The process begins in Step 1 by partitioning the tensor
+considering their unique characteristics and sensitivities, signifi-              into 𝑀𝑁
+                                                                                        128 groups, each containing 128 data elements. In Step 2 , the
+cantly increasing cache capacity for weights and KV cache while                   data in each group undergoes a two-level normalization process.
+maintaining computational accuracy for activations.                               First, the absolute maximum value within each group is identified
+

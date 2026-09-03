@@ -1,0 +1,113 @@
+                                                                              Speedup over Push
+   1   def BFS( Graph g, VertexId root):
+
+
+
+
+                                                                                                                                            normalized to Push
+                                                                                                                                                                 1.00
+
+
+
+
+                                                                                                                                              Memory traffic
+   2     curDist = 0                                                                              6                                                                                                  Updates
+   3     frontier = [root], nextFrontier = []                                                                                                                    0.75                                Destination
+   4     Array dists (g. numVertices , INFINITY )                                                                                                                                                    Vertex
+                                                                                                  4                                                              0.50
+   5     while ! frontier . empty ():                                                                                                                                                                Source
+                                                                                                                                                                                                     Vertex
+   6       for src in frontier :                                                                  2                                                              0.25                                Adjacency
+   7         for dst in g. neighs [g. offsets [src ]:                                                                                                                                                Matrix
+                                                                                                  0   Push Push+ UB   UB+     PHI   PHI+
+                                                                                                                                                                 0.00
+   8                                g. offsets [src +1]]:                                                  SpZip      SpZip         SpZip
+                                                                                                                                                                        PushPush+ UB UB+ PHI PHI+
+                                                                                                                                                                            SpZip    SpZip   SpZip
+   9            if dists [dst] == INFINITY :
+  10              dists [dst] = curDist                                           Fig. 7. Performance and memory traffic breakdown of BFS on uk-2005,
+  11              nextFrontier . append (dst)                                     normalized to Push.
+                                                                                                                                                                                 3.1
+
+
+
+
+                                                                              Speedup over Push
+
+
+
+
+                                                                                                                                            normalized to Push
+  12       curDist += 1                                                                                                                                          2.0
+                                                                                                  6
+
+
+
+
+                                                                                                                                              Memory traffic
+  13       frontier = nextFrontier                                                                                                                                                                   Updates
+  14       nextFrontier = []                                                                                                                                     1.5
+                                                                                                                                                                                                     Destination
+  15     return dists                                                                             4                                                                                                  Vertex
+                                                                                                                                                                 1.0
+                                                                                                                                                                                                     Source
+                                                                                                  2                                                                                                  Vertex
+                                                                                                                                                                 0.5
+                        Listing 2. Push-based BFS.                                                                                                                                                   Adjacency
+                                                                                                                                                                                                     Matrix
+                Frontier                    Adjacency Matrix                                      0   Push Push+ UB   UB+     PHI   PHI+
+                                                                                                                                                                 0.0    PushPush+ UB UB+ PHI PHI+
+                                                                                                           SpZip      SpZip         SpZip                                   SpZip    SpZip   SpZip
+             Range             Indir              Range
+     input            active            offsets                neighbors          Fig. 8. Performance and traffic of BFS on uk-2005 with preprocessing,
+   (frontier          vertex    Destination Vertex Data                           normalized to Push with preprocessing.
+                                                                  Indir
+    range)             ids           (Prefetch Only)
+            Fig. 6. DCL pipeline for non-all-active, Push BFS.                    SpZip benefits: Fig. 7 reports the performance (left) and mem-
+                                                                                  ory traffic (right) for different variants of the non-all-active
+   To accelerate PageRank with SpZip, the DCL encodes a pro-                      BFS, processing a large web graph on a 16-core system (see
+gram that traverses all data structures, and the core is dedicated                Sec. IV for methodology). The two leftmost bars compare a
+to the compute operations (line 6 of Listing 1). Fig. 5 shows                     software-only Push implementation and the Push implemen-
+the DCL pipeline that achieves this, divided in three regions.                    tation enhanced with SpZip. SpZip is 1.7× faster than Push.
+The blue region traverses the adjacency matrix and fetches                        However, this speedup stems almost exclusively from acceler-
+neighbor ids (dst); the green region fetches source vertex data                   ating traversals, and compression barely helps: both variants
+(contribs); and the orange region prefetches destination ver-                     incur about the same memory traffic.
+tex data (scores). In this case, destination vertex data are not                     To see why, Fig. 7 breaks down traffic by data type.2 First,
+passed to the core, because updates to scores must be done with                   scatter updates to destination vertex data dominate, con-
+atomics (as with parallel execution, multiple cores may update                    suming over 80% of traffic. Because these are accesses to single
+the same destination). This prefetching is accomplished with                      elements, SpZip does not compress them. Second, most of the
+an indirection operator (which accesses scores[dst] for each                      remaining traffic is to the adjacency matrix, for which SpZip
+dst at its input queue) that does not have an output queue. Be-                   compresses neighbor sets. However, this graph has neighbor
+cause the fetcher is colocated with the core, this prefetch leaves                ids that are highly scattered, so compression barely helps.
+data nearby (at the core’s L2 cache in our implementation).                          Overall, SpZip outperforms Push because it relieves cores
+All-active and non-all-active algorithms: Some graph algo-                        from costly traversals and misses, effectively saturating memory
+rithms, like PageRank in Listing 1, are all-active: they process                  bandwidth. To improve performance further, we must reduce
+all graph vertices on each iteration. By contrast, non-all-active                 memory traffic. To this end, we now discuss optimized exe-
+algorithms maintain a subset of active vertices, known as the                     cution strategies that improve locality and make compression
+frontier, and process only the active vertices on each iteration.                 more effective.
+   Listing 2 shows the code for a non-all-active algorithm, Push
+Breadth-First Search (BFS). BFS keeps the active source ver-                      D. Graph processing optimizations
+tices in the frontier data structure. Fig. 6 shows the DCL                        Update batching (UB) [15, 36] also known as propagation
+program for BFS, which fetches neighbor (destination vertex)                      blocking [15] or DRAM-conscious clustering [36], improves
+ids and prefetches their distances. Compared to PageRank, BFS                     the spatial locality of Push algorithms by transforming the
+has another level of indirection, shown in grey, to access the                    cache misses from scatter updates, which often dominate traffic
+frontier and fetch active vertex ids. Due to this extra indirection,              (Fig. 7), into batches of sequential memory accesses.
+BFS has non-contiguous accesses to offsets.                                          Listing 3 shows an example UB application, serial PageRank.
+Data compression can be added to DCL application pipelines                        UB splits execution into two phases, binning and accumula-
+just like we saw in Sec. II-B. In general, compression oppor-                     tion. In the binning phase, each source vertex generates updates
+tunities exist whenever the application accesses contiguous                       (contribs) for its neighbors from its vertex data. Instead of
+sequences of elements, i.e., after range fetch operators. For ex-                 directly applying these updates to destination vertices as Push
+ample, in PageRank, we could compress neighbors and offsets                       does, updates are buffered in bins (as {dst, contribs[src]}
+(or chunks of them), and in BFS, we could compress neigh-                         tuples). Each bin collects updates destined to a cache-fitting
+bors and the frontier (but not offsets, which are accessed non-                   range of destination vertices. In the accumulation phase, the al-
+contiguously). In this way, we can tailor the representation of                   gorithm applies updates bin by bin to update the vertex scores.
+each data structure to the application’s specific access patterns,                   2 This BFS is a different variant from the one in Listing 2: it builds the BFS
+maximizing the benefits of compression.                                           tree (Sec. IV), so it has source vertex data, as Fig. 7 shows.
+
+
+
+
+                                                                           1072
+
+       Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:08:17 UTC from IEEE Xplore. Restrictions apply.
+

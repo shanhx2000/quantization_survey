@@ -1,0 +1,82 @@
+                 32                                 8                                                    2n Entries                   N
+                                                                                    Adder Tree    a     a b c d e              0 3 0 2 1
+         Regular                                  VQ                                              h     f g h i j …            2 4 1 0 3 …
+                                                                                           ∑
+         GEMM Prefill                                                          C0 Result                            v                      v=32
+    32                                  32       GEMM        Decoding                             n     k l mn o               3 2 2 4 0
+          Unit                                    Unit                                            q     p q r s t              1 1 3 1 4
+                                                                                                          …                          …
+                                                                                                                              C0
+        INT8           Reconfiguration                                          Vertical Accumulation
+                                                  FP16 PE                                                 OC       FP16              WI       n-bit
+         PE
+                                                                                                          2n Entries                  N
+   FP16 FP16                      Sign Exponent         Mantissa
+             +
+
+
+
+
+                                                                                             C3 c       a b c d e              0 3 0 2 1
+    1        5        10            1        5              10
+                                                                                  Diagonal C2 g         f g h i j …            2 4 1 0 3 …
+                                                                                Accumulation C1 m       k l mn o               3 2 2 4 0   v=32
+                                                                                             C0 q       p q r s t              1 1 3 1 4
+                                                                                                          …                   C0 C1 C2 C3 …
+                      Int8 Mul   Int8 Mul        Int8 Mul   Int8 Mul           Epilogue Unit (EU)         OC
+         ⊕
+                                                                                                                                    WI
+                  +
+                    16-bit
+                   Multiplier            ∑                                 Fig. 6. Epilogue unit (EU) for conflict-free lookup in EVA, supporting vertical
+    FP16 Multiplier                                                        adder-tree reduction and diagonal accumulation across outputs (C0–C3) with
+                                                                           output-level parallelism.
+    FP16 Adder                                              Reuse
+     FP Alignment            32-bit Adder                   New            added to handle exponent and sign computation. For FP16
+                                                                           addition, an alignment unit is inserted before accumulation,
+Fig. 5. Reconfigurable GEMM unit in EVA. The mixed-precision PE array
+                                                                           and the existing INT32 accumulator is reused for the final
+supports both INT8 prefill and FP16 VQ-GEMM for LLM decoding through       summation.
+precision reconfiguration.                                                    This reconfiguration enables FP16 support with minimal
+modern LLM layers, WI is streamed into the chip to balance                 hardware modification. A conventional 32×32 INT8 array can
+throughput and buffer utilization.                                         be dynamically reconfigured into a 32×8 array for FP16 com-
+   In contrast, both the weight codebook (WC) and the output               putation during LLM decoding. This configuration perfectly
+are shared within a layer and remain stationary in on-chip                 matches the tiling parameters (v = 32, d = 8) used in the VQ-
+SRAM. The WC is read-only throughout the layer, while the                  GEMM operation, allowing the GEMM unit to achieve optimal
+output tile is progressively updated after each VQ-GEMM                    utilization and performance. The result is a unified GEMM
+iteration and finally written back to DRAM after all partial               unit capable of executing both INT8 and FP16 operations with
+sums are accumulated.                                                      high area efficiency and utilization, enabling EVA to flexibly
+   The on-chip buffers are organized into two regions: (1)                 support both prefill and LLM decoding workloads.
+one for the input and WC tensors participating in GEMM
+computation, and (2) another for the WI and output tensors,                                    V. E PILOGUE U NIT AND P IPELINE
+which are consumed and updated during the epilogue stage                   A. Epilogue Unit
+(Sec. V).
+                                                                              The epilogue unit (EU) in EVA is designed to be lightweight,
+B. Mixed-precision Processing Element                                      parallel, and highly efficient. As shown in Fig. 6, it performs
+   Although EVA is primarily designed for LLM decoding,                    two core operations: conflict-free lookup and add-only accu-
+it must also maintain compatibility with other workloads                   mulation.
+such as prefill and attention computations. For prefill and                   Basic Units. Each EU performs a fast n-bit index lookup
+attention computations, FP16 precision is often unnecessary,               followed by an add-only reduction. For each tile, v = 32
+and low-precision INT8 arithmetic is sufficient [31], [67].                weight indices (WIs) are read in parallel and used to fetch
+Therefore, the base GEMM unit in EVA adopts an INT8-                       the corresponding FP16 values from the output codebook
+based processing element (PE) design, which is widely used                 (OC). The retrieved values are accumulated using one of two
+in modern accelerators. However, LLM decoding relies on                    schemes: (1) a vertical 32-input adder-tree reduction for single-
+weight-only quantization and FP16 computation to maintain                  codebook execution, or (2) a diagonal accumulation scheme
+accuracy. Supporting both modes independently would require                that enables output-level parallel reduction across multiple
+a separate FP16 multiplier array, resulting in substantial hard-           codebooks (e.g., C0–C3). Both designs maintain conflict-free
+ware overhead.                                                             access and high utilization while avoiding multipliers in the
+   To address this challenge, EVA reuses the existing INT8                 epilogue stage.
+multiply-accumulate (MAC) array to support FP16 operations                    EU Efficiency. Although each EU contains only 32 adders,
+through lightweight reconfiguration, as illustrated in Fig. 5. An          each accumulates d = 8 dot-product results rather than
+FP16 number consists of a 1-bit sign, a 5-bit exponent, and                a single scalar. Thus, the 32 adders collectively process
+                                                                           32×d
+a 10-bit mantissa. By decomposing each FP16 multiplication                   C     = 128 weight elements and their corresponding dot
+into four INT8 multiplications, the PE reconstructs FP16                   products, equivalent to conventional VQ decoding. In contrast,
+mantissa multiplication without requiring a dedicated FP16                 traditional designs require conflict-prone memory accesses and
+multiplier. A small 6-bit adder and several XOR gates are                  costly MAC operations. By using this add-only scheme, EVA
+
+
+
+
+                                                                        1357
+

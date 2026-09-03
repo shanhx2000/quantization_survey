@@ -1,0 +1,80 @@
+B. Processing Units                                                    a local outlier-is-present signal isOtlCur = isOtlA ∨
+                                                                       isOtlW. A serial, cascaded leading-one-detector across all
+   Mokey hardware accelerator enables compute units to di-             GPEs detects the first GPE with outlier (isOtlCur = 1). The
+rectly operate on the quantized indexes using narrow fixed-            selected “leading” GPE with an outlier asserts its otlSel
+point processing elements (PEs) for the bulk of computation            signal (otlSel = 1) forcing the otlSel signals to be
+(Gaussian “G” values). Only for products where at least one of         deasserted (otlSel = 0) for all other GPEs. The one-hot-
+the operands (weight or activation) is an outlier (“OT”), Mokey        encoded otlSel is used to route the corresponding indexes
+PEs convert the values into their respective int16 centroids.          to the OPP (routing is done via per GPE AND gates and an
+This requires a simple lookup to the respective dictionary.            OR level shared across all GPEs).
+Tile architecture: Figure 6 shows the architecture of process-
+                                                                          The Outlier/Post-Processing (OPP) unit: First, when an
+ing unit of the Mokey hardware accelerator. As shown on the
+                                                                       outlier has been detected, where the isOtl signal is asserted,
+left, the accelerator comprises an array of 8 cascaded Gaussian
+                                                                       the OPP uses its G/OT-LUT to retrieve the outlier value and
+PEs (GPEs) which share an outlier/post-processing circuitry
+                                                                       performs a MAC operation. Second, in Post-processing where
+(OPP). At peak, each GPEi processes a group of compressed
+                                                                       sData will hold one of the summations (SoI, SoA1 , SoW1 ,
+activations (A0···7 ) and the corresponding group of compressed
+                                                                       and P oM1 ). A single PE will be selected iteratively using the
+weights (W0···7 ). The GPEs process the Gaussian-distributed
+                                                                       selector pePESel. The G/OT-LUT will operate as a G-LUT
+inputs only; the outliers are sent to the OPP unit for lookup
+                                                                       and produce the bases of the summations. Finally, the bases
+and accumulation. The OPP unit is activated only when an
+                                                                       from the G-LUT and the summations from the GPEs will be
+outlier is received, or by the end of the computation for post-
+                                                                       multiplied and accumulated.
+processing. At a high-level, most activation and weight pairs
+will use Gaussian values and will be processed by the GPEs             Output Activation Quantizers: Prior to storing them in
+that accumulate the partial sums described in Section II-D.            memory, the output activations (OA) of each layer are quan-
+The occasional pairs containing outliers are processed in the          tized using the prepared OT and G dictionaries. Figure 7
+OPP. Since these are rare, they are processed one at a time for        shows the organization of the quantization units. An output
+simplicity and area-efficiency. After the full tensors have been       activation OA is compared with every centroid from both
+processed, a final step uses the OPP to accumulate and scale           the G and the OT dictionaries. Since the dictionary values
+the various summations into the output 16b activation. The             are sorted, and assuming 16 values per dictionary, the output
+unit processes activations and values that have been encoded           of the comparators will be a 32b vector of 0s followed by
+in 5b (1b dictionary index, 1b sign, 3b dictionary index).             1s. A leading-one detector drives two 32-to-1 multiplexers,
+                                                                       respectively, selecting the two corresponding 16b centroids CL
+   The GPE is detailed in Figure 6 (middle). In the core of each
+                                                                       and CH: the one corresponding to the leading 1 position and
+GPE, four individually sized Counter Register-Files (CRFs)
+                                                                       the one before it or the same if the position happens to be
+accumulate the SoI, SoA1 , SoW1 , and P oM1 summations
+                                                                       the first one. To determine the nearest to the OA centroid of
+(Section II-D). The organization of the CRF units is illustrated
+                                                                       the two, OA is subtracted from each of CL and CH, and the
+in Figure 6 (right). Each line (addressed by wAddr) can
+                                                                       two differences are compared to find the smaller of the two
+be incremented or decremented using up/down, if wEn
+                                                                       identified by the signal Ci. The relative position of this centroid
+is asserted. The read address, rAddr is used to scan the
+                                                                       is then encoded as a 5b index. If written off-chip, a controller
+register-file content during post-processing using the post-
+                                                                       packs them to the format of Figure 5.
+processing address ppAddr. The multiplication output sign
+(θA θW ≡ sgnA ⊕ sgnA) is used to increment/decrement all
+CRFs. SoI is counted using a 15 × 8 CRF, and is addressed
+with A + W ≡ idxA+idxW. SoA1 is counted using a 8 × 8                  C. Using Mokey For Memory Compression Only
+CRF, and is addressed with A ≡ idxA. SoW1 is counted
+using a 8 × 8 CRF, and is addressed with W ≡ idxW. Finally,               Optionally, Mokey can be used just as a memory compres-
+P oM1 is counted using a 1 × 8 CRF (a single byte). As                 sion method where the values are transparently converted to
+the post-processing is performed only once for each layer, its         fixed-point 16b or (FP16 if desired) when written or read from
+timing is less critical. Thus, the post processing is performed        an appropriate level in the memory hierarchy. In this case,
+serially. Only one of the summations (SoI, SoA1 , SoW1 ,               when reading values, lookup tables can convert the indexes
+and P oM1 ) is selected for post processing as sData, and              into their corresponding centroids. Quantizers placed just
+is selected by the control signal sumSel.                              before the memory level pack the activation values into indexes
+   Scheduling outliers processing: Since it is exceedingly             to dictionaries. When the compression targets an on-chip
+rare but possible that more than one GPE receive an outlier            buffer, the activations are best encoded with 5b (1b dictionary
+simultaneously, the processing of outliers must be scheduled:          OT or G, 1b sign, 3b index), whereas when writing to off-chip
+the lowest index GPE that contains an outlier is selected for          memory, the Mokey off-chip memory format would improve
+processing; all other GPEs with outliers send a hold signal            space efficiency. Using the less efficient 5b representation on-
+back through the input channel (hldA, and hldW, to hold                chip avoids the overheads of creating the OT Pointer metadata
+the activations and weights, respectively). Each GPE generates         and the need for two access streams per tensor.
+
+
+
+                                                                   7
+

@@ -1,0 +1,92 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                    Akshat Ramachandran, Souvik Kundu and Tushar Krishna
+
+
+                                                                                                                                                              Iter K-1
+that it can progress in its computation and the other simultane-
+                                                                                                                                                         Iter 1
+ously contesting rows will be on hold and acknowledged in the
+                                                                                                                                                            MX-INT-4                          INT32
+next cycle. When there are N simultaneously contesting rows, the
+
+
+
+
+                                                                                                                       Tile with only inliers
+                                                                                                                                                                                  INT32
+                                                                                                                                                                                                           Convert
+                                                                                                                                                   MX-INT-4
+row that is acknowledged the last adds an N-1 cycle latency to its                                                                                                                                         to FP16
+                                                                                                                                                                                                      Convert                FP16
+                                                                                                                                                                                                                                           FP32
+processing. As we show in Figure 14(b), Figure 18(a) the num. of                                                                                                            MX-INT-4
+                                                                                                                                                                                                      to FP16         FP16
+
+conflicts in accessing ReCoN are minimal and if latency is a critical                                                                                               MX-INT-4
+
+factor multiple ReCoN units can be used to minimize conflicts.                                                                                                    Tensor Core                               CUDA Core
+                                                                                                                                                Iter 0
+ReCoN switch. It is a {2-input, 2-output} switch (Figure 7(c)) that
+
+
+
+
+                                                                             Tile with mixed inliers and outliers
+                                                                                                                                                                  Convert
+performs three major operations based on a 3-bit configuration:                                                                                                   to FP16              FP16
+    • Pass (=): Passes the input from left (right) port to left (right)                                             Inliers: MX-INT-4
+                                                                                                                    Outliers: Merged MX-FP-8
+                                                                                                                                                                                                                                    FP32
+output port.                                                                                                                                                                                                   FP16
+                                                                                                                                                                  Convert
+    • Swap (×): Directs the input from the left (right) input to the                                                                                              to FP16
+                                                                                                                       MX-INT-4                                                        FP16
+right (left) output, with the opposite output port receiving the right                                                                             CUDA Core                                          Tensor Core
+(left) port input, 0 or iAcc (see§5.6).
+    • Merge (||): This function is triggered when a switch receives          Figure 9: Illustration of W4A4 MicroScopiQ GEMM on a GPU.
+𝑂 Upper,Res and 𝑂 Lower,Res at its left and right ports, respectively. The   5.6                                                                 MicroScopiQ Walkthrough Example
+switch separates the Res from iAcc (denoted as // in Figure 4) from
+both inputs and selects the Upper result’s iAcc, since it is the correct     In this section, we discuss an end-to-end example that concretely
+iAcc for accumulation (𝑂 Lower,Res iAcc is selected during Swap).            showcases the working of MicroScopiQ. In the example shown in
+The Upper and Lower halves of outlier weight’s magnitude bits are            Figure 8, we employ a 4 × 4 systolic array (2 rows shown) with
+actually mantissa bits (< 1) of MX-FP which the PE treat as INTs.            PE row 0 having one outlier and three inliers in the 𝜇B and PE
+Therefore the Res of 𝑂 Upper,Res and 𝑂 Lower,Res are shifted 1× and          row 1 having all inlier weights. Note: Not all rows require access
+2× respectively (not shown in figure, but internally handles multi-          to ReCoN, only rows that have one or more outlier weights (row
+precision MODE) to account for the decimal position of mantissa              0) in the PE require access. We assume 𝜇B=4, inlier and outlier
+in the MX-FP format. The shifted Res are then accumulated with               quantization formats of MX-INT-2128 and MX-FP-44,4 , respectively.
+the corresponding iAcc. FP-formats also have a hidden-bit (1.0)                  1 To demonstrate that outlier partial sums processed through
+[77, 93]; to account for the contribution of the hidden bit to the           ReCoN results in accurate FP-outlier partial sum, we first show a 𝜇𝐵
+outlier partial sum we also add iAct to the accumulation above.              with one outlier and its actual FP-value after sharing of 𝜇𝑋 , and hav-
+ReCoN Output Interface. The reordered partial sums are then                  ing a value of 1.510 . If there were no outlier distribution, the actual
+routed to the subsequent row in the PE array or if the input is              partial sum from an “outlier-specific PE” for the shown iAct=3210
+from the last PE row, to the oAct buffer. Since ReCoN is pipelined           and iAcc=810 will be 5610 . However as described in §4.3, we distrib-
+internally and with the rest of the PE array, reordered and processed        ute outliers within a 𝜇B into Upper and Lower halves. Note: The
+partial sums are produced every cycle once the pipeline depth                hidden-bit is implicit and is only shown for demonstration.
+(=number of ReCoN stages) is filled.                                             2 The 𝜇B after distributing the outlier is mapped to PE row 0.
+                                                                                 3 PE row 0 computes partial sum outputs for inliers in columns
+                                                                             1 and 2, while it outputs 𝑂 Upper,Res and 𝑂 Lower,Res for the other
+5.5     Post Processing and Scale Compute Unit                               two columns that have outliers. The output of PE row 0 is routed
+The shared output scale factor for 𝐵𝑀 =128 is calculated as 𝑜𝐴𝑐𝑡𝑠 𝑓 =        through ReCoN. In ReCoN, the inliers are passed down at all stages,
+𝑂𝑠 𝑓 + 𝑖𝐴𝑐𝑡𝑠 𝑓 (See expansion of 𝑂𝑠 𝑓 in §4.2.). The calculation of          since they are already present in their respective columns.
+𝑜𝐴𝑐𝑡𝑠 𝑓 (with simple adders and subtractors) is independent of the               4 The level 1 switch at column 3, executes a swap operation
+processing done in the PE array. Therefore, we overlap the com-              and redirects the lower half outlier output towards the upper half
+putation of 𝑜𝐴𝑐𝑡𝑠 𝑓 with the processing of oActs to efficiently hide         while simultaneously sending iAcc through the other port. This
+the computation latency similar to prior works [15, 77]. Since we            iAcc corresponds to the iAcc input to column 3 PE in row 0. This is
+maintain different scales for inliers and outliers (see §4.2), and the       functionally correct because, the lower half of outlier is distributed
+oAct scale factor is calculated based on the outlier scale factor (𝑂𝑠 𝑓 )    in this column by zeroing out/pruning the inlier at that location,
+(we found this to result in least quantization error of oActs), the          hence the partial sum output of that PE to the corresponding PE
+oActs which are generated through computation with only inlier               in the next row should only be iAcc since the original weight at
+weights (identified through the in/out control signal) are shifted by        that location is zero. Similarly in level 2 of ReCoN, the switch
+the shift value depicted in the “Post Processing and Scale Compute           that receives the 𝑂 Lower,Res from level 1 again executes a swap
+Unit” in Figure 4 to ensure conformity with the final scale factor.          operation. Finally in level 3 the outlier output halves are merged
+                                                                                                    0 , while all other switches execute pass. This
+                                                                             together to realize 𝑂 𝑅𝑒𝑠
+Finally, the oActs are scaled with the computed output scale factor
+                                                                                                              0 that matches the expected output.
+                                                                             merge operation results in a 𝑂 𝑅𝑒𝑠
+through a simple right shift (since it is a power-of-two scale factor,
+division can be implemented through right shift operation) and                   5 , 6 The partial sums from ReCoN are then sent to PE row 1
+quantized to MX-INT-(4/8)128 before being sent to external memory            which then perform MAC operations and sends it to the subsequent
+or routed back to the iAct buffer for computation with the next              row since there are no outlier weights. Similarly all rows execute
+layer’s weights. Similar to prior works [77], [41] the post processing       operations until the final partial sum is calculated.
+unit is also responsible for handling all non-linear operations.
+

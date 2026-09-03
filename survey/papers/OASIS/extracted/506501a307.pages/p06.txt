@@ -1,0 +1,92 @@
+that concurrently performs WAQ LUT-GEMM computations
+                                                                                                                                                                                              
+and outlier detection. Fig. 7 shows an example of the proposed                                                                                  
+                                                                                                                                                                               
+look-ahead computation and error compensation design, which                                                                               
+
+
+
+
+                                                                                                                     
+are performed in two parallel branches: the main branch (left)                         
+
+
+
+
+                                                                                                                                                                               
+                                                                                                          
+
+and the outlier branch (right). In this M − K − N GEMM                                                   
+                                                                                                                            
+                                                                                                                                         
+                                                                                                                                                          
+                                                                                                                                                   
+
+example, M = 1, K = 6, N = 4, and nW = nA = 1. There                                 
+
+
+
+
+                                                                       
+                                                                                                                                                  
+are two activation outliers in channels 2 and 4, indicated by                                                                                
+deep green boxes.                                                                                                                       
+   1) Look-Ahead Computations: In the main branch, the en-
+tire FP16 activation vector is clustered to the nearest centroids                                                                                  
+
+
+
+
+                                                                                
+in the activation codebook CA , producing quantized activa-                                                                                                 
+                                                                                                                                                       
+tions. While the quantization error of the inliers is generally                                                                                                  
+small and does not lead to signiﬁcant accuracy degradation,                                                                                   
+
+the quantization error of the outliers is non-negligible. For                 Fig. 8. Overall architecture of the OASIS accelerator.
+instance, the activation outliers in channels 2 and 4, originally
+5.07 and −3.01, are quantized to 0.78 and 0.13, yielding             we also propose a lightweight outlier detection engine Orizuru,
+quantization errors (residuals) of 4.29 and −3.14, respectively.     which dynamically identiﬁes the top-k largest and smallest
+Our proposed look-ahead computation design allows the main           elements in each activation token with minimal overhead.
+branch to temporarily ignore the quantization errors of outliers
+and directly perform WAQ LUT-GEMM computations using                 A. Overall Architecture
+the quantized activations, while the outlier branch simultane-          Fig. 8 shows the overall architecture of the OASIS accel-
+ously computes the error compensation for the outliers.              erator, and Table II presents its hardware conﬁgurations. The
+   2) Error Compensation: In the outlier branch, the out-            OASIS accelerator is composed of 16 Processing Element
+lier detection units dynamically identify the outliers in the        (PE) Lines, a LUT, an Activation Index Buffer, an Output
+activation vector and compute their quantization errors by           Buffer, Orizuru units, Clustering Units, Functional Units, an
+subtracting the quantized activation outliers from the original      Error Calculation Unit, and a Memory Controller. Besides the
+FP16 activation outliers. We use the channel index of the            Cartesian Product results, the LUT also stores the centroid
+activation outliers to fetch the corresponding input channels        codebooks of activations and weights for the purposes of
+of quantized weights from the idxW matrix, which are then            activation clustering and weight dequantization, respectively.
+dequantized to FP16 format based on the weight codebook              The main compute unit within the PE Lines is the Concat
+CW . Then, the residuals are multiplied by the dequantized           Unit, which accepts two 4-bit indices, concatenates them, and
+weights to generate error compensation terms, which are              stores the result in an 8-bit register. The Concat Unit’s mini-
+accumulated into the look-ahead computation results using            malist design provides high area efﬁciency compared to FP16
+WAQ LUT-GEMM from the main branch. As shown in Fig. 4,               MAC units, beneﬁting both compute-intensive and memory-
+this mechanism removes the time-consuming dynamic outlier            intensive scenarios. For compute-intensive workloads such as
+detection from the critical path, enabling reduced GEMM              LLM preﬁll phase, this efﬁciency enables a higher number
+runtime and ensuring identical mathematical results.                 of Concat Units on the chip, delivering the computational
+   Note that in each cycle, the outlier detection unit sequen-       parallelism needed for high throughput. For memory-intensive
+tially outputs each pair of outlier value and their channel index.   workloads such as LLM decode phase, the lightweight Concat
+Thus, in each cycle, only one input channel of the weight index      Units consume minimal chip area, freeing up chip area for
+matrix is fetched and dequantized for error compensation.            additional I/O pins to increase bandwidth and mitigate memory
+Compared to the conventional design for dynamic outlier iden-        bottlenecks.
+tiﬁcation (Fig. 4(a)) which performs sparse FP16 GEMMs for              Within each PE Line, there are 4096 Concat Units, a
+all residuals simultaneously, this design eliminates the need for    Weight Index Buffer, 32 Index Counters, a Dequantization
+sparse representation of the outliers and signiﬁcantly reduces       Unit, a MAC Tree for reduction, and 8 MAC Units for error
+the number of multiply-accumulate (MAC) units required in            compensation. The computation ﬂow of the main and outlier
+the outlier branch.                                                  branches is illustrated with the red and black circled numbers,
+                                                                     respectively.
+                   IV. H ARDWARE D ESIGN                                For the main branch, in step 1 , the Clustering Units
+   To enable the efﬁcient execution of the computation opti-         reads the entire activation vector in the Output buffer, and
+mizations introduced in §III, in this section, we present the        clusters them to the nearest centroids based on the Activation
+supporting accelerator design of OASIS. First, we present the        Codebook. The clustered activation indices are then stored in
+overall architecture of the OASIS accelerator. Then, we de-          the Activation Index Buffer. In step 2 , the clustered activation
+scribe the micro-architecture designs of the Index Counter and       indices are fetched from the Activation Index Buffer and
+the Clustering Unit, which are the key hardware components           broadcast to all PE Lines. In step 3 , the Concat Units in each
+to support the proposed WAQ LUT-based GEMM. Moreover,                PE Line concatenate the activation indices with the weight
+
+
+                                                                 312
+

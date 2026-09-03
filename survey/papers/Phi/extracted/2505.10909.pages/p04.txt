@@ -1,0 +1,93 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                              Chiyue Wei, Bowen Duan, Cong Guo, Jingyang Zhang, Qingyue Song, Hai Li, and Yiran Chen
+
+
+ (a) Phi Calibration                                                                                                                           contrast, Level 2 captures elements not included in Level 1 and fea-
+ Oﬄine Calibration                                                                                           Pattern Weight
+  Spike Activation
+                                                     K-Means Centroids Weights                                 Products                        tures unstructured element-wise sparsity, which requires runtime
+                                                         (Patterns)                                             (PWPs)
+     1    1           1       0
+                                                                       0.3 -0.2 0.7                                                            processing.
+                                                               1       1                                          -0.5 1.3 -0.4
+                                                                                                                                                   A cornerstone of Phi sparsity is the identification of patterns
+          1   1       1             2 1                                                  0.1     0.4 -0.5
+                              1
+                                                                                                             =
+
+
+
+
+                                                                                  +
+          1   1               2                  3         1   1           1             -0.6 0.9     0.1         1.2 -0.1 0.4                 based on the similarity of activation rows. In particular, the similar-
+                                             0
+     1                1       3                                                          0.8 -0.3 0.2                                          ity between rows is inversely correlated with their length: Longer
+    1. Node conversion            2. K-Means                                   3. Oﬄine Computation                                            rows exhibit exponentially more possible configurations, reducing
+    (b) Phi Sparsity                                                                                                                           the likelihood of finding patterns that occur frequently. To address
+                                        Level 1            Pattern ID                                        Partial Output                    this, we divide the activation matrix along the 𝐾 dimension into
+                                   1     1            1            2                                             1.2    -0.1   0.4             smaller partitions of size 𝑘, identifying patterns within each parti-
+        Online                     1     1            1            2               -0.5    1.3     -0.4          1.2    -0.1   0.4             tion independently.
+    Spike Activation                                                                                                                               Our method maximizes the utilization of offline computation
+                                         1       1                 1               1.2     -0.1    0.4           -0.5   1.3    -0.4
+0     1   1               1                                                                                                                    to enhance Level 2 sparsity and minimize online computational
+                                                                   0                                             0.0    0.0    0.0
+1     1   1                                                                                                                                    overhead. The process begins with a Phi calibration stage, detailed
+                                   Vector Sparsity
+2     1   1       1
+                                                                                                                        +
+                                        Level 2
+                                                                            Weights                                                            in Sec. 3.2, where we define a set of patterns. These patterns will
+3                         1
+                                                                           0.3    -0.2    0.7                                                  be multiplied with the weight matrix offline to get Pattern-Weight
+                                                                                                                 0.0    0.0    0.0
+
+                                                      -1                   0.1    0.4     -0.5                   -0.8   0.3    -0.2
+                                                                                                                                               Products (PWPs).
+                                                                                                         =
+                                                               +
+
+
+
+
+                                   +1                                      -0.6   0.9     0.1                    0.3    -0.2   0.7
+                                                                                                                                                   Using this pattern set, we construct two levels of sparse matrices
+                                                      +1                   0.8    -0.3    0.2                    0.8    -0.3   0.2
+                                                                                                                                               for each activation tile. For each activation row, we identify the
+                                  Element Sparsity                                                                                             best-matching pattern from the set and assign it as the Level 1
+                                                                                                                                               sparse row. In straightforward cases, where a row is identical to
+                                    Figure 2: Phi Sparsity.                                                                                    a pattern (e.g., row 0 matches pattern 1), the pre-computed PWP
+                                                                                                                                               is directly used as the output row, achieving 100% Level 2 sparsity
+                                                                                                                                               with no additional computation.
+2.4.2 Hardware Challenges. Dynamic Activation Patterns. Al-                                                                                        For cases where a pattern is similar but not identical to an acti-
+though patterns can be pre-determined, activations are dynamically                                                                             vation row, we employ a bidirectional correction scheme in Level 2
+generated during inference. This dynamic nature poses fundamen-                                                                                sparsity to handle discrepancies. This scheme addresses two sce-
+tal challenges for hardware in the efficient implementation of Phi.                                                                            narios:
+Therefore, activation identification and processing must be per-                                                                                   1. One to zero mismatch: When a bit position in the activation
+formed at runtime with high throughput without impeding compu-                                                                                 is 1 but 0 in the pattern (e.g., Fig. 2(b), row 2 = 1110, pattern 1 =
+tational processing.                                                                                                                           0110), we set a 1 at the corresponding position in the Level 2 matrix
+   Structured Sparsity. Our Phi architecture is built upon sparse                                                                              as a correction term (e.g., 1000);
+computation. Level 1 vector-wise sparsity is pre-defined, and its                                                                                  2. Zero to one mismatch: When a bit position in the activation
+results are pre-computed before computation, introducing signifi-                                                                              is 0 but 1 in the pattern (e.g., row 1 = 1100, pattern 2 = 1101), we set
+cant memory access challenges for transferring these results to the                                                                            a -1 at the corresponding position to ensure correctness (e.g.000-1).
+on-chip computing array. The substantial volume of pre-computed                                                                                    The Level 2 sparsity is defined as the ratio of matching bits
+results exceeds the on-chip buffer capacity, necessitating frequent                                                                            to total bits. For instance, row 1 (1100) matching with pattern 2
+off-chip DRAM accesses and thereby increasing memory bandwidth                                                                                 (1101) has a sparsity of 75% due to 3/4 matching bits. Through the
+demands.                                                                                                                                       bidirectional correction scheme, we can assign any pattern to an
+   Unstructured Sparsity. At Level 2 element-wise sparsity, the                                                                                activation row, though the achievable Level 2 sparsity varies. To
+exceptionally high sparsity ratio introduces numerous zero ele-                                                                                optimize performance, we assign the pattern that yields the highest
+ments accompanied by irregular distributions of nonzero values.                                                                                Level 2 sparsity. If this sparsity is lower than the row’s original bit
+This extreme sparsity negatively impacts computational array uti-                                                                              sparsity (e.g., row 3 in Fig. 2(b) has an original bit sparsity of 75% but
+lization and can cause significant workload imbalance in parallel                                                                              the highest achievable Level 2 sparsity of 50%), the row’s original
+SNN processing architectures.                                                                                                                  bit sparsity is retained and used in the Level 2 sparse matrix, and
+   To address these challenges, we present Phi, an innovative algorithm-                                                                       no pattern is assigned in Level 1 sparse matrix.
+hardware co-design approach that leverages the existence of acti-                                                                                  This assignment strategy produces two complementary sparse
+vation patterns to achieve ultra-high efficiency in SNN processing.                                                                            matrices:
+                                                                                                                                                   1. The Level 1 matrix exhibits vector-wise sparsity, where each
+3 Pattern-based Hierarchical Sparsity                                                                                                          row is either a pre-defined pattern or all zeros (indicating no pattern
+                                                                                                                                               assignment). This structure enables efficient processing. We can
+3.1 Phi Sparsity definition                                                                                                                    transform each row in the Level 1 matrix into the index of the
+We introduce Phi sparsity, a hierarchical approach that leverages                                                                              pattern (0 indicates no pattern assigned), and then leverage the
+patterns in activation to optimize computation. As illustrated in                                                                              pattern index to retrieve the pre-computed PWPs as the output,
+Fig. 2, Phi sparsity decomposes the activation matrix into two levels                                                                          significantly reducing online computation.
+of sparse matrices: Level 1 comprises pre-defined patterns that
+are computed offline, yielding structured vector-wise sparsity. In
+

@@ -1,0 +1,75 @@
+RAELLA: Reforming the Arithmetic for Efficient, Low-Resolution, and Low-Loss Analog PIM: No Retraining Required!       ISCA ’23, June 17–21, 2023, Orlando, FL, USA.
+
+
+
+
+Figure 9: Speculative Computation. Speculative cycles use
+2–4 bits per input slice, with fewer ADC converts per input
+but a higher saturation chance. Recovery cycles use 1-bit in-
+                                                                                       Figure 10: The RAELLA Architecture. (1) The base unit is a
+put slices and ADCs only process columns that failed specu-
+                                                                                       crossbar. (2) Four crossbars make up an IMA. (3) Eight IMAs
+lation.
+                                                                                       make up a tile. Components are colored blue for input stor-
+                                                                                       age/processing, green for weights, and red for outputs.
+4.3     Implementing Dynamic Input Slicing
+ Dynamic Input Slicing balances high-efficiency more-bit input
+                                                                                       4.3.2 Dynamic Input Slicing System Effects. RAELLA can run with-
+slices and high-fidelity fewer-bit input slices. We would like to
+                                                                                       out speculation, processing eight recovery slices alone. With this
+minimize the input slices and thus ADC converts, while also avoid-
+                                                                                       approach, each column would require eight ADC converts for all
+ing fidelity loss due to high-resolution column sums. Unlike with
+                                                                                       eight input slices. With speculation, three ADC converts are needed
+weights, the input slicing can be changed at runtime. This allows us
+                                                                                       instead to process three 2-4b speculative input slices. Across our
+to speculate with an efficient, aggressive slicing and recover with
+                                                                                       baselines, speculation fails approximately 2% of the time, requiring
+a conservative slicing. In speculation, RAELLA uses three input
+                                                                                       2-4 recovery converts depending on which speculative slice failed.
+slices, which has high efficiency but a higher chance of creating
+                                                                                       Overall, speculation succeeds ∼ 98% of the time and reduces ADC
+large, high-resolution column sums. In recovery, RAELLA uses the
+                                                                                       converts by ∼ 60% over a recovery-only approach. An average of
+most conservative eight 1b input slices.
+                                                                                       three speculative converts + 0.3 recovery converts are required to
+   The procedure for speculation and recovery is shown in Fig. 9.
+                                                                                       process each column.
+First, a 4b high-order slice is speculatively fed to the crossbar, and
+                                                                                          While RAELLA saves ADC converts with speculation, it trades
+column sums are converted by ADCs. If a column sum is too large,
+                                                                                       off throughput and crossbar energy. RAELLA’s crossbars require
+it will saturate at the ADC bounds of [−64, 64). If an ADC output
+                                                                                       eleven cycles to run all three speculation + eight recovery slices.
+equals either of these bounds, an error is detected and marked as
+                                                                                       Alternatively, a no-speculation approach could run only the eight
+a speculation failure. Next, after all columns are processed, the 4b
+                                                                                       recovery slices, increasing throughput but also increasing the num-
+input slice is resliced into 1b slices and processed again over four
+                                                                                       ber of ADC converts required.
+recovery cycles. To save energy in recovery, ADCs are power-gated
+for columns that speculated successfully. In the rare event that an
+ADC saturates in recovery, we accept fidelity loss and propagate                       5     RAELLA ARCHITECTURE AND PIPELINE
+the saturated value. After the four recovery slices are processed, the                 The high-level RAELLA architecture is shown in Fig. 10. RAELLA’s
+process repeats for the following speculation and recovery cycles.                     organization mostly follows that of ISAAC [54]. We describe the
+                                                                                       RAELLA architecture from the bottom up, show RAELLA’s dataflow,
+                                                                                       then describe how RAELLA reduces analog nonidealities.
+4.3.1 Dynamic Input Slicing In Hardware. Given a 4b DAC, analog
+input slices can take one of 24 − 1 analog levels. For an N-bit input                  5.1      Crossbar
+slice, we can use the lowest 2𝑁 −1 levels. Given a 3b input slice XXX,                 Crossbars consist of 512 × 512 2T2Rs. Each crossbar is programmed
+this corresponds to converting 0XXX. As this is only a restriction of                  with weights from one DNN layer, and each weight filter uses 2-8
+the available range, it does not require changing the DAC hardware.                    crossbar columns based on the DNN layer slicing (Section 4.1).
+   To track successful/failed speculations, RAELLA stores specula-                         To process inputs, we use 4b pulse-train DACs for their simple
+tion success flags in a buffer for each crossbar. In recovery, ADCs                    hardware [32] and superior linearity [55]. Pulse-train DACs encode
+only convert column sums that failed speculation.                                      an N-bit input slice with a number of pulses up to 2𝑁 − 1. The
+   The entire ReRAM crossbar is one unit, so all columns speculate                     DAC consists of a simple row driver to apply input pulses, a 1b
+and recover together. As it is highly likely that at least one col-                    flip-flop to store the current input bit, and an AND gate acting as
+umn will fail speculation, crossbars always run recovery. Therefore,                   an enable signal [32]. To output a 4b value, the most significant bit
+RAELLA’s speculation saves energy at the cost of speed (unlike the                     is first loaded into the flip-flop and a global clock generates eight
+common use of speculation for speed, e.g., CPU branch prediction).                     1ns pulses. The DAC outputs the AND’ed value of the clock and its
+   Speculation also increases crossbar energy, as all columns and                      stored value, equal to eight pulses if the bit is on and zero otherwise.
+ReRAMs run both speculation and recovery cycles. Recovery cycles                       Subsequent bits are loaded sequentially and run for four, two, and
+consume less energy than speculation cycles, as ReRAM devices use                      one pulse(s), respectively.
+less energy with smaller input values [29] and ADCs only process                           DACs activate the 2T2R access transistors and each 2T2R device
+a small fraction of columns in recovery cycles.                                        computes a sliced product that it adds or subtracts from the column
+

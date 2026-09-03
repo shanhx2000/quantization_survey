@@ -1,0 +1,75 @@
+computation patterns arising from their distinct bit semantics.            the least-significant bits, leaving most of the multiplier unused
+For integer addition, two’s-complement integers x, y satisfy               and resulting in low DSP bit utilization. However, as shown in
+               x + y = (x ⊕ y) ⊕ carry(x, y),                              Section III-A, all MAC datatypes ultimately reduce to integer
+                                                                           mantissa multiplication after appropriate operand mapping.
+which maps directly to the FPGA’s ripple-carry chain. A wint -             This enables multiple low-precision lanes to be packed into
+bit integer adder therefore exhibits linear resource cost:                 disjoint bit regions of the DSP inputs, thereby exploiting the
+                    Cint (wint ) ≈ αint wint ,               (7)           full multiplier width [8], [14], [24].
+where αint denotes the LUT cost per bit imposed by the carry-                 To perform this packing, the mapping stage assigns each
+chain fabric.                                                              mantissa or integer magnitude to a non-overlapping bit range:
+   For floating-point addition, given x = sx 2ex mx and y =
+                                                                                           X                            X
+                                                                                 ADSP =       (ai ≪ si ),       BDSP =      (bj ≪ tj ), (9)
+sy 2ey my , define the exponent gap                                                        i                            j
+
+                        ∆e = ex − ey .                                     where si and tj are per-lane shift offsets selected to avoid
+                                                                           cross-lane interference. These offsets depend on the datatype
+Assuming ex ≥ ey , the smaller mantissa must be right-shifted
+                                                                           combination (INT, FP, or INT×FP), but the DSP always
+by an arbitrary distance determined at runtime:
+                                                                           receives well-formed integer operands regardless of precision.
+                 ms = mx ± my · 2−∆e .
+                                         
+                                                                              Once packed, the DSP performs one wide multiplication,
+The resulting mantissa must then be normalized using LZC:                  and all lane products appear at predetermined bit positions:
+                                                                                                   X
+∆ = LZC(ms ),         mout = (ms ≪ ∆),            eout = ex − ∆.                           PDSP =     (ai bj ) ≪ (si + tj ).         (10)
+                                                                                                    i,j
+   Because ∆e may take any value in the exponent range,
+the alignment step must support a variable-distance right shift            In the post-compute stage, each lane product is extracted using
+across the full mantissa width wfp ; similarly, normalization              a fixed shift-and-mask operation:
+requires a variable-distance left shift. Implementing such shifts                     Pi,j = (PDSP ≫ (si + tj )) & (2S − 1),           (11)
+on FPGA requires a logarithmic barrel shifter. A classical
+                                                                           where S is the bit stride allocated per lane. Let Wlane denote
+barrel shifter for an wfp -bit mantissa contains log2 wfp stages
+                                                                           the maximum bit-width of any supported product |ai · bj |. To
+of wfp multiplexers [32], giving
+                                                                           guarantee no overlap, the stride must satisfy
+                    NMUX = wfp log2 wfp ,
+                                                                                                   S ≥ Wlane + G,
+and the LUT cost scales superlinearly:
+                                                                           where G is a small guard margin (typically one bit) used to
+               Cshifter (wfp ) ≈ βsh wfp log2 wfp ,          (8)           absorb carries.
+where βsh denotes the LUT cost per multiplexer stage.                         By incorporating lane packing into the mapping stage and
+Prior work confirms that these alignment and normalization                 integrating product extraction into the post-compute stage,
+shifters dominate the LUT footprint of FPGA floating-point                 the unified multiplication datapath of Section III-A naturally
+adders [12], [25].                                                         extends to support parallel mixed-precision MACs. As a result,
+   Thus, these characteristics highlight the inherently datatype-          multiple INT, FP, or INT×FP operations can be executed in
+specific nature of accumulation. Integer addition typically                parallel within a single DSP slice by sharing the same datapath
+requires a wide bit width wint (for example, 32 bits for                   across different datatypes.
+INT4/INT8 accumulation [26], [28]) but avoids expensive                       The parallelism of shared DSP multiplier is constrained by
+shifting by relying on efficient carry-chain logic. Floating-              DSP input widths. For a given datatype, once its per-lane stride
+point addition operates on narrower mantissas wfp (for exam-               S is determined, the maximum achievable parallelism is
+                                                                                                                       
+ple, 10-bit for FP16, 7-bit for BF16) but incurs substantial cost                                              LA      LB
+due to alignment and normalization shifters. Consequently, a                           Parallelism ≤ min             ,         ,       (12)
+                                                                                                                S       S
+unified INT–FP adder would force integer additions to traverse             where LA = 27 and LB = 18 are the DSP48E2 input widths.
+the same alignment and normalization shifters as floating-point            Importantly, different datatypes (e.g., INT4×BF16, FP8×FP8,
+additions, even though integer addition fundamentally requires             INT8×INT8) have different operand precisions and thus cor-
+no shifting. This wastes shifter area, which must be sized                 respond to different stride values S. Once the stride for a
+for the wider integer width wint , making it significantly less            datatype is fixed, the achievable parallelism for that datatype
+resource-efficient than maintaining separate adder paths.                  follows directly from Eq. (12) and depends solely on LA , LB .
+C. Parallel Mixed-Precision MACs on a Single DSP Slice                        In summary, by reducing all numerical formats to products
+  In FPGA implementation, a DSP slice computes a single                    and packing these lanes into the DSP inputs at bit-precise
+wide integer multiplication                                                offsets, XtraMAC enables a single DSP multiplier to be shared
+                                                                           across integer, floating-point, and mixed-precision MACs. The
+                     PDSP = ADSP · BDSP ,                                  polynomial structure of packed multiplication in Eq. (10)
+where ADSP and BDSP are bit vectors on the two input ports.                preserves strict lane isolation, while per-lane normalization
+Conventional fixed-precision designs place each operand in                 and exponent reconstruction restore correct floating point and
+
+
+
+
+                                                                    2540
+

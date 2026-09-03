@@ -1,0 +1,56 @@
+                                                                           Fig. 10: SingularBit Compression Engine for online token-
+Fig. 9: Data mapping on the SingularBit Tensor Core for rank-              wise and rank-wise KV-cache compression.
+aware mixed-precision execution.
+                                                                           precision, the core scheduler assigns the next rank to the first
+B. SingularBit Tensor Core                                                 available core, improving load balance.
+                                                                             For the VT computation, we use temporal mixed precision,
+   Figure 8 shows the SingularBit Tensor Core architec-
+                                                                           where precision varies across ranks along the reduction di-
+ture, which supports rank-aware mixed-precision computation
+                                                                           mension within each core. Each core processes output chunks
+within a unified datapath. Unlike conventional cores, which
+                                                                           sequentially while accumulating partial sums across rank-
+often require separate datapaths or incur reconfiguration over-
+                                                                           wise precision transitions. Since all cores follow the same
+head to support multiple precisions [49], [50], our design
+                                                                           precision sequence over the reduction dimension, they finish
+processes 1–4 bit weights through the same hardware path
+                                                                           synchronously, eliminating the need for dynamic scheduling.
+by exploiting the precision hierarchy of SVD-decomposed
+matrices.                                                                  C. SingularBit Compression Engine
+   Our tensor core builds on lookup table (LUT)-based com-                    Figure 10 shows the SingularBit Compression Engine,
+putation paradigm for low-bit LLM inference [51]–[53] and                  which performs attention-aware online KV cache compression.
+adds dual-level accumulation for group quantization and rank-              It dynamically assigns token-wise precision based on attention
+aware mixed precision. The activation loader precomputes                   importance and progressively reduces rank-wise precision us-
+FP16 partial sums over four input channels and broadcasts                  ing singular-value-based rank boundaries.
+them to each PE row. To reduce the number of LUT entries,                     The precision allocator receives attention scores from the
+it generates only eight entries: the 0th channel is used to                global GeMV unit, which computes QKT , and the global
+encode the sign, while all possible magnitude combinations are             SIMD unit, which applies softmax. The maximum-tracking
+precomputed for the 1st–3rd channels. During computation,                  logic performs head-wise max pooling, normalizes the scores
+the 1st–3rd weight bits select the corresponding partial sum               to [0, 1], and maintains a recent-k attention window with
+through a multiplexer, and the 0th bit determines whether the              k = 128. It then computes each key token’s importance
+selected value is negated.                                                 score as the maximum attention value across recent query
+   The SingularBit-W compute FSM provides the current                      positions. The precision selector maps these scores to token-
+bit position to both the activation and weight loaders. The                wise precision levels using predefined thresholds, which are
+activation loader applies this bit offset to the exponent of               added to a base precision to determine each token’s max-
+the FP16 partial sums, enabling bit-serial computation, while              imum bitwidth. Adjusting the base precision controls the
+the weight loader broadcasts the corresponding weight bits to              compression-accuracy trade-off.
+the PE columns. To support group quantization, the weight                     The KV quantizer receives K’ and V’, intermediate key
+loader also delivers group scale factors to the PEs in sync                and value representations obtained by multiplying the input
+with group boundaries. The intra-group accumulator performs                activations only with the U matrices of the K and V projection
+FP16 accumulation within each quantization group, while the                weights. Using the token-wise maximum bitwidth and rank
+inter-group accumulator applies group-specific scale factors               metadata, the FP16-to-INTx quantizer progressively reduces
+and aggregates the group outputs.                                          precision across rank boundaries. Given the token-wise maxi-
+   Figure 9 illustrates how SVD-decomposed matrices are                    mum bitwidth from the precision allocator and rank metadata
+mapped to exploit precision heterogeneity. For the U compu-                indicating the corresponding rank positions, the FP16-to-
+tation, we use spatial mixed precision, where precision varies             INTx quantizer reduces precision progressively across rank
+across ranks assigned to different cores. Each core processes              boundaries, starting from each token’s maximum bitwidth.
+an entire rank at the precision determined by its singular value,          The mixed-precision compressor then packs the quantized
+while multiple cores execute ranks with different precisions               values into a compact format without bit-level padding. The
+in parallel. Since bit-serial latency depends on the assigned              quantized KV router performs bit-level packing in the KV
+
+
+
+
+                                                                    1008
+

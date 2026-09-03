@@ -1,0 +1,59 @@
+    X1          Y1 = X 2        Y2    Gist data structures        Pool-Conv layer combinations if the preceding ReLU layer
+          L1               L2           E = Encode(X2)
+                                                                  has high sparsity. SSDC encoding is applicable to both layer
+    dX1        dY1 = dX2        dY2     D = Decode(E)
+                                                                  combinations.
+ Baseline:        dX1 = f(Y1, X1, dY1), dX2 = f(X2, Y2, dY2)         However, switching to sparse computation on GPUs
+     Gist:      dX1 = f(D, X1, dY1), dX2 = f(D, Y2, dY2)          shows performance improvements only when the sparsity
+   Layer pairs    Encode function       Decode function           is very high (> 97.5%), which is typically not the case
+ReLU - Pool      FP32 to 1-bit       Work on encoded data         in CNNs [49], [23]. To tackle this problem, we present
+ReLU/Pool - Conv FP32 to CSR-like    CSR-like to FP32
+Others           FP32 to FP8/10/16 FP8/10/16 to FP32              Sparse Storage and Dense Compute (SSDC) encoding, that
+                                                                  isolates computation and storage, facilitating storage of data
+                  Figure 6: Gist encodings
+                                                                  in sparse format and computation in dense (FP32) format.
+                                                                  SSDC stores the data in a sparse format for the majority of
+need ReLU outputs.                                                its lifetime, and converts the data back into dense format
+   CNNs typically use MaxPool layer to subsample the              only before it is actually required for computation. This
+input matrix. MaxPool’s forward pass slides a window of           achieves significant memory footprint reduction, while re-
+a specific size over the input matrix X, finds the maximum        taining the performance benefits of highly optimized cuDNN
+value in this window, and passes it on to the output Y. For the   library.
+backward pass, it passes on dY to that location of dX in the         For choosing a suitable sparse format, we compare 3
+window, from where the maximum value of X was chosen              commonly used formats - ELL, Hybrid and Compressed
+in the forward pass. In baseline CNTK implementation, the         Sparse Row (CSR). We observe that CSR achieves lowest
+MaxPool layer stashes both input and output feature maps          format-conversion latency among these options, achieving
+for the backward pass to find the location of maximum             the best compression-performance overhead tradeoff. This
+values. We instead, create a mapping from Y to X in the           format stores all the non-zero values, along with a meta array
+forward pass that keeps track of these locations (Y T oXmap       that holds the column indices of the non-zero values in each
+in Figure 4 (b)). We use this mapping in the MaxPool              row. (There is an extra meta array which is very small in
+backward pass calculation, removing the dependence on its         size, and, thus omitted for the rest of the discussion). Most
+input and output stashed feature maps.                            DNN frameworks store data structures in an n-dimensional
+   With this optimization, Binarize encoding lets us achieve      matrix, which can always be collapsed into two dimensions.
+a significant reduction in memory footprint for ReLU-Pool         We take these 2D matrices and convert them into a CSR
+layer combination. Binarize adds two encoded feature maps.        format.
+First, a 1-bit data structure that replaces the ReLU feature         We use Nvidia cuSPARSE library to perform the encod-
+map, storing information whether the stashed feature map          ings/decodings, listed in Figure 6. However, the original
+value was positive. Second, for Pool layer, Binarize stores       implementation stores each index as a 4-byte value, resulting
+a Y to X mapping of the location of maximum values.               in no improvement with compression if the sparsity is below
+This data structure has as many elements as the Pool              50%. This is due to cuSPARSE conservative assumption
+output (typically, one-fourth or one-ninth of preceding ReLU      that the number of elements in a row of the matrix can be
+output), where each element is stored in 4 bits (the largest      high, allotting 4 bytes for every column index. We perform
+sliding window in our application suite is 3 × 3). Therefore,     Narrow Value Optimization, where we reshape the 2D matrix
+these encoded data structures result in a compression of          and restrict the number of columns to 256, requiring only
+close to 16× (32× for ReLU output and 8× for MaxPool              1 byte per column index [36]. This reduces the minimal
+output) for ReLU-Pool stashed feature maps.                       sparsity requirement for compression to be effective from
+   Tying back to Figure 6, both encode and decode func-           50% to 20%, resulting in both wider applicability and higher
+tions are implemented within ReLU and pool layers using           compression ratios.
+CUDA. Pool and ReLU backward pass have been updated               Lossy Encoding - Delayed Precision Reduction. Gist’s
+to perform computation on the encoded data structures             third encoding uses precision reduction to exploit CNN
+itself. We observe small performance improvements with            error tolerance to reduce the memory footprint of remaining
+Binarize encoding, because Binarize encoding significantly        stashed feature maps. Similar to SSDC encoding, we isolate
+increases effective memory bandwidth for ReLU layers,             the storage from the computation. The computation still
+improving memory-bandwidth bound ReLU backward pass               happens in FP32 format while the data is stored with
+computation.                                                      lower precision for most of its lifetime. Though backward
+Lossless Encoding - Sparse Storage and Dense Compute.             pass implementation can be modified to work directly on
+As discussed in Section II, other set of ReLU layers – ReLU-      precision-reduced values, we convert back to FP32 because
+Conv, exhibits high amount of sparsity induced by ReLU            cuDNN is closed-source library. Nevertheless, we discuss
+calculations, making it suitable to store these feature maps      the impact of such optimization on compression ratio in
+in sparse format. We also observe high sparsity for a few         Section V-H.
+

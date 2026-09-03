@@ -1,0 +1,72 @@
+                                                                                                      bits. First, when carefully examining the backward pass
+Feature Map Breakdown
+
+
+                                     Relu−>Pool            Relu/Pool−>Conv       Others
+                        100%
+                                                                                                      computation of ReLU layer, we observe that ReLU outputs
+                        80%
+                                                                                                      for ReLU-Pool combination can be stored in just 1-bit.
+                        60%
+                                                                                                      Second, we observe that ReLU outputs typically have high
+                        40%
+                                                                                                      sparsity that can be exploited to encode the feature map
+                        20%
+                                                                                                      in much smaller sparse format. Next, we expand on these
+                         0%
+                               AlexNet (256)   NiN (256)   Overfeat (256) VGG16 (64) Inception (64)   opportunities.
+                                                                                                      ReLU-Pool. Typically, in a backward pass calculation, a
+Figure 3: Breakdown of memory within stashed feature                                                  layer uses its stashed input feature map (X), stashed output
+maps. ReLU layer consumes a major portion of the footprint.                                           feature map (Y) and output gradient map (dY) to calculate
+                                                                                                      input gradient map (dX), as shown in Figure 4(a). However,
+pass; the forward use still gets the data in FP32 format, but
+                                                                                                      every layer does not require all this data for the backward
+the memory space is relinquished as soon as the forward
+                                                                                                      pass. Upon further investigation, we discover that although
+use is complete. This results in an efficient memory sharing
+                                                                                                      feature maps are stashed with the same precision across layer
+strategy (Section IV-C), reducing total memory footprint.
+                                                                                                      types, it is mostly for convenience, not out of computation
+             Target data structures                Footprint Reduction Technique            Type
+            ReLU-Pool feature map                              Binarize                    Lossless
+                                                                                                      necessity. We show backward pass calculation for ReLU
+            ReLU-Conv feature map                 Sparse Storage and Dense Compute         Lossless   in Figure 4(b). It only requires Y and dY to calculate
+            Other feature map                        Delayed Precision Reduction            Lossy     dX. Moreover, an element of dY is passed to dX, only
+            Immediately consumed                         Inplace computation               Lossless
+                                                                                                      if the corresponding element in Y is positive, else dX is
+            Table I: Summary of Gist techniques                                                       set to 0. With this observation in mind, it is natural to
+   Our second key insight is that taking layer types and                                              consider replacing Y with 1-bit values. Unfortunately, it is
+interactions into account opens up opportunities for design-                                          not always possible, because the next layer might require
+ing highly aggressive encoding schemes, which were earlier                                            its stashed input feature map X (ReLU output in this case)
+hidden due to the layer agnostic nature of prior work. In this                                        for the backward pass calculation. However, upon further
+section, we first identify such opportunities that let us design                                      examination, we observe that in the case of ReLU-Pool, the
+two lossless and one lossy encodings specifically targeted                                            pool backward pass does not require the actual values of
+to reduce memory footprint of stashed feature maps. Next,                                             ReLU output as shown in Figure 4(c) (described in more
+we observe that inplace computations can reduce the size of                                           details in Section IV-A), resulting in significant encoding
+immediately consumed data structures. Table I shows a brief                                           opportunities. This observation becomes the basis of our first
+outline of our techniques and their target data structures.                                           lossless encoding, called Binarize.
+                                                                                                      ReLU-Conv. Binarize is not applicable to ReLU-Conv pair,
+A. Opportunities For Lossless Encodings                                                               because convolution requires its stashed input feature map
+   Among feature maps, we first target ReLU activation                                                for the backward pass calculation (as shown in Figure 4(d)).
+functions which are heavily used in all major CNNs targeted                                           However, upon careful data analysis, we observe that ReLU
+for vision-related tasks [22], [48], [13], [31]. In these CNNs,                                       outputs have high sparsity (large number of zeroes) induced
+the convolution layers are typically followed by ReLU acti-                                           by the ReLU calculations in the forward pass. For example,
+vations. This group of a Conv-ReLU pair is either followed                                            for VGG16, we observe high sparsity, going even over
+by the same group or by a pool layer, resulting in many                                               80%, for all the ReLU outputs, motivating us to apply
+ReLU-Conv and ReLU-Pool layer pairs. Consequently, we                                                 sparse compression and computation for these feature maps.
+observe that ReLU feature maps form a major fraction of                                               However, switching both compute and memory to sparse
+total memory footprint.                                                                               domain results in significant performance degradation [49],
+   This is shown in Figure 3 which zooms in on the stashed                                            [23]. Building on this observation, we present Sparse Storage
+feature maps (in Figure 1) and analyze their breakdown                                                and Dense Compute (SSDC) encoding that stores the data
+across different CNN layers, with an emphasis on three                                                in Compressed Sparse Row (CSR) encoding format while
+different categories: (i) ReLU outputs followed by a Pool                                             keeping the computation in dense format.
+layer (ReLU-Pool), (ii) ReLU/Pool outputs followed by a
+conv layer (ReLU-Conv), and (iii) remaining stashed feature                                           B. Opportunities For Lossy Encodings
+maps (Others). We observe that significant portion of mem-                                                For lossy encoding, we investigate precision reduction as
+ory footprint is attributed to ReLU outputs (Pool outputs                                             it is amenable to GPU architecture compared to prior offline
+have very low contribution). For example, VGG16 has 40%                                               approaches like quantization and Huffman encoding [18].
+and 49% of the stashed feature maps for ReLU-Pool and                                                 We make two observations that let us achieve aggressive bit
+ReLU-Conv respectively (89% total used for ReLU outputs).                                             savings without any loss in accuracy.
+   We make two key observations for these ReLU outputs                                                Non-Uniform Precision Reduction. We observe that uni-
+that let us store the stashed feature map with much fewer                                             form precision reduction to even 16 bits (IEEE half precision
+

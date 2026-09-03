@@ -1,0 +1,2994 @@
+arXiv:2505.06901v1 [cs.AR] 11 May 2025
+
+Ecco: Improving Memory Bandwidth and Capacity for LLMs via
+Entropy-aware Cache Compression
+Feng Cheng
+
+Cong Guo∗
+
+Chiyue Wei
+
+Duke University
+Durham, USA
+feng.cheng@duke.edu
+
+Duke University
+Durham, USA
+cong.guo@duke.edu
+
+Duke University
+Durham, USA
+chiyue.wei@duke.edu
+
+Junyao Zhang
+
+Changchun Zhou
+
+Edward Hanson
+
+Duke University
+Durham, USA
+jz420@duke.edu
+
+Duke University
+Durham, USA
+changchun.zhou@duke.edu
+
+Advanced Micro Devices, Inc.
+Santa Clara, USA
+edward.hanson@amd.com
+
+Jiaqi Zhang
+
+Xiaoxiao Liu
+
+Hai “Helen” Li
+
+Advanced Micro Devices, Inc.
+Santa Clara, USA
+jiaqi.zhang@amd.com
+
+Advanced Micro Devices, Inc.
+Santa Clara, USA
+xiaoxiao.liu@amd.com
+
+Duke University
+Durham, USA
+hai.li@duke.edu
+
+Yiran Chen
+Duke University
+Durham, USA
+yiran.chen@duke.edu
+
+Abstract
+Large language models (LLMs) have demonstrated transformative
+capabilities across diverse artificial intelligence applications, yet
+their deployment is hindered by substantial memory and computational demands, especially in resource-constrained environments.
+Quantization techniques have emerged as a critical solution, reducing data precision to enhance memory and computational efficiency. However, existing methods often suffer from high runtime
+overheads and potential accuracy degradation. To address these
+challenges, we propose Ecco, an entropy-based cache compression
+technique tailored for LLMs. Ecco combines group-wise and nonuniform quantization with pre-defined shared k-means patterns
+and Huffman coding to exploit the inherent entropy characteristics
+of LLM cache data. Recognizing the inefficiencies of traditional
+Huffman coding in terms of parallelism and latency, we introduce a
+novel parallel Huffman-based decoding process with a multi-stage
+pipeline design, reducing latency by two orders of magnitude and
+achieving throughput comparable to GPU L2 caches. Comprehensive evaluations demonstrate that Ecco achieves an up to 2.9× and
+1.9× speedup over the state-of-the-art AWQ and SmoothQuant
+framework, 2.4× over the Olive accelerator, all while increasing
+memory capacity by nearly 4× and maintaining state-of-the-art
+LLM accuracy. These results underscore the effectiveness of our
+∗ Cong Guo is the corresponding author of this paper.
+
+This work is licensed under a Creative Commons Attribution-NonCommercial 4.0
+International License.
+ISCA ’25, Tokyo, Japan
+© 2025 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-1261-6/2025/06
+https://doi.org/10.1145/3695053.3731024
+
+entropy-based cache compression in enhancing LLM performance
+and efficiency, paving the way for more deployable large-scale AI
+models.
+
+CCS Concepts
+• Computer systems organization → Processors and memory
+architectures; • Information systems → Data compression.
+
+Keywords
+Cache Compression, Entropy Coding, GPUs, Information Entropy,
+Large Language Models, Memory Systems
+ACM Reference Format:
+Feng Cheng, Cong Guo, Chiyue Wei, Junyao Zhang, Changchun Zhou,
+Edward Hanson, Jiaqi Zhang, Xiaoxiao Liu, Hai “Helen” Li, and Yiran
+Chen. 2025. Ecco: Improving Memory Bandwidth and Capacity for LLMs
+via Entropy-aware Cache Compression. In Proceedings of the 52nd Annual International Symposium on Computer Architecture (ISCA ’25), June
+21–25, 2025, Tokyo, Japan. ACM, New York, NY, USA, 15 pages. https:
+//doi.org/10.1145/3695053.3731024
+
+1
+
+Introduction
+
+Large language models (LLMs) [5, 55, 62] have revolutionized artificial intelligence by demonstrating remarkable capabilities across
+diverse tasks, including natural language understanding [46], generation [15], complex reasoning [29], and problem-solving [69].
+These advancements have made LLMs indispensable in modern AI
+applications. However, as LLMs scale, they introduce substantial
+memory and computational overheads that challenge their deployment efficiency, particularly in resource-constrained environments
+[35, 60].
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+Cheng, et al.
+
+Streaming Multiprocessors
+
+Compressor
+2x/4x
+
+Uncompressed Data
+
+Parallel
+Decompressor
+Decompressor
+Decompressor
+2x/4x
+2x/4x
+2x/4x
+Compressed Data
+
+HBM
+
+L2 Cache
+
+Shared
+Memory
+L1 Data
+Cache
+
+Register File
+
+CUDA
+Core
+
+Tensor
+Core
+
+(SMs)
+Streaming Multiprocessors
+(SMs)
+
+Proposed HW
+
+GPU HW
+
+Figure 1: Ecco Overview: A high-throughput parallel compressor and decompressor are integrated with the L2 cache to
+address memory bandwidth and capacity constraints in LLMs.
+Data is compressed prior to transmission to high-bandwidth
+memory (HBM) and decompressed upon retrieval for use by
+streaming multiprocessors (SMs).
+
+LLMs typically operate in two distinct phases during inference:
+prefill and decode [5, 55, 62]. The memory-bound nature of LLMs
+is most pronounced due to these mechanisms [70]. Firstly, the autoregressive property requires the model to maintain and update
+a substantial amount of intermediate state information, the keyvalue (KV) cache, for each generated token. This results in extensive
+memory capacity demands, accounting for up to 72.7% (34.4 GB)
+of total memory usage (47.3 GB) in an LLaMA-7B model with a 2K
+sequence length and a batch size of 32 [70]. Secondly, the decoderonly architecture employs per-token inference with small-batch
+general matrix multiplication (GEMM) operations, leading to serious memory-bound and computational underutilization, thereby
+creating a new memory wall in the era of LLMs [39]. This memoryintensive behavior is exacerbated as model sizes continue to grow,
+with state-of-the-art (SOTA) LLMs often containing billions of parameters [55, 62]. Consequently, the performance of these models is
+frequently constrained by memory bandwidth and capacity rather
+than computational power, making memory management and optimization critical factors in enhancing LLM inference efficiency.
+Model compression [10, 17, 19, 22, 27, 37, 42, 72] has emerged as
+a promising solution to address these memory challenges in LLMs.
+Beyond reducing model size, compression techniques can significantly accelerate LLM inference by alleviating memory bandwidth
+constraints. Quantization [32], a key compression technique, has
+been particularly effective in this domain [18, 27, 42, 43]. Recent
+SOTA studies, such as AWQ [42], have achieved up to a 2-3× reduction in memory footprint, resulting in a 1.5× speedup in inference
+time, even with the original FP16 computation. This direct correlation between memory efficiency and computational performance
+has sparked unprecedented research interest in memory compression, driven by the pressing need to make LLMs more deployable
+across diverse hardware platforms.
+However, existing compression methods for LLMs [27, 42, 43]
+face significant challenges in achieving optimal performance. The
+first notable issue is the high overhead associated with compression processes at runtime. Model compression requires frequent
+processing during inference, potentially negating the speed gains
+it offers. Moreover, aggressive compression techniques that significantly reduce model size may inadvertently compromise the
+accuracy of LLMs. Balancing memory efficiency, computational
+
+speedup, and model fidelity presents a formidable obstacle in developing effective compression methods for LLMs. Consequently,
+innovative approaches are urgently needed to address these challenges and bridge the gap between theoretical compression benefits
+and practical performance improvements.
+Fortunately, these challenges can be tackled from a new computer architecture perspective by leveraging cache-level compression, as illustrated in Figure 1. Cache compression [2, 33, 57] offers
+a promising approach to unlock the latent performance potential
+of LLMs and has been widely adopted by commercial accelerators [1, 7]. For instance, the A100 GPU incorporates a novel cache
+compression mechanism [7] using a lossless compression method.
+This approach offers several distinct advantages over traditional
+model compression techniques. Firstly, cache compression typically
+incurs low overhead, as it operates at the cache level rather than being embedded into the model architecture or computation kernels.
+Secondly, leveraging cache compression allows for the design of
+more effective compression methods supported by hardware with
+minimal impact on model performance. This is crucial for maintaining the high quality of LLM outputs while efficiently addressing
+memory constraints.
+In this study, we propose an innovative Entropy-based Cache
+Compression technique, termed Ecco, tailored for LLMs. As shown
+in Figure 1, our approach introduces a novel compression method
+that combines group-wise and non-uniform quantization, utilizing
+pre-defined shared k-means [44] patterns along with the Huffman
+coding [30] scheme. This hybrid technique effectively extracts and
+exploits the entropy characteristics inherent in LLM cache data.
+However, these methods present significant challenges for efficient
+implementation due to their irregular nature. For example, Huffman
+coding is a variable-length compression method, which limits its
+parallelism and efficiency [24, 25, 30].
+To overcome these challenges and enhance the throughput of
+our compression method, we propose a novel parallel Huffmanbased decoding process with a multi-stage pipeline design. This
+approach reduces latency by two orders of magnitude compared to
+traditional sequential Huffman encoding methods [30] and achieves
+throughput comparable to the L2 cache in GPUs [7]. Additionally,
+we present an encoder design that efficiently matches the decoder’s
+capabilities while ensuring practical implementation feasibility. Our
+method seamlessly integrates with traditional cache architectures,
+leveraging existing structures while introducing minimal overhead.
+Notably, our system supports runtime encoding and decoding, enabling dynamic compression and decompression of cache data as
+needed.
+This adaptive approach allows us to achieve both high bandwidth utilization and substantially increased memory capacity. Our
+comprehensive evaluation demonstrates significant improvements,
+with our method achieving a speedup of up to 2.9× over the SOTA
+quantization framework AWQ [42] and 2.4× over the quantization
+accelerator Olive [21], along with a memory capacity enlargement
+of nearly 4×, while maintaining SOTA LLM accuracy. These results
+underscore the effectiveness of our entropy-based cache compression in enhancing LLM performance and efficiency.
+We make the following contributions in this paper.
+• We introduce a novel compression paradigm, Ecco, that combines group-wise and non-uniform quantization with Huffman
+
+Ecco: Improving Memory Bandwidth and Capacity for LLMs via Entropy-aware Cache Compression
+
+coding to exploit entropy characteristics in LLM cache data,
+significantly enhancing memory efficiency.
+• We design a parallel Huffman-based decoding process with a
+multi-stage pipeline, reducing latency by two orders of magnitude and achieving throughput comparable to GPU L2 caches,
+thereby overcoming the limitations of traditional Huffman coding.
+• We develop an efficient encoder that complements our decoder
+design, enabling seamless integration with existing cache architectures and supporting runtime encoding and decoding for
+dynamic cache data management.
+• Through comprehensive evaluations, we demonstrate that Ecco
+achieves up to 2.9× speedup over AWQ framework and 2.4×
+over the Olive accelerator while increasing memory capacity by
+nearly 4× and maintaining SOTA LLM accuracy.
+
+2 Background and Motivation
+2.1 LLM Inference
+Large language models (LLMs) have revolutionized natural language processing tasks by adopting the Transformer architecture
+[64]. The Transformer consists of two primary components: the
+multi-head attention mechanism and the feed-forward network
+(FFN). The multi-head attention can be formulated as:
+MultiHead(𝑋 ) = Concat(head1, . . . , headℎ )𝑊 𝑂 ,
+
+(1)
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+applying efficient compression methods, we can decrease memory
+bandwidth requirements and improve inference speed.
+Takeaway 1: Compression mitigates bandwidth and capacity requirements in LLM decoding.
+
+2.2
+
+Compression and Information Entropy
+
+Quantization [20, 23, 25, 28, 42, 43] is a fundamental technique in
+model compression that reduces the precision of neural network
+weights by mapping continuous values to discrete levels. This process can be mathematically described as:
+𝑤
+
+𝑤˜ = Quantize(𝑤, 𝑆, 𝑍 ) = 𝑆 · 𝑄
++𝑍 ,
+(4)
+𝑆
+where 𝑤 represents the original weights, 𝑤˜ are the quantized weights,
+𝑆 is the scaling factor, 𝑍 is the zero point, and 𝑄 (·) denotes the
+quantization function. The granularity at which quantization is
+applied significantly impacts both the compression ratio and the
+model’s performance. Quantization can be performed at various
+levels, such as tensor-level, channel-level, or group-level. As illustrated in Figure 2, finer-grained quantization—from tensor to
+channel to group—results in a greater number of unique quantized
+values within each group. This increased diversity of quantized values implies that the quantization codes are utilized more efficiently,
+capturing more information and leading to less information loss.
+To quantify the effectiveness of different quantization approaches,
+we employ the concept of information entropy 𝐻 , defined as:
+
+where each head is computed as:
+𝑄
+
+head𝑖 = Attention(𝑋𝑊𝑖 , 𝑋𝑊𝑖𝐾 , 𝑋𝑊𝑖𝑉 ),
+
+(2)
+
+𝐻 =−
+
+𝑛
+∑︁
+
+𝑝𝑖 log2 𝑝𝑖 ,
+
+(5)
+
+𝑖=1
+
+and the attention function is defined as:
+!
+𝑄𝐾 ⊤
+Attention(𝑄, 𝐾, 𝑉 ) = softmax √︁
+𝑉.
+𝑑𝑘
+𝑄
+
+(3)
+
+Here, 𝑋 is the input, 𝑊𝑖 , 𝑊𝑖𝐾 , and 𝑊𝑖𝑉 are the weight matrices for
+the 𝑖-th head’s query, key, and value projections, respectively, 𝑊 𝑂
+is the output projection matrix, and 𝑑𝑘 is the dimensionality of the
+keys. The FFN layer consists of several projection layers, including an up-projection, a gating mechanism, and a down-projection,
+which apply transformations to the input. The major operations
+in both attention and FFN can be classified into two types: general
+matrix multiplications (GEMMs) and batched GEMMs.
+During inference, LLMs generate text through two main phases:
+prefill and decode. The prefill phase processes the initial input
+sequence, while the decode phase generates output tokens autoregressively, one token at a time, conditioning on all previously
+generated tokens. LLM decoding is memory-bound because the
+batch size is usually small [41, 56, 70] for GEMM operations, limiting computational resource utilization. Additionally, the batched
+GEMMs degrade to batched general matrix-vector multiplications
+(GEMVs) due to the auto-regressive nature of decoding. In this case,
+the matrix dimension 𝑀 is always 1, leading to low arithmetic intensity. As the context length increases during decoding, the KV cache
+grows linearly, imposing extensive memory capacity demands and
+intensifying the memory bottleneck. Given that LLM decoding is
+memory-bound, compression techniques can effectively alleviate
+memory constraints by reducing the size of the model weights and
+the KV cache without substantially impacting performance. By
+
+where 𝑝𝑖 is the probability of the 𝑖-th quantized value occurring and
+𝑛 is the total number of unique quantized values. A higher entropy
+indicates a richer representation of information in the quantized
+data, which often correlates with improved model performance.
+However, finer-grained quantization schemes introduce additional
+metadata overhead, such as an increased number of scaling factors
+and quantization parameters. This extra information can offset the
+benefits gained from the higher entropy of the quantized weights.
+To account for this trade-off, we define a metric called bit efficiency 𝜂, which normalizes the information entropy by the actual
+bit overhead incurred:
+𝐻
+𝜂=
+,
+(6)
+𝐵 real
+where 𝐵 real represents the real bit overhead, including both the
+quantized data and the associated metadata.
+Improving bit efficiency can be approached in two ways: by increasing the entropy 𝐻 or by reducing the real bit overhead 𝐵 real .
+Compression techniques like Huffman coding aim to minimize bit
+overhead by assigning shorter codes to more frequent quantized values, theoretically achieving the lowest possible bit usage. However,
+in practical hardware implementations, the savings from Huffman
+coding may not be fully realized due to constraints like data alignment requirements. To mitigate this inefficiency, we can pad the
+bitstream with additional data, such as metadata and outliers, effectively increasing the entropy without incurring significant extra
+cost. As shown in Figure 2, our proposed method achieves higher
+entropy and lower bit overhead compared to existing group-based
+quantization techniques like AWQ [42]. By optimizing the balance
+
+20
+18
+16
+14
+12
+10
+8
+6
+4
+2
+00
+
+Cheng, et al.
+
+Tensor-wise Quantization
+Average Entropy=0.09
+Real Bit Overhead=4.00
+
+Channel-wise Quantization
+Average Entropy=1.58
+Real Bit Overhead=4.01
+
+Group-wise Quantization
+
+Entropy-based Compression
+
+100
+
+Bit Efficiency=78.54%
+
+80
+
+Bit Efficiency=64.23%
+
+Bit Efficiency (%)
+
+Unique Values Count
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+60
+
+Bit Efficiency=39.40%
+
+200
+
+Bit Efficiency=2.25%
+Group Index
+400
+
+600
+
+Average Entropy=2.73
+Real Bit Overhead=4.25
+800
+
+1000 0
+
+200
+
+400
+
+600
+
+Group Index
+
+800
+
+1000 0
+
+200
+
+400
+
+600
+
+Group Index
+
+800
+
+40
+
+Average Entropy=3.15
+Real Bit Overhead=4.01
+1000 0
+
+200
+
+400
+
+600
+
+Group Index
+
+800
+
+20
+1000
+
+0
+
+Figure 2: Unique value counts and bit efficiency across different compression methods.
+between information content and storage efficiency, our approach
+enhances bit efficiency, leading to better model performance without a proportional increase in storage requirements.
+Takeaway 2: The primary goal of compression is to increase bit
+efficiency; enhancing information entropy improves model performance, while reducing real bit overhead decreases storage needs.
+
+Takeaway 3: Complex compression schemes can improve model
+accuracy but may introduce significant runtime compression and
+decompression overhead; thus, the efficiency of compressors and
+decompressors is critical for achieving actual speedups.
+
+2.3
+
+Cache compression has been a significant area of research in computer architecture, aiming to reduce memory bandwidth and capacity requirements without incurring substantial performance penalties. Early representative works, such as Base-Delta-Immediate
+(BDI) compression [57], achieve compression by representing data
+as a base value plus small deltas. This method effectively compresses
+cache lines where data values are similar, reducing redundancy and
+saving space. More recent studies, like Buddy Compression [8],
+explore innovative approaches to memory compression. Buddy
+Compression splits each compressed memory entry between highspeed GPU memory and a slower but larger disaggregated memory
+pool or host CPU memory. Highly compressible memory entries are
+accessed entirely from GPU memory, while incompressible entries
+source some of their data from off-GPU memory. This design balances performance and capacity by leveraging the compressibility
+of memory entries.
+However, these general-purpose lossless compression schemes
+typically offer only low compression ratios and are not well-suited
+for LLM scenarios. LLMs require high compression ratios to manage the substantial memory demands of the KV cache and model
+weights. Lossless methods may not provide sufficient compression
+to alleviate the memory bottleneck in LLM inference. Some studies
+have attempted to address activation compression using imagebased techniques. For example, JPEG-ACT [11] treats activation
+maps as images and employs a modified JPEG [66] algorithm to
+compress them. While effective in certain contexts, such methods
+are not suitable for cache line compression due to their block-based
+nature and computational complexity, which can introduce significant overhead and latency.
+Given the specific needs of LLMs, high compression ratios and
+lossy compression schemes are acceptable, provided they maintain
+acceptable levels of model accuracy. Cache compression equipped
+with customized, high-throughput compressors and decompressors can flexibly perform compression and decompression on the
+fly, introducing minimal computational overhead. By integrating
+these compressors into the memory hierarchy, we can minimize
+extra memory transactions and reduce latency. Furthermore, this
+approach can transform irregular data loads—where data and metadata such as scaling factors are separated—into regular, consecutive
+data block loads. Regularizing memory access patterns enhances
+
+Runtime De-/compression Overhead
+
+To achieve superior model performance in compressed neural networks, complex compression schemes are often adopted to increase information entropy. One such method is Quarot [3], which
+achieves state-of-the-art accuracy in compressed LLM models by
+employing advanced quantization techniques. By rotating the model
+and suppressing outliers, Quarot maximizes the utilization of quantization codes, thereby enhancing information entropy while preserving model accuracy. During runtime, as depicted in Figure 3-b,
+Quarot’s decoding process involves decompressing the weights,
+activations, and KV cache, as well as compressing the KV cache
+using compute-intensive Hadamard transformations and scaling
+factors. These steps introduce significant computational and memory overhead due to the element-wise multiplications and the need
+to load additional scaling factors and other metadata from memory.
+(a)
+
+FP16
+
+(b)
+
+RMSNorm
+Up Proj
+
+SF
+
+Gate Proj SF
+SiLu
+
+X
+Hadamard
+Down Proj SF
+
+Extra Computation
+& Mem access
+Extra Computation
+
+FP16
+
+Figure 3: (a) Latency comparison between FP16 and Quarot;
+(b) Overhead incurred in Quarot’s FFN.
+As illustrated in Figure 3-a, when testing on a 4-bit compressed
+LLaMA2-7B model with an input sequence length of 1024 and 512
+decoding steps, the decoding process is approximately 0.6× slower
+than the original FP16 model. The runtime compression and decompression overhead outweigh the saved memory bandwidth and
+even shift the bottleneck from memory to compute resources. While
+methods like Quarot effectively reduce the storage capacity required
+for model weights, they do not necessarily yield inference speedups.
+The added compute and memory transaction overhead can result
+in slower performance, negating the benefits of reduced memory
+bandwidth and introducing new computational constraints.
+
+2.4
+
+Cache Compression
+
+Ecco: Improving Memory Bandwidth and Capacity for LLMs via Entropy-aware Cache Compression
+
+performance by improving cache utilization and reducing access
+latency.
+Takeaway 4: Specialized cache compression techniques with efficient, customized compressors and decompressors are crucial for
+LLMs to achieve high compression ratios with minimal overhead,
+effectively mitigating memory bandwidth and capacity bottlenecks.
+
+3 Entropy-aware Cache Compression
+3.1 Compression Target
+In our methodology for cache compression, we prioritize the preservation of memory bandwidth and efficient utilization of memory
+size. To achieve these goals, we implement a fixed compressed block
+size and power-of-two compression ratios.
+Target Compressed Block Size. The selection of an appropriate
+compressed block size is critical and must balance several factors.
+We establish that the compressed block size should exceed 32 bytes,
+which corresponds to one sector, as this is the minimum memory
+transaction unit. Compressing to sizes smaller than this threshold could lead to significant decompression overhead or a decline
+in model performance due to an excess of group-level information at this scale. Conversely, we determine that the compressed
+block size should not exceed 128 bytes, which is equivalent to one
+cache line. Larger granularities may reduce memory load flexibility,
+and expansive compressed block sizes encompass more data per
+block, potentially obscuring important group-level data features
+and consequently degrading model performance. Considering that
+the default transaction size from DRAM to L2 cache is 64 bytes
+[47], we opt for a compressed block size of 64 bytes. This choice is
+optimal for minimizing hardware overhead and maximizing bandwidth usage while storing an appropriate amount of compressed
+data in each block. This size strikes a balance between efficient
+compression and effective data representation, facilitating seamless
+integration with existing GPU cache hierarchies.
+Target Compression Ratio. We further refine our cache compression strategy by setting target compression ratios as powers of
+two as it facilitates easier alignment and more efficient hardware
+implementation. Typically, compression ratios of 2× or 4× represent an optimal balance between effective data compression and
+preservation of model performance. For weights and KV cache, we
+target a 4× compression ratio, resulting in an average of 4 bits per
+data point with 128 data points per group. This aggressive compression exploits the static nature of weights during inference, allowing
+for thorough offline analysis and optimization of the quantization
+process. For KV cache, this ratio leverages its reduced sensitivity
+to small errors in key and value representations. Conversely, for
+activations, we employ a more conservative 2× compression ratio,
+averaging 8 bits per data point with 64 data points per group. This
+approach accounts for the dynamic range of activations during
+inference. These tailored power-of-two ratios optimize memory
+efficiency and model fidelity across different LLM components by
+considering their unique characteristics and sensitivities, significantly increasing cache capacity for weights and KV cache while
+maintaining computational accuracy for activations.
+
+3.2
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+Model Compression
+
+Compression Requirements. The cache compression target outlined in the previous section necessitates that all group-wise information be compressed to a fixed compressed block size.
+This requirement is crucial for maintaining efficient memory transactions and avoiding additional computational overhead during
+decompression, which occurs on the critical data path of data loading. To meet these requirements, our compression scheme adheres
+to several key principles:
+• All group-wise data, including quantized values and associated
+metadata (e.g., outliers and scale factors), must be stored within
+the target compression granularity. This approach eliminates the
+need for extra memory transactions during decompression.
+• Shared metadata is utilized across multiple compressed blocks,
+typically at the tensor or channel level, to maximize efficiency.
+• Decompression is designed to occur on-the-fly, with all data in
+the compressed block processed simultaneously. This strategy
+precludes the need for additional compute kernels and maintains
+computational efficiency.
+Carefully balancing these constraints is essential to avoid complicated memory load patterns and substantial compute overhead,
+which would otherwise undermine the overall compression objective.
+Weight Compression. Existing uniform quantization approaches,
+such as AWQ [42], typically employ a group size of 128 and store
+an FP16 scale factor and an FP16 zero point, resulting in 32 bits of
+overhead. Storing these within the compressed block necessitates
+the eviction of quantized data, which is problematic for low-bit
+quantization scenarios. For instance, in 4-bit quantization AWQ, 8
+original data points (32 bits overhead / 4-bit) per group of 128 would
+be eliminated, leading to a 6.25% reduction in weights. This significant loss of information can severely impact model performance.
+Non-uniform k-means quantization is generally considered to offer
+superior performance compared to uniform quantization. Current
+methods like SqueezeLLM [37] utilize per-channel group sizes and
+per-tensor outliers, as the overhead of storing k-means centroids
+per group is substantial. Extracting global outliers helps preserve
+large values and improves k-means fitting. However, this approach
+typically requires implementation in two parts: a dense kernel for
+normal values and a sparse kernel for outliers. This dense-andsparse approach incurs additional computational overhead, resulting in lower throughput and higher latency. Furthermore, storing
+outliers within the compressed block is challenging, as each outlier
+requires both location and value information. This leads to further
+data eviction, and the variable number of outliers per block can
+often exceed the storage capacity of a compressed block.
+We propose a novel compression method that combines groupwise non-uniform quantization using predefined shared k-means
+patterns with clipped/padded Huffman coding. This approach aims
+to merge the strengths of integer-based uniform and k-means-based
+non-uniform methods while avoiding extra memory transactions or
+separate compute operations. The compression process is illustrated
+in Figure 4. The process begins in Step 1 by partitioning the tensor
+into 𝑀𝑁
+128 groups, each containing 128 data elements. In Step 2 , the
+data in each group undergoes a two-level normalization process.
+First, the absolute maximum value within each group is identified
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+1
+
+Reshape
+
+128
+
+128
+
+M
+
+…
+
+…
+
+Cheng, et al.
+
+…
+
+128
+
+0.82 -1.6
+
+…
+
+0.56
+
+5
+
+1.2
+
+…
+
+-0.2
+
+MN/128
+
+-0.5
+
+…
+
+0.86
+
+-0.7
+
+…
+
+0.72 MN/128
+
+0.75
+
+…
+
+Quantization
+
+8
+
+12
+
+15
+
+…
+
+8
+
+15
+
+13
+
+…
+
+0
+
+…
+
+512b
+
+Huffman
+coding
+
+00 01
+
+011 1111
+
+MN/128
+
+9
+
+… 101
+
+…
+
+…
+
+101
+
+Padding
+&
+clipping
+
+MN/128
+
+512b
+00 01
+
+… 101
+
+011 1111
+
+…
+
+…
+
+MN/128
+
+N
+Normalization
+
+2
+
+6
+
+gsf1
+
+0.51 -1.0
+
+…
+
+0.35
+
+gsf2
+
+1.0
+
+…
+
+-0.2
+
+…
+
+0.63
+
+…
+
+MN/128
+
+128
+
+…
+
+15
+3
+
+K-means
+
+-0.6
+4
+
+K-means
+
+…
+
+…
+
+S << MN/128
+0
+
+1
+
+2
+
+00
+
+3
+
+… 1111
+
+…
+
+10
+0
+
+1
+
+2
+
+FP8
+
+K-means Pattern #1
+
+0.79
+
+15
+Quantization
+codebook
+7
+
+FP16
+
+Statistical
+Frequency
+
+3
+
+Get Huffman codebook based on Statistical Frequency
+(Higher frequency -> Shorter bits)
+
+S*H << MN/128
+1101
+
+16
+
+K-means Pattern #2
+Huffman Codebook
+Padded Outliers
+Mapping
+gsf: Group Scale factor
+
+Figure 4: Overview of Ecco compression algorithm.
+and normalized using a per-tensor FP16-to-FP8 scale factor, with
+the resulting normalized FP8 value serving as the group scale factor.
+Subsequently, the values in each group are normalized to the range
+(−1, 1) using this FP8 scale factor. In Step 3 , excluding the absolute maximum value, activation-aware k-means clustering with 15
+clusters is performed on the remaining 127 values in each group.
+The sorted centroids obtained from this process are stored, forming
+a structure referred to as the k-means pattern. Moving to Step 4 , a
+second k-means clustering with 𝑆 clusters is applied to the k-means
+patterns across all groups, producing 𝑆 shared k-means patterns,
+where 𝑆 ≪ 𝑀𝑁
+128 . Afterwards, in Step 5 , quantization is performed.
+The data in each group is rounded to the nearest value within each
+shared k-means pattern, and the pattern minimizing the output
+mean squared error (MSE) is selected. The index of the selected
+shared k-means pattern, along with the indices of the centroids to
+which the data is rounded, are recorded. Notably, the scale factor
+(i.e., the absolute maximum value in each group) is assigned index
+15. With 15 centroids per k-means pattern, there are 15 indices for
+the group’s data and a unique index for the scale factor, resulting in
+a total of 16 unique indices per group. This method offers several
+advantages over previous approaches like AWQ and SqueezeLLM.
+It retains only a scale factor per group and shared k-means patterns
+per tensor, eliminating the need for a zero point at the group level
+compared to AWQ. It also maintains far fewer k-means patterns
+than SqueezeLLM while preserving superior performance.
+To further optimize our compression scheme, we employ clipped
+and padded Huffman coding to compress all information within
+each group. We observed that the index distribution within each
+group after quantization is highly imbalanced, with certain indices
+being selected significantly more frequently than others. Interestingly, even among groups that utilize the same shared k-means
+pattern for quantization, the index distribution varies considerably
+between groups. To address this variability and enhance compression efficiency, we introduce 𝐻 Huffman codebooks, each containing 16 codes corresponding to the unique indices per group after
+quantization. This method incurs minimal overhead, requiring an
+additional 𝑙𝑜𝑔2 𝐻 bits to record the specific Huffman codebook used
+for compressing each group. The derivation of these Huffman codebooks follows a two-step process, as illustrated in Steps 6 and 7 .
+First, for each shared k-means pattern, we apply k-means clustering
+
+with 𝐻 clusters to the frequency distributions of indices obtained after quantization. This clustering yields 𝐻 representative frequency
+distributions, which are then converted into 𝐻 Huffman codebooks.
+Finally, as depicted in Step 8 , each quantized group selects the
+Huffman codebook that provides the optimal compression ratio,
+ensuring efficient encoding of the group data. After compression,
+each group consists of four components: a fixed-length scale factor,
+a fixed-length Huffman codebook choice, a variable-length shared
+k-means pattern index, and variable-length Huffman-coded quantized data, as shown in Figure 6a. To ensure that the compressed
+data fits within the designated block size, we employ a clipping
+and padding strategy, as depicted in Step 9 . If the compressed data
+exceeds the block size, we simply clip the excess. Conversely, if
+the data is smaller than the block size, we pad the values from the
+second largest absolute value (largest absolute value is stored as
+scale factor) to smallest until the block is filled. Each padded value
+occupies 15 bits, with 7 bits for location information and 8 bits for
+the FP8 value, quantized using the same per-tensor FP16-to-FP8
+scale factor.
+To optimize our compression methodology, we conducted a comprehensive design space exploration using the LLAMA2-7B model
+as our benchmark. This exploration aimed to determine the optimal values for two key parameters: the number of shared k-means
+patterns (𝑆) and the number of Huffman codebooks per k-means
+pattern (𝐻 ).
+Figure 5 illustrates the results of our design space exploration,
+showing the impact of varying 𝑆 and 𝐻 on model perplexity. The
+exploration reveals several key insights: first, increasing 𝑆 generally improves perplexity, with diminishing returns beyond 𝑆 = 64.
+Second, the impact of 𝐻 is less pronounced, with minimal improvements beyond 𝐻 = 4 for most 𝑆 values. Based on these observations,
+we chose 𝑆 = 64 and 𝐻 = 4 as our optimal configuration. This selection balances performance improvement with implementation
+efficiency. 𝑆 = 64 provides substantial perplexity reduction compared to lower values, while avoiding the increased complexity
+and potential overfitting risk of larger 𝑆 values. 𝐻 = 4 offers a
+good trade-off between compression efficiency and codebook storage overhead, as higher 𝐻 values show minimal additional benefit.
+Furthermore, this configuration (𝑆 = 64, 𝐻 = 4) achieves perplexity better than the AWQ baseline, indicating that our method can
+
+Ecco: Improving Memory Bandwidth and Capacity for LLMs via Entropy-aware Cache Compression
+
+S=2
+S=4
+
+Perplexity on Wikitext
+
+5.68
+
+S=8
+S = 16
+
+S = 32
+S = 64
+
+S = 128
+S = 256
+
+5.66
+5.64
+5.62
+AWQ
+
+5.60
+5.58
+5.56
+1
+
+2
+
+4
+
+8
+
+16
+
+32
+
+64
+
+128
+
+Number of Huffman Codebooks (H)
+
+256
+
+Figure 5: Design space exploration showing the impact of
+shared k-means patterns numbers (𝑆) and Huffman codebooks numbers(𝐻 ) on LLaMA2-7B perplexity.
+outperform state-of-the-art performance while offering the additional benefits of our compression scheme. This choice allows us
+to maintain high model quality while enabling efficient hardware
+implementation and reduced memory footprint.
+KV Cache Compression. The compression of KV Cache follows
+a similar methodology to weight compression, with some key adaptations to accommodate its dynamic nature. We utilize the same
+calibration dataset employed in weight compression, capturing each
+layer’s KV cache by forwarding this dataset through the model. The
+offline steps ( 1 2 3 4 6 7 ) in KV cache compression are identical to those used for weight compression. However, the final steps
+( 8 9 ) are transitioned to an online execution phase. A notable
+difference arises in the selection of the shared k-means pattern
+( 5 ). Unlike weight compression, which is static and allows for
+offline optimization, KV Cache compression must be performed online during runtime. This real-time requirement presents a unique
+challenge, as computing mean squared error (MSE) to find the optimal pattern for each group would incur prohibitive computational
+overhead in circuit implementation. The naive approach of rounding values using all 𝑆 shared k-means patterns, calculating MSE
+for each, and selecting the minimum would be extremely costly.
+For instance, processing a single group would require 𝐺 binary
+searches, 𝐺 subtractions, multiplications, and additions for each of
+the S patterns, where 𝐺 is the number of elements in each group.
+Implementing this would either increase latency by a factor of
+𝑆 or necessitate 𝑆-fold hardware duplication, both of which are
+impractical solutions.
+
+⇤1b~15b⇥
+
+⇤2b⇥
+
+⇤ 8b ⇥
+
+⇤
+
+ID_KP
+
+ID_HF
+
+Scale
+Factor
+
+Huffman Coded Data
+(Each Data: 2b~8b)
+
+⇥
+
+256b~501b
+
+⇤
+
+⇥
+
+0b~240b
+
+Padded Outliers
+(Each Outlier: 7b addr, 8b value)
+
+(a) Compressed block of Weight and KV Cache: Compression ratio 4x
+⇤
+
+8b
+
+⇥ ⇤
+
+Data #0
+
+8b
+
+⇥ ⇤
+
+Data #1
+
+8b
+
+⇥ ⇤
+
+Data #2
+
+8b
+
+⇥
+
+Data #3
+
+⇤
+…
+
+8b
+
+⇥ ⇤
+
+Data #62
+
+8b
+
+⇥
+
+Data #63
+
+(b) Compressed block of Activation: Compression ratio 2x
+
+Figure 6: Compressed block format of weight, KV cache, and
+activations.
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+Our analysis revealed that the k-means patterns are highly skewed
+due to the scaling of each group’s k-means using the absolute maximum value (absmax), which is treated as a separate centroid and
+excluded from the k-means pattern. To visualize this phenomenon,
+we plotted 16 shared k-means patterns in Figure 7. This characteristic provides an opportunity for optimization. We propose a
+simplified method that compares only the minimum and maximum
+values of each group (excluding the absmax) with the maximum
+and minimum of each k-means pattern. This approach dramatically
+reduces hardware complexity from 𝐺 comparisons to just 2, offering significantly improved flexibility in implementation. While this
+approach may slightly reduce compression efficiency compared to
+Huffman coding, it provides more predictable compression ratios
+and greater adaptability to changing pattern distributions during
+inference. Experimental results demonstrate that this simplified
+method incurs only a minimal drop in perplexity, representing
+an excellent trade-off between hardware realization complexity
+and model performance. This approach allows for efficient online
+compression of KV Cache without significant compromise to the
+model’s accuracy or computational efficiency. Our adapted KV
+Cache compression strategy achieves hardware-efficient online
+compression with minimal performance drop compared to MSEbased methods. In addition, by sharing the same structure as weight
+compression, it enables unified decompression implementation for
+both weights and KV cache.
+KP1
+KP2
+KP3
+KP4
+KP5
+KP6
+KP7
+KP8
+KP9
+KP10
+KP11
+KP12
+KP13
+KP14
+KP15
+KP16
+
+1.00
+
+0.75
+
+0.50
+
+0.25 0.00
+
+0.25
+
+0.50
+
+Kmeans Centroid Values
+
+0.75
+
+1.00
+
+Figure 7: Highly skewed shared k-means patterns. Each row
+represents a k-means pattern, each point represents a centroid value.
+Activation Compression. Activation compression requires a different approach due to the more dynamic nature of activation
+ranges. We target an average of 8 bits per activation value to accommodate this variability. Given that activations are typically
+consumed by the subsequent kernel immediately after the current
+kernel completes, we prioritize a simple compression scheme for
+efficiency. Our method employs integer-based uniform quantization
+with a zero point. The final format of a compressed block is shown
+in Figure 6-b. To ensure all metadata, including the scale factor and
+zero point, fit within the compressed block, we allocate 7 bits for
+the compressed data width. The remaining bit every 8 bits is used
+to store a 16-bit zero point and a 16-bit scale factor.
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+4 Ecco Architecture
+4.1 Overview
+Ecco is designed to enhance memory system performance through
+advanced compression techniques, with a specific focus on GPU
+architectures. Figure 1 illustrates the structural components of our
+approach, highlighting the seamless integration of compression
+and decompression mechanisms within the memory hierarchy. To
+optimize data transfer and storage efficiency, we have implemented
+a sophisticated compression system capable of operating at ratios
+of 2× and 4×. This system comprises two key components: highthroughput low-latency parallel decompressor and compressor. The
+decompressor is strategically placed between the L1 data cache and
+the L2 cache, ensuring that compressed data retrieved from higher
+memory levels is effectively decompressed before being utilized
+by the streaming multiprocessors (SMs). Conversely, the compressor is positioned between the L2 cache and the high bandwidth
+memory (HBM), in close proximity to the L2 cache. This arrangement follows the same high-level architecture employed in modern
+NVIDIA GPUs [47, 49, 52, 53], such as Compute Data Compression
+[48], making it extremely easy to integrate our compressor and
+decompressor into existing GPU architectures. By performing compression and decompression on-the-fly, the system significantly
+reduces memory bandwidth demands and optimizes both DRAM
+and L2 cache capacity utilization.
+The use of Ecco incorporates both software and hardware control. Users must explicitly declare compression related properties
+in CUmemAllocationProp, including whether the allocated memory is compressed and the compression ratio, prior to memory
+allocation. To support this system, the page table and translation
+lookaside buffers (TLBs) are augmented with additional bits: one bit
+indicates whether a page is compressed, and another bit identifies
+the compression ratio. This modification incurs no extra overhead
+as NVIDIA GPUs have unused bits in page table entries (PTEs). All
+explicitly declared compressible memory allocations in HBM are
+stored in a compressed format. When loading, data is fetched in
+its compressed form from HBM to the L2 cache; the L2 memory
+controller then directs the block to the decompressor, which decompresses the data before serving it to the SMs. Conversely, when
+writing, uncompressed data is temporarily stored in its original
+format. Once all the uncompressed data required to build a compressed block is available, the L2 controller immediately directs it
+to the compressor, which then converts the data into compressed
+blocks. By implementing this compression strategy, Ecco aims to
+address the critical challenges of data movement and storage during
+LLM inference in modern GPU architectures, leading to substantial
+improvements in overall system performance and energy efficiency.
+
+4.2
+
+Decompressor Design
+
+High Compression Ratio (4×) Decompressor. The decompression process for our high compression ratio (4×) scheme involves
+several key steps, optimized for low-latency and high-throughput
+parallel processing. The details of the decompressor is depicted in
+Figure 8. Initially, prior to a compressed load operation, all tensorwise metadata—including shared k-means patterns, Huffman codebooks, and FP16-to-FP8 scale factor is loaded into the decompression module’s buffer. This preloaded information is only loaded
+
+Cheng, et al.
+
+once and used for the subsequent decompression of the loaded compressed block. The decompression of a block begins with feeding
+the per-group scale factor, Huffman-coded shared k-means pattern
+choice (𝐼𝐷_𝐾𝑃), and Huffman codebook choice (𝐼𝐷_𝐻 𝐹 ) into the
+pattern retriever, as illustrated in 1 . The corresponding k-means
+pattern and Huffman codebook used by the group are retrieved and
+the per-group FP8 scale factor is converted back to FP16 by adjusting the exponent, leveraging the constraint that the FP16-to-FP8
+scale factor is a power-of-two.
+In the next phase, the chosen k-means pattern is multiplied by
+the scale factor to obtain the actual values of the k-means centroids
+used for group quantization. Simultaneously, the Huffman-coded
+data undergoes decoding. To address the inherent sequential nature
+of Huffman decoding while maintaining efficiency, we propose a
+novel parallel Huffman decoder. This design incorporates 64 Huffman decoders operating in parallel on overlapping sections of the
+sequence, as shown in 2 . By limiting the code length to 2-8 bits, we
+enable efficient decoding. Each decoder processes 8 bits of its group
+ensuring decoding of at least one and at most four data points per
+group (𝐷_𝐷𝑎𝑡𝑎), plus a 7-bit overlap with the subsequent segment,
+ensuring the last data is correctly decoded and knowing the correct position of where the next segment should start (𝐸𝑂𝑃). The
+decoders each contain 8 sub-decoders, processing the same 15-bit
+data chunk but starting at different positions (0 to 7), converting
+Huffman codes to indices, as illustrated in 2 . These sub-decoders
+operate independently in parallel until reaching the boundary of
+their segment’s responsibility. In this case, each decoder outputs all
+eight possible decoding results (𝐷_𝑂𝑢𝑡) corresponding to its segment, ensuring comprehensive coverage of all potential decoding
+paths.
+The result aggregation process follows, where the data concatenator in 3 merges the outputs of every two neighboring decoders
+over six stages in a tree-like manner. To merge the results from two
+neighboring decoders, each 𝐷_𝑂𝑢𝑡 in the left decoder’s output uses
+its 𝐸𝑂𝑃 indicator to determine which 𝐷_𝑂𝑢𝑡 from the right decoder
+should be combined with it. Once the appropriate pairing is identified, the selected data from both decoders are concatenated and
+written to the next stage. After completing six stages of merging,
+only a single result remains, representing the decoding sequence
+starting from a specific position. Besides that, the concatenator also
+generates a mask to indicate the number of outliers padded. In the
+final step, the decoded sequence, along with the padded outliers, is
+mapped to the actual centroids corresponding to each index. The
+outliers are first scaled to FP16 by multiplying them with the scale
+factor. This mapping process is managed by 128 parallel mappers in
+the data mapper module, as depicted in 4 . Each mapper translates
+indices in the decoded sequence and outliers to their corresponding
+real centroids. The outlier address, combined with the outlier mask
+generated in the previous stage, acts as a selector. This selector
+determines whether a given position should use the value from
+the k-means pattern (mapped via Huffman decoding) or the scaled
+outlier, ensuring accurate reconstruction of the original data. This
+parallel and pipelined approach enables efficient decompression of
+high-ratio compressed data, balancing parallelism with the sequential nature of Huffman coding to achieve optimal performance.
+Low Compression Ratio (2×) Decompressor. The 2× decompressor employs a straightforward yet efficient approach to decompress
+
+Ecco: Improving Memory Bandwidth and Capacity for LLMs via Entropy-aware Cache Compression
+
+Hardware Component
+Scale Factor
+
+ID_KP
+
+Kmeans Patterns
+
+ID_HC
+
+Huffman Codebooks
+
+Scale Factor
+
+SF
+SF
+
+Exp
+Adder
+
+Group-wise Data
+
+Pattern
+Retriever
+
+HF: Huffman Codebook
+64
+
+Input Data (512b)
+
+Kmeans
+Pattern
+Huffman
+Codebook
+
+8
+
+Parallel
+Parallel
+Decoder
+Decoder
+Parallel
+Decoder
+
+3
+
+KP#1
+
+…
+
+6b
+
+8b
+
+HF#0
+
+NM
+
+HF#1
+
+…
+
+…
+
+… …
+
+#7 D_Out #15 D_Out
+
+Input Data (512b)
+
+MUX
+
+Parallel
+Multiplier
+
+KP
+
+ID_KP
+
+8-23b
+
+Decoder
+
+Decoder
+
+496-511b
+
+… Decoder
+
+6b
+2b
+
+8
+HF
+
+D_Out
+
+…
+
+D_Out
+
+Concat
+D_Out
+D_Data (16b)
+
+Decoder
+Valid EOP
+
+…
+
+…
+
+…
+
+…
+
+…
+
+#1_7 D_Out
+
+0-15b
+
+1-15b
+
+sub
+Decoder
+
+D_Out
+
+D_Out
+
+…
+
+7-15b
+
+D_Out
+
+sub
+Decoder
+
+#1_0
+
+<<
+#0
+
+D_Out
+
+D_Data
+
+Valid
+
+D_Out
+
+#8
+
+… #15
+
+…
+
+Mapper #127
+Data (FP16)
+
+128
+D_Data
+
+8 (32b)
+
+Outliers (240b)
+
+Mapper
+
+KP
+
+D_Data
+Concat
+
+MUX
+
+Outlier (15b)
+Outlier (15b)
+Outlier (15b)Addr
+
+#6_0 D_Out
+#6_1 D_Out
+
+D_Data
+8 (512b)
+
+…
+
+D_Out
+
+Concat
+
+EOP
+
+#127 D_Data
+
+…
+
+Mapper #0
+Data (FP16)
+
+Concat
+
+Concat
+
+sub
+Decoder
+
+…
+
+#0 D_Data
+
+… … 8 D_Data
+(16b)
+
+Concat
+
+#1_0 D_Out
+
+HF
+
+Partial Input Data (15b)
+
+D_Out
+
+ID_HF
+
+MUX
+
+0-15b
+
+…
+
+Data
+4
+
+64
+#8 D_Out
+
+…
+
+2
+
+… D_Data
+
+FP16
+
+Data
+
+128
+
+Data Mapper
+
+128
+
+#0 D_Out
+
+KP#0
+
+N
+
+4b
+D_Data D_Data
+
+D_Out
+
+…
+
+Data
+
+Outliers
+Data
+Concatenator
+
+… …D_Out
+…
+
+64
+
+Real SF
+(FP16)
+
+4
+
+D_Out
+
+2
+
+SF: Scale Factor
+
+KP: Kmeans Pattern
+
+3
+
+MUX
+
+1
+
+Tensor-wise Metadata
+1
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+Value
+(8b)
+Value
+(8b)
+Value
+(8b) Exp
+
+Outlier
+Value
+
+(7b)
+Addr
+(7b)
+Addr
+(7b) SF
+
+Exp
+Adder
+SF
+Adder
+SF
+
+×
+
+Value
+(16b)
+Value
+(16b)
+Value
+(16b)
+
+#6_7 D_Out
+
+Mask
+
+MUX
+
+Outlier
+Addr
+
+Data (FP16)
+
+Figure 8: High compression ratio (4×) decompressor design.
+encoding—determined by the shortest total length—is selected. The
+corresponding Huffman codebook index is recorded as 𝐼 𝐷_𝐻 𝐹 . The
+final compressed output is constructed by concatenating the encoded sequence from the optimal Huffman encoder, the 16 outliers
+identified by the bitonic sorter, and the indices 𝐼𝐷_𝐾𝑃 and 𝐼 𝐷_𝐻 𝐹 .
+If the resulting bitstream exceeds the target compressed block size,
+it is clipped to fit. This clipping ensures a fixed compression ratio
+but may result in a loss of information.
+
+Group Max
+
+…
+
+4.3
+
+-
+
+SF
+
+Compressor Design
+Data
+
+Value Mapper
+
+H_Code
+
+Data
+
+Value Mapper
+
+H_Code
+
+Data
+
+Value Mapper
+
+H_Code
+
+…
+
+SS
+SS
+
+MIN/MAX
+Finder
+
+<<
+
+Total
+length
+ID_HF
+&
+H_Codes
+
+MUX
+
+16 x FP16 (256b)
+
+6b
+
+ID_KP
+
+HF#3
+HF#2
+HF#1
+HF#0
+
+3
+
+16
+
+SS
+
+KP#0-MIN
+
+Adder
+
+High Compression Ratio (4×) Compressor. The high compression ratio (4×) compressor operates on 256-byte blocks, each with
+128 FP16 data points. Figure 9 illustrates the details of the compression process. The process begins with a bitonic sorter, which
+extracts the scale factor, the top 16 sorted values and their indices
+for outlier padding, and the group’s min/max values, as shown in 1 .
+Next, a pattern selector ( 2 ) evaluates the fitness of the input data
+against a set of shared k-means patterns. To reduce overhead, the
+number of shared k-means patterns is decreased from 64 to 16. For
+each pattern, the selector calculates a fitness score by summing the
+squared differences between its min/max and the group’s min/max.
+This process yields 𝑆 fitness values, where 𝑆 is the number of shared
+patterns. The pattern with the minimum squared error is selected
+for quantizing the group, and its index is recorded as 𝐼𝐷_𝐾𝑃.
+Following pattern selection, the encoder begins parallel encoding,
+as depicted in 3 . The compression process employs four encoders,
+each corresponding to one Huffman codebook. Within each encoder, parallel value mappers determine the index to which each
+input value should be quantized. This mapping is achieved by calculating the differences between the input values and the centroids of
+the selected k-means pattern, assigning each value to the centroid
+with the minimum difference. The resulting indices are Huffman
+encoded and concatenated to form the total encoded sequence. The
+length of the encoded sequence is calculated, and the most efficient
+
+KP#0-MAX
+
+Group Min
+
+Data
+
+Pattern Selector
+
+…
+
+Data
+
+64
+
+KP#1
+KP#0
+
+KP#0
+
+Data
+
+Top-16 Sorted
+Value & Index
+
+FP16
+
+128
+
+KP#15
+
+2
+16 x (FP8+Index) (240b)
+
+KP#1
+
+Bitonic
+Sorter
+
+Kmeans centroids
+
+KC#0 KC#1
+
+-
+
+…
+
+- …
+
+MIN/MAX
+Finder
+
+Data
+
+MUX
+
+1
+
+KP#63
+
+data. The process begins with the extraction and combination of
+scale factors and zero points, which are strategically stored every
+8 bits within the 512-bit compressed block. Concurrently, the decompressor performs a signed extension operation on the 7-bit
+quantized values, expanding them to 8 bits. This extension is crucial for preserving the sign information and preparing the data
+for subsequent processing. To optimize performance, the decompressor implements bit manipulation techniques proposed by those
+described in [38]. These techniques are particularly efficient, requiring only two operations to complete the decompression process.
+The combination of localized scale factors and zero points with
+efficient bit manipulation allows the 2× decompressor to achieve
+a balance between compression ratio and decompression speed,
+eliminating the need for complicated prefetching transactions.
+
+ID_KP ID_HF SF
+
+HF#0
+
+KC#15
+
+-
+
+MIN/
+MAX
+Finder
+
+MUX
+H_Code
+
+Value Mapper
+
+H_Code seq
+
+Outliers
+
+Concatenated Result
+
+Hardware Component
+SF: Scale Factor
+
+KP: Kmeans Patterns
+
+Tensor-wise Metadata
+KC: Keams Centroids
+
+Group-wise Data
+HF: Huffman Codebooks
+
+Figure 9: High compression ratio (4×) compressor design.
+Low Compression Ratio (2×) Compressor. The low compression
+ratio compressor leverages existing hardware components from
+the high ratio compressor, optimizing resource utilization while
+maintaining efficiency. Specifically, the low-ratio compressor shares
+the bitonic sorter to identify the scale factor and zero point for each
+group. Additionally, it utilizes the same multiply-and-round circuit
+to convert FP16 data into quantized representations, streamlining
+the design and reducing hardware redundancy. The final stage
+of compression incorporates an intricate bit-interleaving process,
+where the quantized values are combined with the scale factor and
+zero point. This interleaving is specifically designed to facilitate fast
+dequantization during decoding, enabling efficient reconstruction
+of the original data while minimizing computational overhead.
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+Cheng, et al.
+
+Table 1: Perplexity Comparison of Models Under Different Configurations on WikiText-2 with 2048 Sequence Length.
+Perplexity ↓
+
+LLaMA
+
+Bits
+
+Method
+
+FP16
+W4A16
+g128
+
+W4A8KV4
+g128
+
+LLaMA-2
+
+Mistral
+
+LLaMA-7B
+
+LLaMA-13B
+
+LLaMA-30B
+
+LLaMA-2-7B
+
+LLaMA-2-13B
+
+LLaMA-2-70B
+
+Mistral-7B
+
+-
+
+5.68
+
+5.09
+
+4.10
+
+5.47
+
+4.88
+
+3.32
+
+5.25
+
+GPTQ-R
+Olive
+AWQ
+Ecco
+
+5.83
+6.04
+5.78
+5.80
+
+5.20
+5.38
+5.19
+5.17
+
+4.22
+4.32
+4.21
+4.20
+
+5.63
+5.81
+5.60
+5.58
+
+4.99
+5.10
+4.97
+4.97
+
+3.43
+3.43
+3.41
+3.40
+
+5.39
+5.51
+5.37
+5.36
+
+RTN
+AWQ
+QuaRot
+QoQ
+Ecco
+
+6.23
+5.93
+5.91
+5.89
+5.87
+
+5.46
+5.36
+5.26
+5.25
+5.22
+
+4.56
+4.39
+4.30
+4.28
+4.24
+
+5.99
+5.83
+5.71
+5.70
+5.65
+
+5.19
+5.12
+5.06
+5.08
+5.03
+
+3.70
+3.51
+3.45
+3.47
+3.44
+
+5.59
+5.50
+5.39
+5.42
+5.41
+
+5 Evaluation
+5.1 Accuracy Evaluation
+Models and Datasets. Our comprehensive evaluation encompasses a wide range of large language models, including the LLaMA
+family and Mistral. Specifically, we assess LLaMA (7B, 13B, 30B) [62],
+LLaMA-2 (7B, 13B, 70B) [63], and Mistral 7B [34]. This diverse selection of models, ranging from 7 billion to 70 billion parameters,
+allows for a thorough examination of our novel compression algorithm across various model architectures and scales. We used
+a small calibration set from the Pile [13] dataset in order not to
+overfit to a specific downstream domain. We evaluate the compressed models’ perplexity on WikiText-2 [45] and measure their
+zero-shot accuracy on the commonsense tasks PIQA (PQ) [4], ARC
+[9], HellaSwag (HS) [71], and WinoGrande (WG) [59] using lm_eval
+[14].
+Baseline Methods. We compare our approach Ecco against several state-of-the-art quantization baselines and configurations. Our
+evaluation framework is implemented using HuggingFace and PyTorch libraries and run on NVIDIA A100 GPUs. The evaluation
+includes full precision FP16 as a baseline, along with two main
+quantization configurations: W4A16 (4-bit weights, 16-bit activations and 16-bit KV cache) and W4A8KV4 (4-bit weights, 8-bit
+activations and 4-bit KV cache), both with a group size of 128. For
+the W4A16 configuration, we evaluate GPTQ-R [12], Olive [21],
+and AWQ [42] methods. The W4A8KV4 configuration encompasses
+RTN, AWQ [42], QuaRot [3], and QoQ [43] techniques. Note that
+although Olive is considered as W4A16, during its searching phase,
+most layers result in using 8-bit precision instead of 4-bit. All quantization techniques, with the exception of FP16, Olive and Ecco,
+are sourced directly from the QServe [43] paper. These baselines
+represent a range of quantization approaches, from full precision
+to various 4-bit quantization schemes, ensuring fair and compreshensive comparisons.
+Perplexity Analysis. The results presented in Table 1 provide
+a comprehensive overview of the WikiText-2 perplexity scores
+for various language models and quantization methods, with a
+sequence length of 2048. Lower perplexity scores indicate better
+language model performance. The compressed models, particularly
+our proposed Ecco method, demonstrate competitive performance
+
+while significantly reducing model size. In the W4A16 configuration, our Ecco method demonstrates competitive performance.
+Ecco outperforms all the baselines across all benchmarks except
+for LLaMA-7B, achieving an average perplexity reduction of only
+0.10 compared to the FP16 baseline. The W4A8KV4 configuration
+presents a more challenging scenario due to its higher compression
+rate. In this configuration, Ecco continues to deliver strong performance. It outperforms all baseline methods, including Quarot,
+which represents the most advanced and complex compression algorithm, on all LLaMA and LLaMA2 models ranging from 7B to 70B.
+Additionally, Ecco surpasses all baseline methods and achieves comparable perplexity loss to Quarot on Mistral models. This demonstrates that Ecco is particularly effective at preserving model quality
+even under aggressive quantization.
+Zero-shot Accuracy Analysis. In Table 2, we present the zeroshot accuracy for five commonsense tasks. Across these benchmarks, Ecco outperforms other 4-bit quantization methods in every
+case except for ARC-c. Notably, on the Winogrande task, Ecco surpasses all baselines by more than 2%, underscoring its superior
+performance.
+Table 2: Zero-shot accuracy on five common sense tasks.
+Zero-shot Accuracy ↑
+
+LLaMA-2-13B
+Method
+
+PQ
+
+ARC-e
+
+ARC-c
+
+HS
+
+WG
+
+Avg.
+
+Origin (FP16)
+Quarot(W4A4)
+Atom (W4A4)
+QoQ (W4A8KV4)
+Ecco (W4A8KV4)
+
+80.52
+78.89
+76.50
+79.43
+79.82
+
+77.44
+72.98
+57.49
+77.06
+77.02
+
+49.06
+46.59
+42.32
+48.81
+49.49
+
+79.38
+76.37
+73.84
+78.35
+78.61
+
+72.22
+70.24
+67.40
+70.48
+72.53
+
+71.72
+69.01
+63.51
+70.83
+71.49
+
+Padding/Clipping Ratio Analysis. Figure 10 shows the average
+ratio of values clipped/padded in each layer on LLaMA2-13B. For
+projection layers, the clipping ratio is below 0.04%, meaning almost
+no values are clipped, while the padding ratio is around 0.7%, indicating that most outliers are preserved. It is worth noting that
+we achieve padding ratios of 7.11% and 2.19% on the K-cache and
+V-cache, respectively. This result demonstrates the effectiveness
+of our Huffman coding based compression methodology, which
+minimizes clipping and maximizes padding given limited space to
+ensure the accuracy of the compressed model.
+
+Ratio (%)
+
+Ecco: Improving Memory Bandwidth and Capacity for LLMs via Entropy-aware Cache Compression
+8
+6
+4
+2
+0
+
+7.11
+
+Clipping Ratio
+Padding Ratio
+
+0.04 0.76 0.04 0.78 0.04 0.69 0.04 0.77 0.03 0.73 0.03 0.73 0.03 0.70 0.02
+
+q_proj
+
+k_proj
+
+v_proj
+
+0.26
+
+2.19
+
+o_proj gate_proj up_proj down_proj k_cache v_cache
+
+Figure 10: Average padding and clipping ratios by layer.
+
+5.2
+
+Area and Power Evaluation
+
+Implementation. The fundamental RTL logic of the Ecco architecture, encompassing the compressor and decompressor, is implemented in Verilog. Additionally, we utilize the Synopsys Design
+Compiler to synthesize this RTL logic, enabling the generation of
+area and power statistics using ARM’s standard cell library under
+a commercial 28nm process. For a fair overhead comparison, we
+scale the area and power metrics to 7nm, aligning them with the
+specifications of the NVIDIA A100 GPU chip.
+Result Analysis. We assess the power consumption and area overhead of our hardware design. The critical path of the decompressor
+includes retrieving the Huffman codebook, a parallel Huffman decoder, result merging, and mapping to real values. By carefully designing the circuitry and inserting buffers, we achieved a pipelined
+design with a latency of 28 clock cycles. The compression latency
+is 62 cycles as it is not on the critical path and we trade latency
+for area efficiency. To ensure that the compressor and decompressor units do not become performance bottlenecks, we replicated
+them 20 times, aligning their throughput with the L2 cache’s peak
+throughput of 5120 bytes per clock cycle. This strategy ensures
+seamless data compression and decompression without impeding
+cache performance. Table 3 shows the area and power consumption of all duplicated instances. Our design occupies a total area
+of 5.11 mm2 on the NVIDIA A100 GPU, which has a die area of
+826 mm2 . This means our hardware addition accounts for less than
+1% of the chip area, indicating a minimal area overhead. In terms of
+power consumption, our design draws a total of 7.36 W, which is
+less than 10% of the A100’s idle power of 82 W at 1410 MHz. These
+results demonstrate that our hardware design is both efficient and
+practical. The negligible area and power overhead make it feasible
+to integrate into existing GPU architectures without significant
+alterations.
+
+5.3
+
+Performance Evaluation
+
+Simulator Setup. To evaluate the performance of our novel cache
+compression technique, we modified and extended Accel-Sim [36]
+and GPGPU-Sim 4.0 [40]. Traces were extracted using NVBit version 1.7.1 [65] to ensure accurate representation of program execution. All programs were compiled using CUDA 11.8. We obtained
+the NVIDIA A100 GPU [7] configuration by utilizing the tuner and
+correlated the simulated cycles with real hardware performance
+on a set of benchmarks provided by Accel-Sim, as well as our own
+Table 3: The area and power of Ecco on A100.
+Component
+Decompressor 4×
+Decompressor 2×
+Compressor 4×
+Compressor 2×
+
+Area (mm2 )
+
+Area Ratio
+
+Power (W)
+
+3.19
+0.57
+0.91
+0.44
+
+0.39%
+0.07%
+0.11%
+0.05%
+
+4.82
+0.83
+1.15
+0.56
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+benchmarks on cuBLAS [50] and CUTLASS [51]. The simulation
+error is within 10% of the real GPU performance.
+Models and Baselines. As LLaMA models share the same backbone within the same size across generations, we select one model if
+the sizes of LLaMA1 and LLaMA2 are equal. Our simulations include
+LLaMA-7B, LLaMA-13B, LLaMA-30B, LLaMA-65B [62], LLaMA270B [63], and Mistral-7B [34]. We compare the performance against
+state-of-the-art frameworks, including TensorRT-LLM in FP16 precision [54], AWQ in W4A16 [42], SmoothQuant in W8A8 [68], and
+Olive [21], where we unified all layer weights to 8-bit and adopted
+W8A8 precision. Quarot [3] is excluded from the comparison as its
+performance consistently falls short of the FP16 baseline when the
+batch size is ≤ 64, as shown in Figure 3. We omit the prefill phase
+since it is compute-bound, runs only once, and occupies a negligible
+portion of execution time. Instead, our focus is on the decoding
+phase. We thoroughly evaluated our design across various batch
+sizes and sequence lengths to ensure comprehensive performance
+analysis.
+Speedup Analysis. We first evaluate our method on the LLaMA13B model with sequence length 2048, sweeping batch sizes from 1
+to 64. Figure 11a shows that our method consistently outperforms
+TensorRT, Olive, SmoothQuant, and AWQ across all batch sizes. For
+projection layers, although latency increases with batch size for all
+methods, AWQ incurs the highest overhead while ours remains the
+lowest. Compared to FP16, our method achieves a speedup from
+2.8× to 3.2× when batch size grows from 1 to 2, thanks to a reduced
+kernel launch latency percentage. Beyond this, speedup gains diminish due to the attention mechanism’s lesser improvement compared
+to GEMM (which is highly optimized in CUTLASS) and a reduced
+impact of memory bandwidth limits at larger batch sizes. Overall, our method attains a speedup of 2.6× to 3.2×, averaging 2.9×
+versus TensorRT FP16, and when compared with AWQ, Olive, and
+SmoothQuant, provides up to 2.9×, 2.4×, and 1.8× speedups as sequence length increases. These results demonstrate our approach’s
+effectiveness in reducing latency and computational overhead, especially at larger batch sizes and sequence lengths.
+We then evaluate our method across various sequence lengths
+with a batch size of 8 on the LLAMA-13B model. The normalized
+latency compared to various baselines is shown in Figure 11b. In
+this scenario, the effect of kernel launch latency at small sequence
+lengths becomes more pronounced. As the sequence length increases, we observe that compared to the FP16 baseline, the speedup
+achieved by our method increases from 2.8× to 3.1×, before starting
+to decrease. This trend is due to the diminishing impact of kernel launch overhead at larger sequence lengths, balanced against
+other system limitations. When compared to AWQ, Olive, and
+SmoothQuant, our method consistently demonstrates increasing
+speedup, reaching up to 2.1×, 2.3×, and 1.9×, respectively. The performance gains are more significant at longer sequence lengths,
+where the benefits of our optimized compression and reduced computational overhead become more evident. We did not test sequence
+lengths longer than 4K due to slow simulation speeds. However,
+we expect this trend of increasing speedup to continue as the sequence length grows, given that longer sequences further amplify
+the advantages of our method in reducing memory bandwidth and
+computational demands.
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+Cheng, et al.
+
+Attention
+
+FP16
+Olive
+SQ
+AWQ
+Quarot
+Ours
+
+BS=1
+
+BS=2
+
+BS=4
+
+BS=8
+
+BS=16
+
+BS=32
+
+BS=64
+
+Geo
+Mean
+
+Geo
+Mean
+(b) Normalized latency vs. sequence lengths on LLaMA-13B.
+Seq=256
+
+Seq=512
+
+Seq=1K
+
+Seq=2K
+
+Seq=4K
+
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+
+Normalized Latency
+
+10
+
+20
+
+GPU Memory (GB)
+
+30
+
+40
+
+FP16
+Olive
+SQ
+AWQ
+Ours
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+Normalized Memory Requests for a GEMM Kernel
+
+1.0
+
+Figure 13: Normalized Memory Requests for a GEMM Kernel
+(M=16, K=5120, N=13824) in LLaMA-13B.
+
+Seq=128
+
+3.0
+2.5
+2.0
+1.5
+1.0
+0.5
+0.0
+
+0
+
+0.0
+
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+
+Normalized Latency
+
+(a) Normalized latency vs. batch sizes on LLaMA-13B.
+3.0
+2.5
+2.0
+1.5
+1.0
+0.5
+0.0
+
+Weights
+KV Cache
+
+Figure 12: GPU memory consumption on LLaMA-7B.
+
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+TRT
+Olive
+SQ
+AWQ
+Ours
+
+Normalized Latency
+
+Projection
+3.0
+2.5
+2.0
+1.5
+1.0
+0.5
+0.0
+
+LLAMA
+7B
+
+Mistral
+LLAMA
+LLAMA
+LLAMA
+LLAMA2
+7B
+13B
+30B
+65B
+70B
+(c) Normalized latency vs. various models.
+
+Geo
+Mean
+
+Figure 11: Comparison of normalized latency. (a) Batch size
+variation; (b) Sequence length variation; (c) Different models.
+We further evaluate our method across various models using a
+fixed batch size of 32 and a sequence length of 4096 tokens, settings
+that are common in modern inference systems. The models tested
+include LLAMA variants and other large-scale language models.
+The normalized latency results compared to the baselines are presented in Figure 11c. Our method achieves more than 2× speedup on
+most of the evaluated models. Notably, for Mistral-7B and LLAMA270B, the speedup is slightly less than that observed in other models.
+This discrepancy is attributed to the use of grouped query attention
+(GQA) in these models. GQA allows multiple query heads to share
+a single KV head, effectively transforming the batched GEMVs into
+batched GEMMs. This change increases the arithmetic intensity of
+the operations and potentially alleviates the memory bottleneck
+that is prominent in standard attention mechanisms. Despite this,
+our method still provides significant performance gains over the
+baselines for all models tested. On average, our method achieves
+speedups of 2.5×, 2.2×, 1.5×, and 2.1× compared to the FP16 baseline, Olive, SmoothQuant, and AWQ, respectively. These consistent
+improvements underscore the effectiveness of our approach in optimizing inference performance across a diverse set of models.
+Memory Analysis. Since HBM memory on GPUs is critical for
+running large models, we examine GPU memory consumption
+across various baselines on LLaMA-7B with a batch size of 32 and a
+sequence length of 2K. As shown in Figure 12, our method reduces
+memory consumption by 3.98× compared to the FP16 baseline,
+which is very close to 4×. The only overhead is a small codebook
+
+shared across tensors. Compared to the aggressive compression
+methods SmoothQuant and Quarot, our method achieves 1.99× and
+1.06× reductions in memory usage, respectively. Moreover, because
+our method operates on each tensor independently, it scales cleanly
+with no overhead across multiple GPUs. Therefore, when launching
+large models on multiple GPUs, our method can save up to 75%
+of overall GPU usage. This also translates to up to 12.8× energy
+savings, as we not only reduce the number of GPUs needed but
+also achieve up to a 3.2× speedup with a 1% power overhead.
+To further analyze the source of the observed speedup, we provide detailed memory request metrics for a GEMM kernel used in
+LLaMA-13B. Since the decoding process is highly memory-bound,
+the number of memory requests serves as a proxy for overall performance. Compared to the FP16 baseline, our method reduces
+memory traffic by 3.56×, and the number of memory requests decreases by 1.98× and 1.28× relative to SmoothQuant and AWQ,
+respectively. These results demonstrate the superior performance
+of our approach compared to fused dequantization and matmul
+kernels.
+Sensitivity Analysis. Figure 14 presents a study of how variations
+in decompressor throughput and latency affect overall performance,
+measured here as normalized slowdown. In Figure 14a, decompressor throughput is expressed as a fraction of the L2 cache’s peak
+bandwidth. When the decompressor operates at throughput levels
+comparable to the L2 bandwidth (90–100%), the normalized slowdown remains close to one, indicating minimal performance degradation. As throughput declines below about half of the L2 peak,
+the slowdown starts to grow noticeably, reaching a pronounced
+increase at 20–10% of the L2 bandwidth. These results show that
+although modest reductions in decompressor throughput can be tolerated with little impact on system performance, severe throughput
+constraints quickly degrade execution time.
+Figure 14b illustrates the sensitivity to decompressor latency,
+measured in cycles. Increasing the decompressor’s latency from
+near-zero up to hundreds of cycles gradually but steadily raises the
+normalized slowdown, from just 1.0 to around 1.3. Longer latencies
+increase the time required to retrieve usable data from compressed
+blocks, causing more pipeline stalls or waiting periods. Together,
+these results underscore the importance of designing a decompressor whose throughput and latency closely match—or at least do
+not lag far behind—those of the cache hierarchy in order to avoid
+disproportionate penalties to overall performance.
+
+Ecco: Improving Memory Bandwidth and Capacity for LLMs via Entropy-aware Cache Compression
+
+Normalized Slowdown
+
+1.30
+1.25
+1.20
+1.15
+1.10
+1.05
+1.00
+0.95 0 30 60 90 120 150 180 210 240 270 300
+
+Normalized Slowdown
+
+7
+6
+5
+4
+3
+2
+1
+0 100%90% 80% 70% 60% 50% 40% 30% 20% 10%
+
+Decompressor / L2 Cache Throughput
+(a) Slowdown vs. decompressor /
+L2 Throughput
+
+Decompressor Latency
+(b) Slowdown vs. decompressor
+latency
+
+Figure 14: Sensitivity Analysis: Sweep Decompressor
+Throughput and Latency.
+
+6 Discussion
+6.1 Broadening Applicability to CPUs and Accelerators
+We primarily explored implementing Ecco on GPUs, the most
+widely used platform for LLM workloads. However, our solution can
+be seamlessly integrated with other platforms as well. Accelerators
+[16, 26, 67], such as Google TPUs, also suffer from memory-bound
+issues similar to those observed on GPUs, and we believe Ecco
+can provide substantial speedups in those contexts. In addition,
+accelerators with relatively small L2 caches may benefit even more,
+as the compressed data format allows for more data to be stored in
+the cache without frequent swapping. Furthermore, our method is
+compatible with modern CPUs equipped with AI capabilities, such
+as Intel Core Ultra Processors [31], as small-batch computations are
+memory-bound even on these CPUs. Overall, our solution shows
+promising generalizability across different hardware platforms.
+Table 4: Zero-shot accuracy of LLaMA-3.1-8B-Instruct.
+Model
+
+6.2
+
+LLaMA-3.1-8B-Instruct
+
+Compression
+
+Ori.
+
+Weight Only
+
+Wt. & Act. & KV
+
+Method
+ARC-c Accuracy
+
+FP16
+83.70
+
+AWQ
+81.06
+
+QoQ
+82.17
+
+Ecco
+82.85
+
+Ecco
+82.68
+
+From Fine-tuned LLMs to HPC Impact
+
+To examine whether Ecco works across a wider range of workloads,
+we evaluated its performance on the fine-tuned model LLaMA-3.1Instruct-8B. Table 4 shows that our method delivers superior performance compared to other baselines, demonstrating its adaptability.
+In addition to fine-tuned LLMs, our method can theoretically be
+applied to all machine learning workloads, as Ecco is a technique
+applicable to any matrix multiplication operation. Furthermore, it
+is also suitable for HPC [6, 58, 61, 73] workloads; if the compressed
+data length exceeds the target ratio, our approach performs parallel
+decompression when accessing the data, whereas the data remains
+uncompressed if not. This underscore the versatility and broad
+applicability of Ecco across diverse computational workloads.
+
+7
+
+Conclusion
+
+In this work, we proposed an entropy-based cache compression
+method for LLMs, combining group-wise non-uniform quantization
+with optimized Huffman coding to leverage cache entropy for efficient compression and decompression. Our parallel Huffman-based
+decoding process and runtime-optimized encoder significantly reduce latency and enhance throughput, seamlessly integrating with
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+traditional cache architectures. This approach achieves up to 2.9×
+speedup over AWQ and nearly 4× memory capacity enlargement,
+all while maintaining state-of-the-art model accuracy. These results demonstrate the transformative potential of entropy-based
+cache compression in overcoming LLM memory bottlenecks. By
+addressing limitations of existing methods with a scalable, efficient
+solution, our work enhances LLM accessibility across diverse platforms and lays the foundation for extending such techniques to
+other memory-intensive AI applications.
+
+Acknowledgments
+The work was funded in part by National Science Foundation NSF2112562 and ARO W911NF-23-2-0224. AMD, the AMD Arrow logo
+and combinations thereof are trademarks of Advanced Micro Devices, Inc. The authors sincerely thank the anonymous reviewers for
+their constructive feedback and valuable suggestions that greatly
+improved the quality of this work.
+
+References
+[1] Advanced Micro Devices. 2023. AMD Instinct™ MI300X Accelerator: Technical
+Overview. Technical Report. AMD. Product Documentation.
+[2] Alaa R Alameldeen and David A Wood. 2004. Adaptive cache compression for
+high-performance processors. ACM SIGARCH Computer Architecture News 32, 2
+(2004), 212.
+[3] Saleh Ashkboos, Amirkeivan Mohtashami, Maximilian L. Croci, Bo Li, Pashmina
+Cameron, Martin Jaggi, Dan Alistarh, Torsten Hoefler, and James Hensman. 2024.
+QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs. arXiv:2404.00456 [cs.LG]
+https://arxiv.org/abs/2404.00456
+[4] Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin Choi.
+2019. PIQA: Reasoning about Physical Commonsense in Natural Language.
+arXiv:1911.11641 [cs.CL] https://arxiv.org/abs/1911.11641
+[5] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan,
+Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+Askell, et al. 2020. Language models are few-shot learners. Advances in neural
+information processing systems 33 (2020), 1877–1901.
+[6] Xinyu Chen, Yao Chen, Feng Cheng, Hongshi Tan, Bingsheng He, and Weng-Fai
+Wong. 2022. ReGraph: Scaling graph processing on HBM-enabled FPGAs with
+heterogeneous pipelines. In 2022 55th IEEE/ACM International Symposium on
+Microarchitecture (MICRO). IEEE, 1342–1358.
+[7] Jack Choquette, Wishwesh Gandhi, Olivier Giroux, Nick Stam, and Ronny
+Krashinsky. 2021. NVIDIA A100 Tensor Core GPU: Performance and Innovation.
+IEEE Micro 41, 2 (2021), 29–35. https://doi.org/10.1109/MM.2021.3061394
+[8] Esha Choukse, Michael Sullivan, Mike O’Connor, Mattan Erez, Jeff Pool, David
+Nellans, and Steve Keckler. 2019. Buddy Compression: Enabling Larger Memory
+for Deep Learning and HPC Workloads on GPUs. arXiv:1903.02596 [cs.AR]
+https://arxiv.org/abs/1903.02596
+[9] Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa
+Schoenick, and Oyvind Tafjord. 2018. Think you have Solved Question Answering? Try ARC, the AI2 Reasoning Challenge. arXiv:1803.05457 [cs.AI]
+https://arxiv.org/abs/1803.05457
+[10] Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke Zettlemoyer. 2023.
+QLoRA: Efficient Finetuning of Quantized LLMs. arXiv:2305.14314 [cs.LG]
+https://arxiv.org/abs/2305.14314
+[11] R. David Evans, Lufei Liu, and Tor M. Aamodt. 2020. JPEG-ACT: accelerating deep
+learning via transform-based lossy compression. In Proceedings of the ACM/IEEE
+47th Annual International Symposium on Computer Architecture (ISCA ’20). IEEE
+Press, Virtual Event, 860–873. https://doi.org/10.1109/ISCA45697.2020.00075
+[12] Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh. 2023. GPTQ:
+Accurate Post-Training Quantization for Generative Pre-trained Transformers.
+arXiv:2210.17323 [cs.LG] https://arxiv.org/abs/2210.17323
+[13] Leo Gao, Stella Biderman, Sid Black, Laurence Golding, Travis Hoppe, Charles
+Foster, Jason Phang, Horace He, Anish Thite, Noa Nabeshima, Shawn Presser, and
+Connor Leahy. 2020. The Pile: An 800GB Dataset of Diverse Text for Language
+Modeling. arXiv:2101.00027 [cs.CL] https://arxiv.org/abs/2101.00027
+[14] Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black, Anthony DiPofi,
+Charles Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle
+McDonell, Niklas Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey
+Schoelkopf, Aviya Skowron, Lintang Sutawika, Eric Tang, Anish Thite, Ben Wang,
+Kevin Wang, and Andy Zou. 2024. A framework for few-shot language model
+evaluation. https://doi.org/10.5281/zenodo.12608602
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+[15] Yunfan Gao, Yun Xiong, Xinyu Gao, Kangxiang Jia, Jinliu Pan, Yuxi Bi, Yi
+Dai, Jiawei Sun, Meng Wang, and Haofen Wang. 2024. Retrieval-Augmented
+Generation for Large Language Models: A Survey. arXiv:2312.10997 [cs.CL]
+https://arxiv.org/abs/2312.10997
+[16] Google. 2024. TPU V6e. https://cloud.google.com/blog/products/compute/
+introducing-trillium-6th-gen-tpus
+[17] Cong Guo, Feng Cheng, Zhixu Du, James Kiessling, Jonathan Ku, Shiyu Li, Ziru
+Li, Mingyuan Ma, Tergel Molom-Ochir, Benjamin Morris, et al. 2025. A Survey:
+Collaborative Hardware and Software Design in the Era of Large Language
+Models. IEEE Circuits and Systems Magazine 25, 1 (2025), 35–57.
+[18] Cong Guo, Feng Cheng, Zhixu Du, James Kiessling, Jonathan Ku, Shiyu Li, Ziru
+Li, Mingyuan Ma, Tergel Molom-Ochir, Benjamin Morris, Haoxuan Shan, Jingwei
+Sun, Yitu Wang, Chiyue Wei, Xueying Wu, Yuhao Wu, Hao Frank Yang, Jingyang
+Zhang, Junyao Zhang, Qilin Zheng, Guanglei Zhou, Hai Li, and Yiran Chen.
+2025. A Survey: Collaborative Hardware and Software Design in the Era of
+Large Language Models. IEEE Circuits and Systems Magazine 25, 1 (2025), 35–57.
+https://doi.org/10.1109/MCAS.2024.3476008
+[19] Cong Guo, Bo Yang Hsueh, Jingwen Leng, Yuxian Qiu, Yue Guan, Zehuan Wang,
+Xiaoying Jia, Xipeng Li, Minyi Guo, and Yuhao Zhu. 2020. Accelerating sparse dnn
+models without hardware-support via tile-wise sparsity. In SC20: International
+Conference for High Performance Computing, Networking, Storage and Analysis.
+IEEE, 1–15.
+[20] Cong Guo, Yuxian Qiu, Jingwen Leng, Xiaotian Gao, Chen Zhang, Yunxin Liu,
+Fan Yang, Yuhao Zhu, and Minyi Guo. 2022. SQuant: On-the-Fly Data-Free
+Quantization via Diagonal Hessian Approximation. In International Conference
+on Learning Representations. https://openreview.net/forum?id=JXhROKNZzOc
+[21] Cong Guo, Jiaming Tang, Weiming Hu, Jingwen Leng, Chen Zhang, Fan Yang,
+Yunxin Liu, Minyi Guo, and Yuhao Zhu. 2023. OliVe: Accelerating Large Language
+Models via Hardware-friendly Outlier-Victim Pair Quantization. In Proceedings
+of the 50th Annual International Symposium on Computer Architecture (Orlando,
+FL, USA) (ISCA ’23). Association for Computing Machinery, New York, NY, USA,
+Article 3, 15 pages. https://doi.org/10.1145/3579371.3589038
+[22] Cong Guo, Fengchen Xue, Jingwen Leng, Yuxian Qiu, Yue Guan, Weihao Cui,
+Quan Chen, and Minyi Guo. 2024. Accelerating sparse dnns based on tiled gemm.
+IEEE Trans. Comput. (2024).
+[23] Cong Guo, Chen Zhang, Jingwen Leng, Zihan Liu, Fan Yang, Yunxin Liu, Minyi
+Guo, and Yuhao Zhu. 2022. Ant: Exploiting adaptive numerical data type for
+low-bit deep neural network quantization. In 2022 55th IEEE/ACM International
+Symposium on Microarchitecture (MICRO). IEEE, 1414–1433.
+[24] Song Han, Xingyu Liu, Huizi Mao, Jing Pu, Ardavan Pedram, Mark A Horowitz,
+and William J Dally. 2016. EIE: Efficient inference engine on compressed deep
+neural network. ACM SIGARCH Computer Architecture News 44, 3 (2016), 243–
+254.
+[25] Song Han, Huizi Mao, and William J. Dally. 2016. Deep Compression: Compressing Deep Neural Networks with Pruning, Trained Quantization and Huffman
+Coding. arXiv:1510.00149 [cs.CV] https://arxiv.org/abs/1510.00149
+[26] Edward Hanson, Shiyu Li, Guanglei Zhou, Feng Cheng, Yitu Wang, Rohan Bose,
+Hai Li, and Yiran Chen. 2023. Si-kintsugi: Towards recovering golden-like performance of defective many-core spatial architectures for ai. In Proceedings of the
+56th Annual IEEE/ACM International Symposium on Microarchitecture. 972–985.
+[27] Coleman Hooper, Sehoon Kim, Hiva Mohammadzadeh, Michael W. Mahoney,
+Yakun Sophia Shao, Kurt Keutzer, and Amir Gholami. 2024. KVQuant: Towards 10 Million Context Length LLM Inference with KV Cache Quantization.
+arXiv:2401.18079 [cs.LG] https://arxiv.org/abs/2401.18079
+[28] Weiming Hu, Haoyan Zhang, Cong Guo, Yu Feng, Renyang Guan, Zhendong Hua,
+Zihan Liu, Yue Guan, Minyi Guo, and Jingwen Leng. 2025. M-ANT: Efficient Lowbit Group Quantization for LLMs via Mathematically Adaptive Numerical Type.
+In 2025 IEEE International Symposium on High Performance Computer Architecture
+(HPCA). IEEE, 1112–1126.
+[29] Jie Huang and Kevin Chen-Chuan Chang. 2023. Towards Reasoning in Large
+Language Models: A Survey. arXiv:2212.10403 [cs.CL] https://arxiv.org/abs/
+2212.10403
+[30] David A Huffman. 1952. A method for the construction of minimum-redundancy
+codes. Proceedings of the IRE 40, 9 (1952), 1098–1101.
+[31] Intel. 2024. Intel Core Ultra.
+https://www.intel.com/content/www/us/en/
+products/sku/241747/intel-core-ultra-9-processor-285h-24m-cache-up-to-540-ghz/specifications.html
+[32] Benoit Jacob, Skirmantas Kligys, Bo Chen, Menglong Zhu, Matthew Tang, Andrew
+Howard, Hartwig Adam, and Dmitry Kalenichenko. 2017. Quantization and
+Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference.
+arXiv:1712.05877 [cs.LG] https://arxiv.org/abs/1712.05877
+[33] Animesh Jain, Amar Phanishayee, Jason Mars, Lingjia Tang, and Gennady
+Pekhimenko. 2018. Gist: efficient data encoding for deep neural network
+training. In Proceedings of the 45th Annual International Symposium on Computer Architecture (ISCA ’18). IEEE Press, Los Angeles, California, 776–789.
+https://doi.org/10.1109/ISCA.2018.00070
+[34] Albert Q. Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche
+Savary, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou
+
+Cheng, et al.
+
+Hanna, Florian Bressand, Gianna Lengyel, Guillaume Bour, Guillaume Lample,
+Lélio Renard Lavaud, Lucile Saulnier, Marie-Anne Lachaux, Pierre Stock, Sandeep
+Subramanian, Sophia Yang, Szymon Antoniak, Teven Le Scao, Théophile Gervet,
+Thibaut Lavril, Thomas Wang, Timothée Lacroix, and William El Sayed. 2024.
+Mixtral of Experts. arXiv:2401.04088 [cs.LG] https://arxiv.org/abs/2401.04088
+[35] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B. Brown, Benjamin Chess,
+Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. 2020.
+Scaling Laws for Neural Language Models. arXiv:2001.08361 [cs.LG] https:
+//arxiv.org/abs/2001.08361
+[36] Mahmoud Khairy, Zhesheng Shen, Tor M. Aamodt, and Timothy G. Rogers. 2020.
+Accel-sim: an extensible simulation framework for validated GPU modeling. In
+Proceedings of the ACM/IEEE 47th Annual International Symposium on Computer
+Architecture (ISCA ’20). IEEE Press, Virtual Event, 473–486. https://doi.org/10.
+1109/ISCA45697.2020.00047
+[37] Sehoon Kim, Coleman Hooper, Amir Gholami, Zhen Dong, Xiuyu Li, Sheng Shen,
+Michael W. Mahoney, and Kurt Keutzer. 2024. SqueezeLLM: Dense-and-Sparse
+Quantization. arXiv:2306.07629 [cs.CL] https://arxiv.org/abs/2306.07629
+[38] Young Jin Kim, Rawn Henry, Raffy Fahim, and Hany Hassan Awadalla. 2022.
+Who Says Elephants Can’t Run: Bringing Large Scale MoE Models into Cloud
+Scale Production. arXiv:2211.10017 [cs.CL] https://arxiv.org/abs/2211.10017
+[39] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng,
+Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. 2023. Efficient
+Memory Management for Large Language Model Serving with PagedAttention.
+In Proceedings of the 29th Symposium on Operating Systems Principles (Koblenz,
+Germany) (SOSP ’23). Association for Computing Machinery, New York, NY, USA,
+611–626. https://doi.org/10.1145/3600006.3613165
+[40] Jonathan Lew, Deval Shah, Suchita Pati, Shaylin Cattell, Mengchi Zhang, Amruth
+Sandhupatla, Christopher Ng, Negar Goli, Matthew D. Sinclair, Timothy G. Rogers,
+and Tor Aamodt. 2019. Analyzing Machine Learning Workloads Using a Detailed
+GPU Simulator. arXiv:1811.08933 [cs.DC] https://arxiv.org/abs/1811.08933
+[41] Jinhao Li, Jiaming Xu, Shan Huang, Yonghua Chen, Wen Li, Jun Liu, Yaoxiu
+Lian, Jiayi Pan, Li Ding, Hao Zhou, Yu Wang, and Guohao Dai. 2025. Large
+Language Model Inference Acceleration: A Comprehensive Hardware Perspective.
+arXiv:2410.04466 [cs.AR] https://arxiv.org/abs/2410.04466
+[42] Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen
+Wang, Guangxuan Xiao, Xingyu Dang, Chuang Gan, and Song Han. 2024. AWQ:
+Activation-aware Weight Quantization for On-Device LLM Compression and
+Acceleration. Proceedings of Machine Learning and Systems 6 (2024), 87–100.
+[43] Yujun Lin, Haotian Tang, Shang Yang, Zhekai Zhang, Guangxuan Xiao, Chuang
+Gan, and Song Han. 2024. QServe: W4A8KV4 Quantization and System Co-design
+for Efficient LLM Serving. arXiv:2405.04532 [cs.CL] https://arxiv.org/abs/2405.
+04532
+[44] James MacQueen. 1967. Some methods for classification and analysis of multivariate observations. In Proceedings of the Fifth Berkeley Symposium on Mathematical
+Statistics and Probability, Volume 1: Statistics, Vol. 5. University of California press,
+Oakland, CA, USA, 281–298.
+[45] Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. 2016.
+Pointer Sentinel Mixture Models. arXiv:1609.07843 [cs.CL] https://arxiv.org/abs/
+1609.07843
+[46] Bonan Min, Hayley Ross, Elior Sulem, Amir Pouran Ben Veyseh, Thien Huu
+Nguyen, Oscar Sainz, Eneko Agirre, Ilana Heintz, and Dan Roth. 2023. Recent
+advances in natural language processing via large pre-trained language models:
+A survey. Comput. Surveys 56, 2 (2023), 1–40.
+[47] NVIDIA. 2020. GTC 2020.
+https://developer.download.nvidia.cn/video/
+gputechconf/gtc/2020/presentations/s21819-optimizing-applications-fornvidia-ampere-gpu-architecture.pdf
+[48] NVIDIA. 2024. A100 Compute Data Compression. https://hc32.hotchips.org/
+assets/program/conference/day1/HotChips2020_GPU_NVIDIA_Choquette_
+v01.pdf#page=22
+[49] NVIDIA. 2024. Compressible Memory. https://docs.nvidia.com/cuda/cuda-cprogramming-guide/index.html#compressible-memory
+[50] NVIDIA. 2024. cuBLAS. https://docs.nvidia.com/cuda/cublas/
+[51] NVIDIA. 2024. CUTLASS. https://nvidia.github.io/cutlass/
+[52] NVIDIA. 2024. Hopper Tuning Guide. https://docs.nvidia.com/cuda/hoppertuning-guide/index.html#inline-compression
+[53] NVIDIA. 2024. NVIDIA Turing Architecture In Depth. https://developer.nvidia.
+com/blog/nvidia-turing-architecture-in-depth/
+[54] NVIDIA. 2024. TensorRT-LLM. https://nvidia.github.io/TensorRT-LLM/
+[55] OpenAI, Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge
+Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam
+Altman, Shyamal Anadkat, Red Avila, Igor Babuschkin, Suchir Balaji, Valerie Balcom, Paul Baltescu, Haiming Bao, Mohammad Bavarian, Jeff Belgum, Irwan Bello,
+Jake Berdine, Gabriel Bernadett-Shapiro, Christopher Berner, Lenny Bogdonoff,
+Oleg Boiko, Madelaine Boyd, Anna-Luisa Brakman, Greg Brockman, Tim Brooks,
+Miles Brundage, Kevin Button, Trevor Cai, Rosie Campbell, Andrew Cann, Brittany Carey, Chelsea Carlson, Rory Carmichael, Brooke Chan, Che Chang, Fotis
+Chantzis, Derek Chen, Sully Chen, Ruby Chen, Jason Chen, Mark Chen, Ben
+Chess, Chester Cho, Casey Chu, Hyung Won Chung, Dave Cummings, Jeremiah
+
+Ecco: Improving Memory Bandwidth and Capacity for LLMs via Entropy-aware Cache Compression
+
+Currier, Yunxing Dai, Cory Decareaux, Thomas Degry, Noah Deutsch, Damien
+Deville, Arka Dhar, David Dohan, Steve Dowling, Sheila Dunning, Adrien Ecoffet,
+Atty Eleti, Tyna Eloundou, David Farhi, Liam Fedus, Niko Felix, Simón Posada
+Fishman, Juston Forte, Isabella Fulford, Leo Gao, Elie Georges, Christian Gibson,
+Vik Goel, Tarun Gogineni, Gabriel Goh, Rapha Gontijo-Lopes, Jonathan Gordon, Morgan Grafstein, Scott Gray, Ryan Greene, Joshua Gross, Shixiang Shane
+Gu, Yufei Guo, Chris Hallacy, Jesse Han, Jeff Harris, Yuchen He, Mike Heaton,
+Johannes Heidecke, Chris Hesse, Alan Hickey, Wade Hickey, Peter Hoeschele,
+Brandon Houghton, Kenny Hsu, Shengli Hu, Xin Hu, Joost Huizinga, Shantanu
+Jain, Shawn Jain, Joanne Jang, Angela Jiang, Roger Jiang, Haozhun Jin, Denny
+Jin, Shino Jomoto, Billie Jonn, Heewoo Jun, Tomer Kaftan, Łukasz Kaiser, Ali
+Kamali, Ingmar Kanitscheider, Nitish Shirish Keskar, Tabarak Khan, Logan Kilpatrick, Jong Wook Kim, Christina Kim, Yongjik Kim, Jan Hendrik Kirchner,
+Jamie Kiros, Matt Knight, Daniel Kokotajlo, Łukasz Kondraciuk, Andrew Kondrich, Aris Konstantinidis, Kyle Kosic, Gretchen Krueger, Vishal Kuo, Michael
+Lampe, Ikai Lan, Teddy Lee, Jan Leike, Jade Leung, Daniel Levy, Chak Ming
+Li, Rachel Lim, Molly Lin, Stephanie Lin, Mateusz Litwin, Theresa Lopez, Ryan
+Lowe, Patricia Lue, Anna Makanju, Kim Malfacini, Sam Manning, Todor Markov,
+Yaniv Markovski, Bianca Martin, Katie Mayer, Andrew Mayne, Bob McGrew,
+Scott Mayer McKinney, Christine McLeavey, Paul McMillan, Jake McNeil, David
+Medina, Aalok Mehta, Jacob Menick, Luke Metz, Andrey Mishchenko, Pamela
+Mishkin, Vinnie Monaco, Evan Morikawa, Daniel Mossing, Tong Mu, Mira Murati,
+Oleg Murk, David Mély, Ashvin Nair, Reiichiro Nakano, Rajeev Nayak, Arvind
+Neelakantan, Richard Ngo, Hyeonwoo Noh, Long Ouyang, Cullen O’Keefe, Jakub
+Pachocki, Alex Paino, Joe Palermo, Ashley Pantuliano, Giambattista Parascandolo, Joel Parish, Emy Parparita, Alex Passos, Mikhail Pavlov, Andrew Peng,
+Adam Perelman, Filipe de Avila Belbute Peres, Michael Petrov, Henrique Ponde
+de Oliveira Pinto, Michael, Pokorny, Michelle Pokrass, Vitchyr H. Pong, Tolly
+Powell, Alethea Power, Boris Power, Elizabeth Proehl, Raul Puri, Alec Radford,
+Jack Rae, Aditya Ramesh, Cameron Raymond, Francis Real, Kendra Rimbach,
+Carl Ross, Bob Rotsted, Henri Roussez, Nick Ryder, Mario Saltarelli, Ted Sanders,
+Shibani Santurkar, Girish Sastry, Heather Schmidt, David Schnurr, John Schulman, Daniel Selsam, Kyla Sheppard, Toki Sherbakov, Jessica Shieh, Sarah Shoker,
+Pranav Shyam, Szymon Sidor, Eric Sigler, Maddie Simens, Jordan Sitkin, Katarina
+Slama, Ian Sohl, Benjamin Sokolowsky, Yang Song, Natalie Staudacher, Felipe Petroski Such, Natalie Summers, Ilya Sutskever, Jie Tang, Nikolas Tezak, Madeleine B.
+Thompson, Phil Tillet, Amin Tootoonchian, Elizabeth Tseng, Preston Tuggle,
+Nick Turley, Jerry Tworek, Juan Felipe Cerón Uribe, Andrea Vallone, Arun Vijayvergiya, Chelsea Voss, Carroll Wainwright, Justin Jay Wang, Alvin Wang,
+Ben Wang, Jonathan Ward, Jason Wei, CJ Weinmann, Akila Welihinda, Peter
+Welinder, Jiayi Weng, Lilian Weng, Matt Wiethoff, Dave Willner, Clemens Winter,
+Samuel Wolrich, Hannah Wong, Lauren Workman, Sherwin Wu, Jeff Wu, Michael
+Wu, Kai Xiao, Tao Xu, Sarah Yoo, Kevin Yu, Qiming Yuan, Wojciech Zaremba,
+Rowan Zellers, Chong Zhang, Marvin Zhang, Shengjia Zhao, Tianhao Zheng,
+Juntang Zhuang, William Zhuk, and Barret Zoph. 2024. GPT-4 Technical Report.
+arXiv:2303.08774 [cs.CL] https://arxiv.org/abs/2303.08774
+[56] Pratyush Patel, Esha Choukse, Chaojie Zhang, Aashaka Shah, Íñigo Goiri, Saeed
+Maleki, and Ricardo Bianchini. 2024. Splitwise: Efficient generative LLM inference
+using phase splitting. arXiv:2311.18677 [cs.AR] https://arxiv.org/abs/2311.18677
+[57] Gennady Pekhimenko, Vivek Seshadri, Onur Mutlu, Phillip B. Gibbons, Michael A.
+Kozuch, and Todd C. Mowry. 2012. Base-delta-immediate compression: practical
+data compression for on-chip caches. In Proceedings of the 21st International
+Conference on Parallel Architectures and Compilation Techniques (Minneapolis,
+Minnesota, USA) (PACT ’12). Association for Computing Machinery, New York,
+NY, USA, 377–388. https://doi.org/10.1145/2370816.2370870
+[58] Edward O Pyzer-Knapp, Jed W Pitera, Peter WJ Staar, Seiji Takeda, Teodoro Laino,
+Daniel P Sanders, James Sexton, John R Smith, and Alessandro Curioni. 2022.
+Accelerating materials discovery using artificial intelligence, high performance
+computing and robotics. npj Computational Materials 8, 1 (2022), 84.
+[59] Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. 2021.
+Winogrande: An adversarial winograd schema challenge at scale. Commun. ACM
+64, 9 (2021), 99–106.
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+[60] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper,
+and Bryan Catanzaro. 2020. Megatron-LM: Training Multi-Billion Parameter
+Language Models Using Model Parallelism. arXiv:1909.08053 [cs.CL] https:
+//arxiv.org/abs/1909.08053
+[61] Thomas Sterling, Maciej Brodowicz, and Matthew Anderson. 2017. High performance computing: modern systems and practices. Morgan Kaufmann.
+[62] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne
+Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro,
+Faisal Azhar, Aurelien Rodriguez, Armand Joulin, Edouard Grave, and Guillaume Lample. 2023. LLaMA: Open and Efficient Foundation Language Models.
+arXiv:2302.13971 [cs.CL] https://arxiv.org/abs/2302.13971
+[63] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia
+Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini,
+Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel
+Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut
+Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet,
+Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton,
+Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva,
+Eric Michael Smith, Ranjan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross
+Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov,
+Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. 2023. Llama
+2: Open Foundation and Fine-Tuned Chat Models. arXiv:2307.09288 [cs.CL]
+https://arxiv.org/abs/2307.09288
+[64] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. 2023. Attention Is All
+You Need. arXiv:1706.03762 [cs.CL] https://arxiv.org/abs/1706.03762
+[65] Oreste Villa, Mark Stephenson, David Nellans, and Stephen W. Keckler. 2019.
+NVBit: A Dynamic Binary Instrumentation Framework for NVIDIA GPUs. In
+Proceedings of the 52nd Annual IEEE/ACM International Symposium on Microarchitecture (Columbus, OH, USA) (MICRO ’52). Association for Computing Machinery,
+New York, NY, USA, 372–383. https://doi.org/10.1145/3352460.3358307
+[66] Gregory K Wallace. 1992. The JPEG still picture compression standard. IEEE
+Transactions on Consumer Electronics 38, 1 (1992), xviii–xxxiv.
+[67] Chiyue Wei, Cong Guo, Feng Cheng, Shiyu Li, Hao Frank Yang, Hai Helen Li, and
+Yiran Chen. 2025. Prosperity: Accelerating Spiking Neural Networks via Product
+Sparsity. In 2025 IEEE International Symposium on High Performance Computer
+Architecture (HPCA). IEEE, 806–820.
+[68] Guangxuan Xiao, Ji Lin, Mickael Seznec, Hao Wu, Julien Demouth, and Song Han.
+2024. SmoothQuant: Accurate and Efficient Post-Training Quantization for Large
+Language Models. arXiv:2211.10438 [cs.CL] https://arxiv.org/abs/2211.10438
+[69] Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran, Thomas L. Griffiths, Yuan Cao,
+and Karthik Narasimhan. 2023. Tree of Thoughts: Deliberate Problem Solving
+with Large Language Models. arXiv:2305.10601 [cs.CL] https://arxiv.org/abs/
+2305.10601
+[70] Zhihang Yuan, Yuzhang Shang, Yang Zhou, Zhen Dong, Zhe Zhou, Chenhao Xue,
+Bingzhe Wu, Zhikai Li, Qingyi Gu, Yong Jae Lee, Yan Yan, Beidi Chen, Guangyu
+Sun, and Kurt Keutzer. 2024. LLM Inference Unveiled: Survey and Roofline Model
+Insights. arXiv:2402.16363 [cs.CL] https://arxiv.org/abs/2402.16363
+[71] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. 2019.
+HellaSwag: Can a Machine Really Finish Your Sentence? arXiv:1905.07830 [cs.CL]
+https://arxiv.org/abs/1905.07830
+[72] Chen Zhang, Yang Wang, Zhiqiang Xie, Cong Guo, Yunxin Liu, Jingwen Leng,
+Guangyu Sun, Zhigang Ji, Runsheng Wang, Yuan Xie, et al. 2024. DSTC: DualSide Sparsity Tensor Core for DNNs Acceleration on Modern GPU Architectures.
+IEEE Trans. Comput. (2024).
+[73] Junyao Zhang, Hanrui Wang, Qi Ding, Jiaqi Gu, Reouven Assouly, William D
+Oliver, Song Han, Kenneth R Brown, Hai Li, Yiran Chen, et al. 2024. Qplacer:
+Frequency-aware component placement for superconducting quantum computers. arXiv preprint arXiv:2401.17450 (2024).
+
+

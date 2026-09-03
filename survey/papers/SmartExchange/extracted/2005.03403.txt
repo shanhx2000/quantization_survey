@@ -1,0 +1,1162 @@
+                                                SmartExchange: Trading Higher-cost Memory
+                                                Storage/Access for Lower-cost Computation
+                                                          Yang Zhao1∗ , Xiaohan Chen2∗ , Yue Wang1 , Chaojian Li1 , Haoran You1 , Yonggan Fu1 ,
+                                                                              Yuan Xie3 , Zhangyang Wang2 , Yingyan Lin1
+                                                                           1 Department of Electrical and Computer Engineering, Rice University
+                                                                      2 Department of Computer Science and Engineering, Texas A&M University
+                                                                          3 Department of Electrical and Computer Engineering, UC Santa Barbara
+
+                                           Email: {zy34, yw68, cl114, hy34, yf22, yingyan.lin}@rice.edu, {chernxh, atlaswang}@tamu.edu, {yuanxie}@ucsb.edu
+arXiv:2005.03403v2 [cs.LG] 8 May 2020
+
+
+
+
+                                           Abstract—We present SmartExchange, an algorithm-hardware               Standard Matrix                       SmartExchange Matrix
+                                        co-design framework to trade higher-cost memory storage/access                    Weight (W)                Basis matrix (B) Coefficient matrix (Ce)
+                                                                                                                                                                                 r
+                                        for lower-cost computation, for energy-efficient inference of deep            C
+                                                                                                                                                           n               -2-1 2-3 2-5
+                                        neural networks (DNNs). We develop a novel algorithm to enforce
+                                                                                                                                                                             0     0    0
+                                        a specially favorable DNN weight structure, where each layerwise
+                                                                                                                  R                                r                ✖       -2-1 -2-3   2-6
+                                        weight matrix can be stored as the product of a small basis
+                                        matrix and a large sparse coefficient matrix whose non-zero                                                                         -2-7 2-1    2-3
+
+                                        elements are all power-of-2. To our best knowledge, this algorithm                  S                                               2-2 -2-7    2-5
+
+                                        is the first formulation that integrates three mainstream model                                                                 m   0      0    0
+                                                                                                                                 Standard: Access/Store W
+                                        compression ideas: sparsification or pruning, decomposition, and                                                                    -2-1 -2-3   2-6
+                                        quantization, into one unified framework. The resulting sparse                                     vs.
+                                                                                                                                                                            -2-1 -2-3   2-6
+                                        and readily-quantized DNN thus enjoys greatly reduced energy               Proposed: Access/Store (B+Ce) + Compute (CeB)              -7   -1
+                                                                                                                                                                            -2     2    2-3
+                                        consumption in data movement as well as weight storage. On top
+                                        of that, we further design a dedicated accelerator to fully utilize        ● Memory consumption of W >> Size of (B + Ce)
+                                        the SmartExchange-enforced weights to improve both energy                  ● Data movement cost >> computation for large DNNs
+                                        efficiency and latency performance. Extensive experiments show        Fig. 1: The proposed SmartExchange’s weight representation.
+                                        that 1) on the algorithm level, SmartExchange outperforms state-
+                                        of-the-art compression techniques, including merely sparsification    it has little data dependency and can achieve high processing
+                                        or pruning, decomposition, and quantization, in various ablation      throughput via parallelism. However, these MAC operations
+                                        studies based on nine models and four datasets; and 2) on the         incur a significant amount of data movement, due to read/write
+                                        hardware level, SmartExchange can boost the energy efficiency         data accesses, which consumes considerable energy and time,
+                                        by up to 6.7× and reduce the latency by up to 19.2× over four
+                                        state-of-the-art DNN accelerators, when benchmarked on seven
+                                                                                                              and sometimes surprisingly significant (especially when the
+                                        DNN models (including four standard DNNs, two compact DNN             inference batch size is small or just one). Take DianNao as an
+                                        models, and one segmentation model) and three datasets.               example, more than 95% of the inference energy is consumed
+                                           Index Terms—Neural network compression, neural network in-         by data movements associated with the DRAM [6], [8], [30].
+                                        ference accelerator, pruning, weight decomposition, quantization      Therefore, minimizing data movements is the key to improve
+                                                                                                              the energy/time efficiency of DNN accelerators.
+                                                              I. I NTRODUCTION
+                                                                                                                 To address the aforementioned challenges, we propose the
+                                           We have recently witnessed the record-breaking perfor-
+                                                                                                              SmartExchange solution in the spirit of algorithm-hardware
+                                        mance of deep neural networks (DNNs) together with a
+                                                                                                              co-design that strives to trade higher-cost memory stor-
+                                        tremendously growing demand to bring DNN-powered intelli-
+                                                                                                              age/access for lower-cost computation to largely avoid the
+                                        gence into resource-constrained edge devices [33], [46], which
+                                                                                                              dominant data movement cost in DNN accelerators. In this par-
+                                        have limited energy and storage resources. However, as the
+                                                                                                              ticular work, we present a novel SmartExchange algorithm for
+                                        excellent performance of modern DNNs comes at a cost of
+                                                                                                              aggressively reducing both 1) the energy consumption of data
+                                        a huge number of parameters which need external dynamic
+                                                                                                              movement and 2) storage size associated with DNN weights,
+                                        random-access memory (DRAM) for storage, the prohibitive
+                                                                                                              both of which are major limiting factors when deploying DNN
+                                        energy consumed by the massive data transfer between DRAM
+                                                                                                              accelerators into resource-constrained devices.
+                                        and on-chip memories or processing elements (PEs) makes
+                                                                                                                 Our solution represents a layer-wise DNN weight matrix
+                                        DNN deployment non-trivial. The resource-constrained sce-
+                                                                                                              as the product of a small basis matrix and a large coefficient
+                                        narios in edge devices motivate more efficient domain-specific
+                                                                                                              matrix as shown in Figure 1. We then simultaneously enforce
+                                        accelerators for DNN inference tasks [2], [6], [8], [29], [32].
+                                                                                                              two strong structural properties on the coefficient matrix: 1)
+                                           The DNN accelerator design faces one key challenge: how
+                                                                                                              sparse: most elements are zeros and 2) readily-quantized: the
+                                        to alleviate the heavy data movement? Since DNN inference
+                                                                                                              non-zero elements take only power-of-2 values, which have
+                                        mainly comprises multiply-and-accumulate (MAC) operations,
+                                                                                                              compact bit representations and turn the multiplications in
+                                          ∗ denotes equal contribution.                                       MAC operations into much lower-cost shift-and-add opera-
+tions. We then develop an efficient SmartExchange algorithm         layers through which the inputs are progressively processed.
+blended with a re-training process. Experiments using nine          The CONV and FC layers can be described as:
+models on four datasets indicate that such favorable decom-         O[co ][e][ f ] =
+posed and compact weight structures can be achieved using              C−1 R−1 S−1
+our proposed algorithm.                                             σ ( ∑ ∑ ∑ W[co ][ci ][kr ][ks ] × I[ci ][eU + kr ][ fU + ks ] + B[ci ])
+   To fully leverage SmartExchange algorithm’s potential, we           ci =0 kr =0 ks =0
+further develop a dedicated DNN accelerator that takes advan-       0 ≤ co < M, 0 ≤ e < E, 0 ≤ f < F,
+tage of the much reduced weight storage and readily-quantized
+weights resulting from the algorithm to enhance hardware            where W, I, O, and B denote the weights, input activations,
+acceleration performance. Experiments show that the proposed        output activations, and biases, respectively. In the CONV lay-
+accelerator outperforms state-of-the-art DNN accelerators in        ers, C and M, E and F, R and S, and U stand for the number of
+terms of acceleration energy efficiency and latency by up to        input and output channels, the size of input and output feature
+6.7× and 19.2×, respectively. Our contributions are summa-          maps, and the size of weight filters, and stride, respectively;
+rized as three-fold:                                                while in the FC layers, C and M represent the number of input
+                                                                    and output neurons, respectively; with σ denoting the activa-
+  • Our   overall innovation is an algorithm-hardware co-           tion function, e.g., a ReLU function (ReLU(x) = max(x, 0)).
+    design framework harmonizing algorithm and hardware             The pooling layers reduce the dimension of feature maps
+    level innovations for maximizing the acceleration perfor-       via average or max pooling. The recently emerging compact
+    mance and task accuracy. Specifically, we first identify        DNNs (e.g., MobileNet [22] and EfficientNet [43]) introduce
+    opportunities for saving processing energy and time in          depth-wise CONV layers and squeeze-and-excite layers which
+    the hardware level, including reducing DRAM accesses            can be expressed in the above description as well [9].
+    and taking advantage of structured weight and activation
+    sparsity, and then enforce corresponding favorable pat-         B. Demands for Model Compression
+    terns/structures in the algorithm level together with dedi-         During DNN inference, the weight parameters often domi-
+    cated efforts in the accelerator architecture to aggressively   nate the memory storage and limit the energy efficiency due to
+    improve acceleration energy efficiency and latency.             their associated data movements [31], [49]. In response, there
+  • Our algorithm-level contribution is a SmartExchange             are three main streams model compression techniques: prun-
+    algorithm that is designed with strong hardware aware-          ing/sparsification, weight decomposition, and quantizaition.
+    ness. It for the first time unifies the ideas of weight prun-       Pruning/sparsification. Pruning, or weight sparsification,
+    ing, weight decomposition, and quantization, leading to a       increases the sparsity in the weights of DNNs by zeroing
+    highly compact weight structure that boosts acceleration        out non-significant ones, which is usually interleaved with
+    speed and energy efficiency at inference with a ≤2%             fine-tuning phases to recover the performance in practice.
+    accuracy loss. Equipped with re-training, the effectiveness     An intuitive method is to elementwisely zero out weights
+    of the SmartExchange algorithm is benchmarked on large          with near-zero magnitudes [20]. Recent works establish more
+    datasets and state-of-the-art DNNs.                             advanced pruning methods to enforce structured sparsity for
+  • Our hardware-level contribution is a dedicated ac-              convolutional layers [21], [28], [34], [35]. The work in [37]
+    celerator designed to fully utilize the SmartExchange           exhibits that due to the encoding index overhead, vector-wise
+    algorithm-compressed & quantized DNNs to minimize               sparsity is able to obtain similar compression rates at the same
+    both inference energy and latency. We verify and opti-          accuracy as element-wise/unstructured sparsity.
+    mize this accelerator using dedicated simulators validated          Weight decomposition. Another type of approaches to
+    against RTL designs. Experiments show that the proposed         compress DNNs is weight decompositions, e.g., low-rank
+    accelerator achieves up to 6.7× better energy efficiency        decomposition. This type of compression models the redun-
+    and 19.2× speedup, over state-of-the-art designs.               dancy in DNNs as correlations between the highly structured
+   The rest of the paper is organized as follows. Section II in-    filters/columns in convolutional or fully connected layers [12],
+troduces the background and motivation. Section III describes       [24], [32], [38]. Low-rank decomposition expresses the highly
+the problem formulation and the SmartExchange algorithm.            structured filters/weights using products of two small matrices.
+Section IV presents the dedicated accelerator that aims to              Quantization. Quantization attempts to reduce the bit
+amplify the algorithmic gains. Section V shows extensive            width of the data flowing through DNNs [19], [45], [47],
+experiments to manifest the benefits of both the algorithm          thus is able to shrink the model size for memory savings
+and the accelerator of SmartExchange. Sections VI and VII           and simplify the operations for more efficient acceleration.
+summarize related works and our conclusion, respectively.           In addition, it has been shown that combinations of low-rank
+                                                                    decomposition and pruning can lead to a higher compression
+            II. BACKGROUND AND M OTIVATION                          ratio while preserving the accuracy [16], [52].
+A. Basics of Deep Neural Networks                                   C. Motivation for SmartExchange
+  Modern DNNs usually consist of a cascade of multiple                 Table I shows the unit energy cost of accessing different-
+convolutional (CONV), pooling, and fully-connected (FC)             level memories with different storage capacities and com-
+TABLE I: Unit energy cost per 8-bit extracted from a com-           A. Problem Formulation
+mercial 28nm technology.
+                                                                       Previous works have tried to compress DNNs by reducing
+                DRAM     SRAM       MAC     multiplier   adder
+     Energy                                                         the correlation between filters (in CONV layers) or columns
+                 100    1.36−2.45   0.143     0.124      0.019
+    (pJ/8bit)                                                       (in FC layers) via decomposing weights [12], [24], [38]. Here,
+                                                                    given a weight matrix W ∈ Rm×n , we seek to decompose it
+puting an MAC/multiplication/addition (the main computation         as the product of a coefficient matrix Ce ∈ Rm×r and a basis
+operation in DNNs) designed in a commercial 28nm CMOS               matrix B ∈ Rr×n where r ≤ min{m, n}, such that
+technology. We can see that the unit energy cost of memory ac-
+                                                                                                    W ≈ Ce B                           (1)
+cesses is much higher (≥ 9.5×) than that of the corresponding
+MAC computation. Therefore, it is promising in terms of more           In addition to suppressing the reconstruction error (often
+efficient acceleration if we can potentially enforce higher-        defined as ||W − Ce B||2F ), we expect the decomposed matrix
+order of weight structures to more aggressively trade higher-       factors to display more favorable structures for compres-
+cost memory accesses for lower-cost computations, motivating        sion/acceleration. In the decomposition practice, B is usually
+our SmartExchange decomposition idea. That is, the resulting        constructed to be a very small matrix (e.g., B takes the values
+higher structures in DNN weights’ decomposed matrices, e.g.,        of 3, 5, 7, whereas Ce has m rows with m being the number of
+Ce in Figure 1, will enable much reduced memory accesses            weight vectors in a layer). For the much larger Ce , we enforce
+at a cost of more computation operations (i.e., shift-and-add       the following two structures simultaneously to aggressively
+operations in our design), as compared to the vanilla networks.     boost the energy efficiency: 1) Ce needs to be highly sparse
+   In addition, the integration of decomposition, pruning, and      (a typical goal of pruning); and 2) the values of the non-
+quantization, i.e., our SmartExchange, is motivated by the          zero elements in Ce are exactly the powers of 2, so that their
+hypothesis of potentially higher-order sparse structures as         bit representations can be very compact and their involved
+recently observed in [17], [53] from an algorithm perspective.      multiplications to rebuild the original weights from B and Ce
+That is, rather than enforcing element-wise sparsity on the         are simplified into much lower-cost shift-and-add operations.
+original weight matrix directly, it is often more effective to      As a result, instead of storing the whole weight matrix, the
+do so on corresponding decomposed matrix factors (either            proposed SmartExchange algorithm requires storing only a
+additive or multiplicative). Note that SmartExchange on the         very small B and a large, yet highly sparse and readily quan-
+algorithm level targets a more hardware favorable weight            tized Ce . Therefore, the proposed algorithm greatly reduces
+representation, and thus can be combined with other activation      the overall memory storage, and makes it possible to hold Ce
+representations (e.g., sparse activations) [1], [10], [25], [39],   in a much smaller memory of a lower-level memory hierarchy
+[56] for maximizing the efficiency gains.                           to minimize data movement costs. We call such {Ce , B} pair
+   To summarize, the overall goal of SmartExchange is to            the SmartExchange form of W .
+trade higher-cost data movement/access for lower-cost weight           The rationale of the above setting arises from previous
+reconstruction (MACs or shift-and-add operations). To achieve       observations of composing pruning, decomposition, and quan-
+this goal, the concrete design of SmartExchange is motivated        tization. For example, combining matrix decomposition and
+from the following two folds: 1) seeking more compactness in        pruning has been found to effectively compress the model
+the weight representation (contributed mainly by sparsity and       without notable performance loss [17], [24], [38]. One of our
+also by the decomposition which might help discover higher-         innovative assumptions is to require non-zero elements to take
+order sparse structures); and 2) reducing the multiplication        one of a few pre-defined discrete values, that are specifically
+workload in the weight reconstruction (contributed mainly by        picked for not only compact representations but also lower-
+the special power-of-two quantization of nonzero elements).         cost multiplications. Note that it is different from previous
+                                                                    DNN compression using weight clustering, whose quantized
+   III. T HE P ROPOSED S MART E XCHANGE A LGORITHM                  values are learned from data [15], [48].
+   In this section, we first formulate the SmartExchange de-           SmartExchange decomposition problem can hence be writ-
+composition problem. To our best knowledge, SmartExchange           ten as a constrained optimization:
+algorithm is the first unified formulation that conceptually        arg min        kW −Ce Bk2F                                         (2)
+combines three common methodologies for compressing and             Ce ,B
+speeding up DNNs: weight sparsification or pruning, weight
+matrix decomposition, and weight quantization. We then de-
+                                                                            s.t.   ∑ kCe [:, j]k0 ≤ Sc , Ce [i, j] ∈ ΩP , ∀i, j |P| ≤ Np ,
+                                                                                    j
+velop an efficient algorithm to solve the problem, and show         where ΩP := {0, ±2 p |p ∈ P} with P being an integer set whose
+that the SmartExchange algorithm can be appended to post-           cardinality |P| is no more than N p , Sc controls the total number
+processing a trained DNN for compression/acceleration with-         of non-zero elements in Ce , while N p controls the bit-width
+out compromising the accuracy loss. We then demonstrate             required to represent a nonzero element in Ce .
+that SmartExchange algorithm can be incorporated into DNN
+re-training to achieve more promising trade-offs between the        B. The SmartExchange Algorithm
+inference accuracy and resource usage (e.g., the model size,          Solving Eq. (2) is in general intractable due to both the
+memory access energy, and computational cost).                      nonconvex `0 constraint, and the integer set ΩP constraint. We
+Algorithm 1 SmartExchange Algorithm.                                 i.e., a smaller r favors a higher compression rate yet might
+                                                                     cause a higher accuracy loss. Note that r is equal to the rank
+ 1: Sparsify Ce in a channel-wise manner;                            of the basis matrix B, i.e., r = n when B is a full matrix,
+ 2: Initialize Ce and B; Iteration = 0;                              otherwise r ≤ n. To minimize the memory storage, we set the
+ 3: while kδ (Ce )k ≥ tol or iteration < tol maximum:                basis matrix B ∈ Rr×n to be small. In practice, we choose
+ 4:     Step 1: Quantize Ce to powers of 2;                          n = R = S with R × S being the CONV kernel size. Since n
+ 5:     Step 2: Fitting B and Ce ;                                   is small, we choose r = n = S too. We next discuss applying
+ 6:    iteration = iteration + 1;                                    the proposed algorithm to the FC and CONV layers. In all
+ 7:    Step 3: Sparsity Ce in a vector-wise manner;                  experiments, we initialize Ce = W and B = I for simplicity.
+ 8: Re-quantize Ce and re-fit B.
+                                                                         • SmartExchange algorithm on FC layers.          Consider a
+introduce an efficient heuristic algorithm that iterates between           fully-connected layer W ∈ RM×C . We reshape each row
+objective fitting and feasible set projection. The general outline         of W into a new matrix W̃i ∈ RC/S×S , and then apply
+of the SmartExchange algorithm is described in Algorithm 1,                SmartExchange algorithm. Specifically, zeros are padded
+and the three key steps to be iterated are discussed below:                if C is not divisible by S, and SmartExchange algorithm
+    Step 1: Quantizing Ce . The quantization step projects                 is applied to W̃i , where i = 1, . . . , M. When C  S, the
+the nonzero elements in Ce to ΩP . Specifically, we will first             reconstruction error might tend to be large due to the
+normalize each column in Ce to have a unit norm in order                   imbalanced dimensions. We alleviate it by slicing W̃i
+to avoid scale ambiguity. We will then round each non-zero                 into smaller matrices along the first dimension.
+                                                                         • SmartExchange algorithm on CONV layers. Consider a
+element to its nearest power-of-two value. We define δ (Ce ) to
+be the quantization difference of Ce .                                     convolutional layer W in the shape (M,C, R, S): Case 1:
+    Step 2: Fitting B and Ce . We will first fit B by                      R = S > 1. We reshape the M filters in W into matrices of
+solving arg minB kW − Ce Bk2F , and then fit Ce by solving                 shape (S × C, S), on which SmartExchange algorithm is
+arg min Ce kW − Ce Bk2F . When fitting either one, the other is            applied. The matrices can be sliced into smaller matrices
+fixed to be its current updated value. The step simply deals               along the first dimension if S ×C  S. Case 2: R = S = 1.
+with two unconstrained least squares.                                      The weight is reshaped into a shape of (M,C) and then
+    Step 3: Sparsifying Ce . To pursue better compres-                     is treated the same as an FC layer.
+sion/acceleration, we simultaneously introduce both channel-         The above procedures are easily parallelized along the axis of
+wise and vector-wise sparsity to Ce :                                the output channels for acceleration.
+                                                                        We apply the SmartExchange algorithm on a VGG19 net-
+    • We first prune channels whose corresponding scaling
+                                                                     work1 pre-trained on the CIFAR-10 [26], with θ = 4×10−3 ,
+      factor in batch normalization layers is lower than a
+                                                                     tol = 10−10 , and a maximum iteration of 30. Weights in it are
+      threshold which is manually controlled for each layer. In
+                                                                     decomposed by SmartExchange algorithm into the coefficient
+      practice, we only apply channel-wise sparsifying at the
+                                                                     matrices and basis matrices. It only takes about 30 seconds
+      first training epoch once, given the observation that the
+                                                                     to perform the algorithm on the network. Without re-training,
+      pruned channel structure will not change much.
+                                                                     the accuracy drop in the validation set is as small as 3.21%
+    • We then zero out elements in Ce based on the magnitudes
+                                                                     with an overall compression rate of over 10×. The overall
+      to meet the vector-wise sparsity constraint: ∑ j kCe [:
+                                                                     compression rate of a network is defined as the ratio between
+      , j]k0 ≤ Sc , where Sc is manually controlled per layer.
+                                                                     the total number of bits to store the weights (including the
+    In practice, we use hard thresholds for channel and vector-      coefficient matrix Ce , basis matrix B, and encoding overhead)
+wise sparsity to zero out small magnitudes in Ce for implemen-       and the number of bits to store the original FP32 weights.
+tation convenience. With the combined channel and vector-               SmartExchange algorithm with re-training. After a DNN
+wise sparsity, we can bypass reading the regions of the input        has been post-processed by SmartExchange algorithm, a re-
+feature map that correspond to the pruned parameters, saving         training step can be used to remedy the accuracy drop. As
+both storage-access and computation costs in convolution             the un-regularized re-training will break the desired property
+operations. Meanwhile, the sparsity patterns in Ce also reduce       of coefficient matrix Ce , we take an empirical approach to
+the encoding overheads, as well as the storage-access and            alternate between 1) re-training the DNN for one epoch; and
+computation costs during the weight reconstruction W = Ce B.         2) applying the SmartExchange algorithm to ensure the Ce
+    After iterating between the above three steps (quantization,     structure. The default iteration number is 50 for CIFAR-10
+fitting and sparsification) for sufficient iterations, we conclude   [26] and 25 for ImageNet [11]. As shown in experiments
+the iterations by re-quantizing the nonzero elements in Ce to        in Section V-A, the alternating re-training process further
+ensure Ce [i, j] ∈ ΩP and then re-fitting B with the updated Ce .    improves the accuracy while maintaining the favorable weight
+C. Applying the SmartExchange Algorithm to DNNs                      structure. More analytic solutions will be explored in future
+                                                                     work, e.g., incorporating SmartExchange algorithm as a regu-
+   SmartExchange algorithm as post-processing. The value             larization term [48].
+of r (see Eq. (1)) is a design knob of SmartExchange for
+trading-off the achieved compression rate and model accuracy,          1 https://github.com/chengyangfu/pytorch-vgg-cifar10
+                                             Coefficient             Basis                               Weight (W)                                     Input (I)             Unstructured Sparsity           Vector-wise Sparsity
+           Weight (W)                                                                                                                                                         Encoding Index Matrix          Encoding Index Matrix
+                                             matrix (Ce)            matrix (B)
+       C                                                                S                                                                                                             0      1   0                       1
+                                                                                                                 0       0       0
+
+                               S                   S                B00 B01 B02                                                                                                       1      0   1                       0
+       W00 W01 W02                                                                                           0       0       0
+
+                           W00 W01 W02   〓   Ce00 Ce01 Ce02    ✕S   B10 B11 B12                                                                                                       1      0   0    18 indices
+                                                                                                                                                                                                          VS.
+                                                                                                                                                                                                                         1
+   R                                                                                                                                                                                  0      0   1    6 indices          1
+                                                                    B20 B21 B22
+                                                                                                                                                                                      1      1   0                       0
+                                                                                               R         0       0       0
+                                                                                                                                                                                      0      1   1                       0
+             S       (a)                                 (b)                                             0       0       0
+
+                                                                                                                 S                                                                           S                           S
+Fig. 2: An illustration of (a) a 3D weight filter and its                                                                               skipped input                                1      non-zero data          0    zero data
+
+parameters’ notations, and (b) rebuilding one row of weights                                                                                (a)                                                             (b)
+using the corresponding basis and coefficient matrix.                             Fig. 3: An illustration of (a) vector-wise skipping the corre-
+                                                                                  sponding activations, and (b) the reduced indexing overhead,
+  IV. T HE P ROPOSED S MART E XCHANGE ACCELERATOR                                 thanks to the enforced vector-wise weight sparsity of the
+   In this section, we present our proposed SmartExchange                         SmartExchange algorithm.
+accelerator. We first introduce the design principles and con-
+siderations (Section IV-A) for fully making use of the proposed                   both the PEs and REs, and stored in the local memories within
+SmartExchange algorithm’s properties to maximize energy ef-                       REs for minimizing the associated data movement costs.
+ficiency and minimize latency, and then describe the proposed                        Second, the REs should be located close to the PEs for
+accelerator (Section IV-B) in details.                                            minimizing the data movement costs of the rebuilt weights.
+                                                                                  This is because once the weights are rebuilt, the cost of their
+A. Design Principles and Considerations                                           data movements are the same as the original weights.
+   The proposed SmartExchange algorithm exhibits a great                             Third, as the basis matrices are reused most frequently, the
+potential in reducing the memory storage and accesses for                         dataflow for these matrices should be weight stationary, i.e.,
+on-device DNN inference. However, this potential cannot be                        once being fetched from the memories, they should stay in the
+fully exploited by existing accelerators [1], [6], [39], [54] due                 PEs until all the corresponding weights are rebuilt.
+to 1) the required rebuilding operations of the SmartExchange                        Taking advantage of the (structured) sparsity. The
+algorithm to restore weights and 2) the unique opportunity to                     enforced vector-wise sparsity in the SmartExchange algo-
+explore coefficient matrices’ vector-wise structured sparsity.                    rithm’s coefficient matrices offers benefits of 1) vector-wise
+In this subsection, we analyze the opportunities brought by                       skipping both the memory accesses and computations of the
+the SmartExchange algorithm to abstract design principles and                     corresponding activations (see Figure 3 (a)) and 2) reduced
+considerations for developing and optimizing the dedicated                        coefficient matrix encoding overhead (see Figure 3 (b)). Mean-
+SmartExchange accelerator.                                                        while, there is an opportunity to make use of the vector-
+   Minimizing overhead of rebuilding weights. Thanks to                           wise/bit-level sparsity of activations for improving efficiency.
+the sparse and readily quantized coefficient matrices resulting                      First, one promising benefit of the SmartExchange algo-
+from the SmartExchange algorithm, the memory storage and                          rithm’s enforced vector-wise sparsity in the coefficient ma-
+data movements associated with these matrices can be greatly                      trices is the possibility to vector-wise skip both the memory
+reduced (see Table II; e.g., up to 80×). Meanwhile, to fully                      accesses and computations of the corresponding activations
+utilize the advantages of the SmartExchange algorithm, the                        (see Figure 3 (a)). This is because those vector-wise sparse
+overhead of rebuilding weights should be minimized. To do so,                     coefficient matrices’ corresponding weight vectors naturally
+it critical to ensure that the location and time of the rebuilding                carry their vector-wise sparsity pattern/location, offering the
+units and process are properly designed. Specifically, a Smar-                    opportunity to directly use the sparse coefficient matrices’
+tExchange accelerator should try to 1) store the basis matrix                     encoding index to identify the weight sparsity and skip the cor-
+close to the rebuild engine (RE) that restores weights using                      responding activations’ memory accesses and computations.
+both the basis matrix and corresponding weighted coefficients;                    Such a skipping can lead to large energy and latency savings
+2) place the RE to be close to or within the processing                           because weight vectors are shared by all activations of the
+elements (PEs); and 3) use a weight-stationary dataflow for                       same fracture maps in CONV operations, see Figure 3 (b).
+the basis matrix. Next, we elaborate these principles in the                         Second, commonly used methods for encoding weight spar-
+context of one 3D filter operation (see Figure 2 (a)):                            sity, such as run-length coding (RLC) [7], [54], the 1-bit
+   First, the SmartExchange algorithm decomposes the weight                       direct weight indexing [56], and Compressed Row Storage
+matrix ((C × R) × S) corresponding to one 3D filter into a                                                                                     w/ o Booth encoding             w/ 4-bit Booth encoding
+                                                                                  Percentage (%)
+
+
+
+
+                                                                                                   100
+coefficient matrix of size (C × R) × S and a basis matrix of                                                         86.5
+                                                                                                                                 76.6
+                                                                                                                                            85.2
+                                                                                                                                                   73.9         79.8
+                                                                                                                                                                              86.8
+                                                                                                                                                                                     76.9
+                                                                                                                                                                                                     84.1
+                                                                                                                                                                                                            73.0
+                                                                                                                                                                                                                        86.7
+                                                                                                                                                                                                                               76.1
+                                                                                                    80                                                                 66.0
+size S × S. According to Eq. (1), each element in the basis                                         60
+matrix is reused C × R times in order to rebuild the weights,                                       40
+                                                                                                    20
+while the number of reuses of each element in the coefficient
+                                                                                                     0
+matrix is only S. This often means two orders of magnitude                                                           VGG11                 ResNet50                 MBV2      VGG19               ResNet164            DeepLabV3+
+
+more reuse opportunities for the basis matrices than that of                                                                               ImageNet                                       CIFAR-10                      CamVid
+
+the coefficient matrices, considering most state-of-the-art DNN                   Fig. 4: The bit-level sparsity in activations for six models on
+models. Therefore, the basis matrices should be placed close to                   three datasets.
+                                                               Controller      instruction
+                    Input                                                                             PE                                             F     I           F       O                        input
+
+
+
+
+                                 MUX
+                     GB                                         PE Slice dimM -1                     Line
+                                                                                                                           MAC         MAC          MAC                       MAC    MAC      MAC      weight
+
+                                                              PE Slice 0                             ❹
+                     ==0                                                                                        RE         MUX         MUX        MUX                        MUX     MUX      MUX    psum/output
+
+
+
+
+                            Select
+                            Input
+                                                                                                     ❺
+                Input                                            PE Line 0                                  RE
+       DRAM
+
+
+
+                Index                                                                                                                                                                                   select
+                                                                 PE Line 1
+
+
+
+
+                                        Weight Buffer
+                   Index
+                                                                 PE Line 2
+                    Sel.      Weight
+                                                                 PE Line 3                                                                    Ce0
+                Weight
+                Index
+                              Select
+                                                                                                            ❶
+                                                                                                                           B0x
+                                                                                                                                 reg         >>
+                                                                                                                                                          RE                         Booth     MAC
+                  Weight                                                                                                                                                            Encoder
+                                                                                                                                              Ce1
+
+
+
+
+                                                                                                     MUX1
+                                                                                                                           B1x
+                 Index GB                                                                                   ❷                    reg         >>
+
+
+
+
+                                                                                                                Basis RF
+                                                                PE Line     dimC -1                                                                                        weight     >>
+                                                                                                                                              Ce2
+
+
+
+
+                                                                                                                                                          MUX2
+                                                                                                                           B2x
+                                       FIFO                                                                                      reg         >>                                      psum
+                  Output
+                                                               Accum. Buffer                 Adder
+                                                                                                            ❸
+                   GB                                                                         Tree
+     Off-chip                                                                                                                                                    (b)
+                                                        (a)
+Fig. 5: An illustration of the proposed SmartExchange accelerator: (a) architecture, and (b) the block diagram of the processing
+element (PE) line, each of which includes two rebuilding engines (REs) and eight multiply-and-accumulate (MAC) units.
+(CRS) [18], store both the values and sparsity encoding in-                                              leveraging compact models for more efficient processing.
+dexes of weights. Our SmartExchange algorithm’s vector-wise
+weight sparsity reduce both the sparsity encoding overhead                                               B. Architecture of the SmartExchange Accelerator
+(see Figure 3 (b)) and skipping control overhead. The resulting                                             Architecture overview. Figure 5 (a) shows the architecture
+energy and latency benefits depend on the sparsity ratio and                                             of the proposed SmartExchange accelerator which consists of a
+pattern, and hardware constraints (e.g., memory bandwidths).                                             3D PE array with a total of dimM PE slices, input/index/output
+                                                                                                         global buffers (see the blocks named Input GB, Weight Index
+   Third, the accelerator can further make use of bit-level and                                          GB, and Output GB, where GB denotes global buffer) associ-
+vector-wise sparsity of activations to improve energy efficiency                                         ated with an index selector for sparsity (see the blocks named
+and reduce latency, where the bit-/vector-wise sparsity means                                            Index sel.), and an controller. The accelerator communicates
+the percentage of the zero activation bits/rows over the total                                           with an off-chip DRAM through DMA (direct memory access)
+activation bits/rows. Figure 4 shows the bit-level sparsity of                                           [54]. Following the aforementioned design principles and
+activations w/ and w/o 4-bit Booth encoding [10] in popu-                                                considerations (see Section IV-A), the proposed accelerator
+lar DNNs, including VGG11, ResNet50, and MobileNetV2                                                     features the following properties: 1) an RE design which is
+on ImageNet, VGG19 and ResNet164 on CIFAR-10, and                                                        inserted within PE lines to reduce the rebuilding overhead
+DeepLabV3+ on CamVid. We can see that the bit-level sparsity                                             (see the top part of Figure 5 (b)); 2) a hybrid dataflow: an
+is 79.8% under an 8-bit precision and 66.0% using the                                                    1D row stationary dataflow is adopted within each PE line for
+corresponding 4-bit Booth encoding even for a compact model                                              maximizing weight and input reuses, while each PE slice uses
+like MobileNetV2; for vector-wise sparsity, it can be widely                                             an output stationary dataflow for maximizing output partial
+observed among the CONV layers with 3 × 3 kernel size, e.g.,                                             sum reuses; 3) an index selector (named Index Sel. in Figure 5
+up to 27.1% in the last several CONV layers of MobileNetV2                                               (a)) to select the none-zero coefficient and activation vector
+and up to 32.4% in ResNet164. If the memory accesses                                                     pairs as inspired by [56]. This is to skip not only computations
+and computations of zero activation bits can be skipped, the                                             but also data movements associated with the sparse rows of
+resulting performance improvement will be proportional to the                                            the coefficients and activations. The index selector design in
+bit-level activation sparsity, as elaborated in [10] which shows                                         SmartExchange is the same as that of [56] except that here
+that combining with zero weights, higher efficiency can be                                               index values of 0/1 stand for vector (instead of scalar) sparsity;
+achieved when targeting zero activation bits (instead of merely                                          4) a data-type driven memory partition in order to use matched
+considering zero activations). As for the vector-wise sparsity                                           bandwidths (e.g., a bigger bandwidth for the weights/inputs
+of activations, only when activations at one row are all zeros,                                          and a smaller bandwidth for the outputs) for different types of
+we could skip fetching the corresponding weight vectors due                                              data to reduce the unit energy cost of accessing the SRAMs
+to the window sliding processing of CONV layers.                                                         which is used to implement the GB blocks [13]. We adopt
+   Support for compact models. The recently emerged                                                      separated centralized GBs to store the inputs, outputs, weights
+compact models, such as MobileNet [22] and EfficentNet [43],                                             and indexes, respectively, and distributed SRAMs (see the
+often adopt depth-wise CONV and squeeze-and-excite layers                                                Weight Buffer unit in Figure 5 (a)) among PE slices to store
+other than the traditional 2D CONV layers to restrict the                                                weights (including the coefficients and basis matrices); and 5)
+model size, which reduces the data resuse opportunities. Take                                            a bit-serial multiplier based MAC array in each PE line to
+a depth-wise CONV layer as an example, it has an “extreme”                                               make use of the activations’ bit-level sparsity together with a
+small number of CONV channels (i.e., 1), reducing the input                                              Booth Encoder as inspired by [10].
+reuse over the standard CONV layers; similar to that of FC                                                  PE slices and dataflow. We here describe the design of the
+layers, there are no weight reuse opportunities in squeeze-and-                                          PE Slice unit in the 3D PE slice array of Figure 5 (a):
+excite layers. On-device efficient accelerators should consider                                             First, the 3D PE Slide array: our SmartExchange acceler-
+these features of compact models for their wide adoption and                                             ator enables paralleled processing of computations associated
+                        Weight (W)                       Input (I)             path of MUX1 ¸ for the original weights is to handle DNNs’
+              (a)        W0      W1   W2   ✱   I0   I1    I2   I3    I4   I5
+          Operation:                                                           layers where SmartExchange is not applied on.
+                                 S
+                                                    F     I    F     O
+                                                                                  Fourth, the handling of compact models: when handling
+
+
+
+
+                              time
+                                                                               compact models, we consider an adjusted dataflow and PE line
+                       Cycle 1        W0       I0   I1    I2   I3    I4   I5
+              (b)                                                              configuration for improving the utilization of both the PE slice
+                                               +    +     +    +
+           Temporal                                                            array and the MAC array within each PE line. Specifically, for
+                       Cycle 2        W1       I1   I2    I3   I4    I5
+           schedule:
+                                               +    +     +    +               depth-wise CONV layers, since the number of CONV channels
+                       Cycle 3        W2       I2   I3    I4   I5
+                                                                               is only 1, the dimC PE lines will no longer correspond to
+
+
+
+
+                                               =
+
+                                                    =
+
+                                                         =
+
+                                                               =
+                                               O0   O1   O2    O3              input channels. Instead, we map the R number of 1D CONV
+Fig. 6: An illustration of the proposed 1D row stationary along                operations along the dimension of the weight height to these
+each PE slice (in this particular example, FIFO size is 5, and                 PE lines. For squeeze-and-excite/FC layers, each PE line’s
+in general it should be dimF + S − 1): (a) 1D CONV and (b)                     MAC array of dimF MACs can be divided into multiple
+processing flow of 1D row stationary.                                          clusters (e.g., two clusters for illustration in the top part of
+                                                                               Figure 5 (b)) with the help of the two REs in one PE line
+with the same weight filter using the PE slice array of size                   (denoted as ¹ and º) and multiplexing units at the bottom
+dimM (with each PE slice having dimC PE lines) and dimC                        of the MAC array, where each cluster handles computations
+number of input channels, where the resulting partial sums                     corresponding to a different output pixel in order to improve
+are accumulated using the adder trees at the bottom of the PE                  the MAC array’s utilization and thus latency performance. In
+lines (see the bottom right side of Figure 5 (a)). In this way, a              this way, the proposed SmartExchange accelerator’s advantage
+total of dimM consecutive output channels (i.e., dimM weight                   is maintained even for compact models, thanks to this adjust-
+filters) are processed in parallel to maximize the reuse of input              ment together with 1) our adopted 1D row stationary dataflow
+activations. Note that this dataflow is employed to match the                  within PE lines, 2) the employed bit-serial multipliers, and 3)
+way we reshape the weights as described in Section III.C.                      the possibility to heavily quantized coefficients (e.g., 4-bit).
+    Second, the PE line design: each PE line in Figure 5                          Coefficient matrix indexing. For encoding the sparse co-
+includes an array of dimF MACs, one FIFO (using double                         efficients, there are two commonly used methods: 1) a 1-bit
+buffers), and two RE units, where the REs at the left restore                  direct indexing where the indexes are coded with 1-bit (0 or
+the original weights in a row-wise manner. During operations,                  1 for zero or non-zero coefficients, respectively) [56]; and
+each PE line processes one or multiple 1D CONV operations,                     2) an RLC indexing for the number of zero coefficient rows
+similar to the 1D row stationary in [7] except that we stream                  [7]. Since SmartExchange algorithm (see Section III) enforces
+each rebuild weight of one row temporally along the MACs for                   channel-wise sparsity first and then vector-wise sparsity on
+processing one row of input activations. In particular, the 1D                 top of channel-wise sparsity, the resulting zero coefficients
+CONV operation is performed by shifting the input activations                  are mostly clustered within some regions. As a result, a 1-bit
+along the array of MACs within the PE line (see Figure 6)                      direct indexing can be more efficient with those clustered zero
+via an FIFO; this 1D CONV computation is repeated for the                      coefficients removed.
+remaining 1D CONV operations to complete one 2D CONV                              Buffer design. For making use of DNNs’ (filter-
+computation in ≤ (S × R) cycles (under the assumption of w/                    /vector-wise or bit-level) sparsity for skipping corresponding
+sparsity and w/o bit-serial multiplication) with 1) each weight                computations/memory-accesses, it in general requires a larger
+element being shared among all the MACs in each cycle, and                     buffer (than that of corresponding dense models) due to the
+2) the intermediate partial sums of the 2D CONV operations                     unknown dynamic sparsity patterns. We here discuss how we
+are accumulated locally in each MAC unit (see the bottom                       balance between the skipping convenience and the increased
+right part of Figure 5 (b)).                                                   buffer size. Specifically, to enable the processing with sparsity,
+    Third, the RE design: as shown in the bottom left corner                   the row pairs of non-zero input activations and coefficients
+of Figure 5 (b), an RE unit includes an RF (register file) of                  are selected from the Input GB and the Index GB (using the
+size S × S to store one basis matrix and a shift-and-add unit                  corresponding coefficient indexes), respectively, as inspired
+to rebuild weights. The time division multiplexing unit at the                 by [56], which are then sent to the corresponding PE lines
+left, i.e., MUX1, is to fetch the ¶ coefficient matrices, ·                    for processing with the resulting outputs being collected to
+basis matrices, or ¸ original weights. This design enables                     the output GB.
+the accesses of these three types of data to be performed                         First, input GB: to ensure a high utilization of the PE array,
+in a time division manner in order to reduce the weight                        a vanilla design requires (dimC × dimF × bitsinput )× input
+bandwidth requirement by taking advantage of the fact that it                  activation rows (than that of the dense model counterpart)
+is not necessary to fetch these three types of data simultane-                 to be fetched for dealing with the dynamic sparsity patterns,
+ously. Specifically, the basis matrix is fetched first and stored              resulting in (dimC × dimF × bitsinput )× increased input GB
+stationary within the RE until the associated computations                     bandwidth requirement. In contrast, our design leads to a
+are completed; the weights are then rebuilt in an RE where                     ≥ 1/S reduction of this required input GB bandwidth, with
+each row of a coefficient matrix stays stationary until all its                dimC × dimF × bitsinput inputs for every (S + “Booth encoded
+associated computations are finished (see Figure 2). The third                 non-zero activation bits”) cycles. This is because all the FIFOs
+                                            SmartExchange Acc.
+
+      PyTorch       Parser       Compiler                                                                                                               3.13x         Network
+                                                                                                        ThiNet-70 [36]
+                                                                                                                                                                   Slimming [34]
+                                                                                        3.44x
+     Conv2d        2D CONV,        Instr.                                                         ThiNet-50 [36]
+
+
+
+
+                                                                                                                                         Accuracy (%)
+                                                                    Accuracy (%)
+     Linear                                                                          +2.66%
+                   depth-wise
+                   CONV, FC,                     Controller                          FP8 [44]
+                                                                                                                            Network
+                   C,M,E,F,R,S                    Runtime                                     ThiNet-30 [36]             Slimming [34]
+                                                                                     S8 [3]                    4.12x                                                       Network
+                                                                                                                                                                        Slimming [34]
+                                                                                                                                                                3.79x
+Fig. 7: The software-hardware interface pipeline for the pro-                      DoReFa [55]
+
+posed SmartExchange accelerator.
+                                                                                   WAGEU-BN8
+                                                                                      [51]
+in the PE lines are implemented in a ping-pong manner using
+double buffers, thanks to the fact that 1) the adopted 1-D
+row stationary dataflow at each PE line helps to relief this        Fig. 8: Accuracy vs. model size comparison of the SmartEx-
+bandwidth requirement, because each input activation row can        change algorithm (SE) and state-of-the-art compression tech-
+be reused for S cycles; and 2) the bit-serial multipliers takes     niques on the (a) ImageNet and (b) CIFAR-10 datasets, where
+≥ 1 cycles to finish an element-wise multiplication.                different colors differentiate the SE and baseline techniques.
+   Second, weight/index/output buffer: Similar to that of the
+input GB, weight/index buffer bandwidth needs to be expanded        decomposition, and quantization into one framework, we
+for handling activation sparsity, of which the expansion is         perform extensive ablation studies (benchmark over two
+often small thanks to the common observation that the vector-       structured pruning and four quantization, i.e., state-of-the-
+wise activation sparsity ratio is often relatively low. Note that   art compression techniques on four standard DNN models
+because basis matrices need to be fetched and stored into           with two datasets) to validate its superiority. In addition,
+the RE before the fetching of coefficient matrices and the          we evaluate SmartExchange on two compact DNN models
+weight reconstruction computation, computation stalls occur if      (MobileNetV2 [41] and EfficientNet-B0 [43]) on the ImageNet
+the next basis matrix is fetched after finishing the coefficient    [11] dataset, one segmentation model (DeepLabv3+ [5]) on the
+fetching and the computation corresponding to the current           CamVid [4] dataset, and two MLP models on MNIST.
+basis matrix. Therefore, we leverage the two REs (¹ and º              On the hardware level, as the goal of the proposed SmartEx-
+paths) in each PE line to operate in a “ping-pong” manner to        change is to boost hardware acceleration energy efficiency and
+avoid the aforementioned computation stalls. For handling the       speed, we evaluate SmartExchange’s algorithm-hardware co-
+output data, we adopt an FIFO to buffer the outputs from each       design results with state-of-the-art DNN accelerators in terms
+PE slice before writing them back into the GB, i.e., a cache        of energy consumption and latency when processing represen-
+between the PE array and the output GB. This is to reduce           tative DNN models and benchmark datasets. Furthermore, to
+the required output GB bandwidth by making use of the fact          provide more insights about the proposed SmartExchange, we
+that each output is calculated over several clock cycles.           perform various ablation studies to visualize and validate the
+   Software-hardware interface. Here we briefly describe            effectiveness of SmartExchange’s component techniques.
+how the software-hardware interface works for deploying a           A. Evaluation of the SmartExchange Algorithm
+SmartExchange algorithm-based DNN model from deep learn-               Experiment settings. To evaluate the algorithm perfor-
+ing frameworks (e.g., PyTorch) into the SmartExchange accel-        mance of SmartExchange, we conduct experiments on 1) a
+erator hardware. As shown in Figure 7, a pre-trained Smar-          total of six DNN models using both the CIFAR-10 [26]
+tExchange algorithm-based DNN model will pass through the           and ImageNet [11] datasets, 2) one segmentation model on
+blocks of DNN Parser and Compiler before being loaded into          the CamVid [4] dataset, and 3) two MLP models on the
+the accelerator. Specifically, the DNN Parser firstly helps to      MNIST dataset and compare the performance with state-of-
+extracts DNN model parameters including layer type (e.g.,           the-art compression techniques in terms of accuracy and model
+2D CONV, depth-wise CONV, or FC layer) and activation               size, including two structured pruning techniques (Network
+and weight dimensions, which will then used by the DNN              Slimming [34] and ThiNet [36]), four quantization techniques
+Compiler to 1) determine the dataflow and 2) generate the           (Scalable 8-bit (S8) [3], FP8 [44], WAGEUBN [51], and
+sparse index and instructions for configuring the PE array,         DoReFa [55]), one power-of-two quantization technique [40],
+memory data arrangements, and runtime scheduling. Finally,          and one pruning and quantization technique [56].
+the resulting instructions from the Compiler are loaded into           SmartExchange vs. existing compression techniques. As
+the accelerator’s controller for controlling processing.            SmartExchange unifies the three mainstream ideas of pruning,
+                                                                    decomposition and quantization, we evaluate the SmartEx-
+                  V. E XPERIMENT R ESULTS                           change algorithm performance by comparing it with state-
+   In this section, we present a thorough evaluation of Smar-       of-the-art pruning-alone and quantization-alone algorithms2 ,
+tExchange, a new algorithm (see Section III) and hardware           under four DNN models and two datasets. The experiment
+(see Section IV) co-design framework.                               results are shown in Figure 8. SmartExchange in general
+   On the algorithm level, as SmartExchange unifies three             2 we did not include decomposition-alone algorithms since their results are
+mainstream model compression ideas: sparsification/pruning,         not as competitive and also less popular.
+TABLE II: The result summary of the proposed SmartEx-                      TABLE III: Evaluation of SmartExchange with re-training on
+change with re-training on: 1) VGG11 and ResNet50 using                    two compact models with the ImageNet dataset [11].
+the ImageNet dataset [11]; 2) VGG19 and ResNet164 using                                   Top-1    Top-5    CR    Param. B  Ce   Spar.
+the CIFAR-10 dataset [26]; and 3) MLP-1 [40] and MLP-2                      Model
+                                                                                          (%)      (%)      (×)   (MB) (MB) (MB) (%)
+[56] using the MNIST dataset.
+                                                                            MBV2          72.19% 90.53% -    13.92         -    -    -
+                Top-1     Top-5     CR     Param. B  Ce   Spar.             MBV2SE        70.16% 89.54% 6.57 2.12          0.37 1.74 0.00
+ Model
+                (%)       (%)       (×)    (MB) (MB) (MB) (%)
+                                                                            Eff-B0        76.30% 93.50% -    20.40         -    -    -
+ VGG11          71.18% 90.08% -     845.75 -   -     -                      Eff-B0SE      73.80% 91.79% 6.67 3.06          0.51 2.55 0.00
+ VGG11SE        70.97% 89.88% 47.04 17.98 1.67 14.77 86.00
+ ResNet50       76.13%    92.86%    -     102.40    -      -      -        size; “Param.”, “B”, and “Ce ” denote the total size of the model
+ ResNet50SE     75.31%    92.33%    11.53 8.88      1.40   6.77   45.00    parameters, the basis matrices, and the coefficient matrices,
+ ResNet50SE     74.06%    91.53%    14.24 7.19      1.40   5.08   58.60    respectively; “Spar.” denotes the ratio of the pruned and total
+ VGG19          93.66%    -         -     80.13     -      -      -        parameters (the higher the better). Without too much surprise,
+ VGG19SE        92.96%    -         74.19 1.08      0.27   0.74   92.80
+                                                                           SmartExchange compresses the VGG networks by 40× to
+ VGG19SE        92.87%    -         80.94 0.99      0.27   0.65   93.70
+                                                                           80×, all with negligible (less than 1%) top-1 accuracy losses.
+ ResNet164 94.58% -                 -     6.75      -    -    -            For ResNets, SmartExchange is still able to achieve a solid
+ ResNet164SE 95.04% -               8.04 0.84       0.25 0.53 37.60
+ ResNet164SE 94.54% -               10.55 0.64      0.25 0.33 61.00
+                                                                           >10× compression ratio. For example, when compressing
+                                                                           ResNet50, we find SmartExchange to incur almost no accuracy
+ MLP-1          98.47% -            -      14.125 -    -    -              drop, when compressing the model size by 11× to 14×.
+ MLP-1SE        97.32% -            130    0.11   0.01 0.10 82.34
+                                                                              SmartExchange applied on compact models. Table II
+ MLP-2          98.50% -            -     1.07      -    -     -           seems to suggest that (naturally) applying SmartExchange to
+ MLP-2SE        98.11% -            45.03 0.024     0.00 0.024 93.33
+                                                                           more redundant models will have more gains. We thus validate
+ 1. The baseline models use 32-bit floating-point representations for      whether the proposed SmartExchange algorithm remains to be
+the weights and input/output activations, so as to benchmark with the      beneficial, when adopted for well-known compact models, i.e.,
+best achievable accuracy results in the literature.
+ 2. The proposed SmartExchange models use 8-bit fixed-point repre-
+                                                                           MobileNetV2 (MBV2) [41] and EfficientNet-B0 (Eff-B0) [43].
+sentations for the input/output activations; and 4-bit/8-bit representa-      As Table III indicates, despite the original light-weight de-
+tions for the coefficient/basis matrices, respectively.                    sign, SmartExchange still yields promising gains. For example,
+                                                                           when compressing MBV2 for 6.57× CR, SmartExchange only
+outperforms all other pruning-alone or quantization-alone                  incurs ∼2% top-1 accuracy and 1% top-5 accuracy losses.
+competitors, in terms of the achievable trade-off between the              This result is impressive and highly competitive when placed
+accuracy and the model size. Taking ResNet50 on ImageNet                   in the context: for example, the latest work [14] reports 8×
+as an example, the quantization algorithm DoReFa [55] seems                compression (4-bit quantization) of MobileNetV2, yet with a
+to aggressively shrink the model size yet unfortunately cause a            7.07% top-1 accuracy loss.
+larger accuracy drop; while the pruning algorithm ThiNet [36]                 Extending SmartExchange beyond classification models.
+maintains competitive accuracy at the cost of larger models. In            While model compression methods (and hence co-design
+comparison, SmartExchange combines the best of both worlds:                works) are dominantly evaluated on classification benchmarks,
+it obtains almost as high accuracy as the pruning-only ThiNet              we demonstrate that the effectiveness of SmartExchange is
+[36], which is 2.66% higher than the quantized-only DoReFa                 beyond one specific task setting. We choose semantic seg-
+[55]; and on the other hand, it keeps the model as compact                 mentation, a heavily-pursued computer vision task that is well
+as DoReFa [55]. Apart from the aforementioned quantization                 known to be memory/latency/energy-demanding, to apply the
+works, we also evaluate the SmartExchange algorithm with                   proposed algorithm. Specifically, we choose the state-of-the-art
+a state-of-the-art power-of-two quantization algorithm [40]                DeepLabv3+ [5] with a ResNet50 backbone (output stride: 16),
+based on the same MLP model with a precision of 8 bits: when               and the CamVid [4] dataset using its standard split. Compared
+having a higher compression rate of 130× (vs. 128× in [40]),               to the original DeepLabv3+, applying SmartExchange can lead
+SmartExchange achieves a comparable accuracy (97.32% vs.                   to 10.86× CR, with a marginal mean Intersection over Union
+97.35%), even if SmartExchange is not specifically dedicated               (mIoU) drop from 74.20% to 71.20% (on the validation split).
+for FC layers while the power-of-two quantization [40] does.                  SmartExchange decomposition evolution. To give an
+In addition, compared with the pruned and quantized MLP                    example of the decomposition evolution of the SmartExchange
+model in [56], SmartExchange achieves a higher compression                 algorithm, we take one weight matrix W ∈ R192×3 from the
+rate of 45.03× (vs. 40× in [56]) with a comparable accuracy                second CONV layer of the second block in a ResNet164 net-
+(98.11% vs. 98.42%).                                                       work pre-trained on CIFAR-10. The SmartExchange algorithm
+   A more extensive set of evaluation results are summarized in            decomposes W = Ce B, where Ce ∈ R192×3 and B ∈ R3×3 . Figure
+Table II, in order to show the maximally achievable gains (and             9 shows the evolution of the reconstruction error, sparsity
+the incurring accuracy losses) by applying SmartExchange                   ratio in Ce , and the distance between B and its initialization
+over the original uncompressed models. In Table II, “CR”                   (identity). We can see that the sparsity ratio in Ce will increase
+means the compression rate in terms of the overall parameter               at the beginning at the cost of an increased reconstruction
+                                                                                                           TABLE V: A summary of the computation and storage re-
+                             30                                                        0.3                 sources in the SmartExchange and baseline accelerators.
+
+        Sparsity Ratio (%)
+                                                                                                                           SmartExchange and Bit-pragmatic [1]
+
+
+
+
+                                                                                             Norm. Error
+                             20                                                                                             dimM    64          Input GB      16KB×32Banks
+                                                                                       0.2                                   dimC   16        Output GB       2KB×2Banks
+                             10                                                                                             dimF    8    Weight Buff./slice   2KB×2Banks
+                                                               kW − CeBkF /kW kF
+                                                                                                             # of bit-serial mul.   8K           Precision    8 bits
+                                                               kB − IkF /kIkF
+                              0                                Ce Sparsity             0.1                           DianNao [6], SCNN [39], and Cambricon-X [54]
+                                  1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20                           The same total on-chip SRAM storage as SmartExchange
+                                                  Iteration                                                      # of 8-bit mul. 1K              Precision   8 bits
+Fig. 9: Illustrating an example of the solution evolution during
+the SmartExchange algorithm training.
+                                                                                                           multipliers and SmartExchange and Bit-pragmatic employ an
+error. But the SmartExchange algorithm remedies the error                                                  equivalent 8K bit-serial multipliers.
+over iterations while maintaining the sparsity. Also, B will                                                  For handling the dynamic sparsity in the SmartExchange
+gradually become more different from the initialization.                                                   accelerator, the on-chip input GB bandwidth and weight GB
+B. Evaluation of the SmartExchange Accelerator.                                                            bandwidth with each PE slice are set to be four and two
+   In this subsection, we present experiments to evaluate the                                              times of those in the corresponding dense models, respectively,
+performance of the SmartExchange accelerator. Specifically,                                                which are empirically found to be sufficient for handling all
+we first introduce the experiment setup and methodology, and                                               the considered models and datasets. Meanwhile, because the
+then compare SmartExchange accelerator with four state-                                                    computation resources for the baseline accelerators may be
+of-the-art DNN accelerators (covering a diverse range of                                                   different from their original papers, the bandwidth settings
+design considerations) on seven DNN models (including four                                                 are configured accordingly based on their papers’ reported
+standard DNNs, two compact models, and one segmentation                                                    design principles. Note that 1) we do not consider FC layers
+model) in terms of energy consumption and latency when                                                     when benchmarking the SmartExchange accelerator with the
+running on three benchmark datasets. Finally, we perform                                                   baseline accelerators (see Figures 10 to 12) for a fair com-
+ablation studies for the SmartExchange accelerator to quantify                                             parison as the SCNN [39] baseline is designed for CONV
+and discuss the contribution of its component techniques, its                                              layers, and similarly, we do not consider EfficientNet-B0 for
+energy breakdown, and its effectiveness in 1) making use of                                                the SCNN accelerator as SCNN is not designed for handling
+sparsity and 2) dedicated design for handling compact models,                                              the squeeze-and-excite layers adopted in EfficientNet-B0; 2)
+aiming to provide more insights.                                                                           our ablation studies consider all layers in the models (see
+   Experiment setup and methodology. Baselines and config-                                                 Figures 13 and 14).
+urations: we benchmark the SmartExchange accelerator with                                                     Benchmark models, datasets, and precision: We use
+four state-of-the-art accelerators: DianNao [6], SCNN [39],                                                seven representative DNNs (ResNet50, ResNet164, VGG11,
+Cambricon-X [54], and Bit-pragmatic [1]. These representative                                              VGG19, MobileNetV2, EfficientNet-B0, and DeepLabV3+)
+accelerators have demonstrated promising acceleration perfor-                                              and three benchmark datasets (CIFAR-10 [26], ImageNet [11],
+mance, and are designed with a diverse design considerations                                               and CamVid [4]). Regarding the precision, we adopt 1) 8-
+as summarized in Table IV. Specifically, DianNao [6] is a                                                  bit activations for both the baseline-used and SmartExchange-
+classical architecture for DNN inference which is reported                                                 based DNNs; and 2) 8-bit weights in the baseline-used DNNs,
+to be over 100× faster and over 20× more energy efficient                                                  and 8-bit/4-bit precision for the basis and coefficient matrices
+than those of CPUs. While DianNao considers dense models,                                                  in the SmartExchange-based DNNs.
+the other three accelerators take advantage of certain kinds                                                  Technology-dependent parameters: For evaluating the per-
+of sparsity in DNNs. To ensure fair comparisons, we assign                                                 formance of the SmartExchange accelerator, we implemented a
+the SmartExchange accelerator and baselines with the same                                                  custom cycle-accurate simulator, aiming to model the Register-
+computation resources and on-chip SRAM storage in all exper-                                               Transfer-Level (RTL) behavior of synthesized circuits, and
+iments, as listed in Table V. For example, the DianNao, SCNN                                               verified the simulator against the corresponding RTL imple-
+and Cambricon-X accelerators use 1K 8-bit non-bit-serial                                                   mentation to ensure its correctness. Specifically, the gate-level
+TABLE IV: The design considerations of the baseline and our                                                netlist and SRAM are generated based on a commercial 28nm
+accelerators.                                                                                              technology using the Synopsys Design Compiler and Arm
+                                                                                                           Artisan Memory Compilers, proper activity factors are set
+      Accelerator                                        Design Considerations
+                                                                                                           at the input ports of the memory/computation units, and the
+    DianNao [6]                                              Dense models
+  Cambricon-X [54]                                    Unstructure weight sparsity
+                                                                                                           energy is calculated using a state-of-the-art tool PrimeTime
+                                                      Unstructure weight sparsity                          PX [42]. Meanwhile, thanks to the clear description of the
+      SCNN [39]
+                                                         + Activation sparsity                             baseline accelerators’ papers and easy representation of their
+   Bit-pragmatic [1]                                  Bit-level activation sparsity
+                                                                                                           works, we followed their designs and implemented custom
+                                                     Vector-wise weight sparsity                           cycle-accurate simulators for all the baselines. In this way,
+         Ours
+                                            + Bit-level and vector-wise activation sparsity
+                                                                                                           we can evaluate the performance of both the baseline and our
+                                                                                                                                                                                            4
+
+
+
+
+                                                                                                                                                                    Norm. # DRAM Accesses
+Norm. Energy Efficiency                                                                                                                                                                                                                                                                                                                 3.5
+                          7               6.7                                                                                                                                                                                              DianNao [6]                                                                               3.5
+                                                                      DianNao [6]                                                                                                       3.5                                                SCNN [40]
+                          6                                           SCNN [40]                                                                                                                                                            Cambricon-X [56]
+                                                                                                                                             5.2                                            3
+                                                                      Cambricon-X [56]                       5.0                                                                                                                           Bit-pragamatic [1]
+                          5                                                                                                                                                                             2.3         2.4         2.4                                                2.4 2.4 2.5                               2.4
+                                                                      Bit-pragamatic [1]                                                                                                2.5                                                SmartExchange                                  2.2                 2.0
+                                                                                                                                                                                                    1.8                                                                                                 2.0      2.0                                        2.0
+                          4                                           SmartExchange                                                                           3.7                           2
+                                                                                                                                                                                                 1.9 1.8
+                                                                                                                                                                                                                                                                                                           1.6                                       1.8 1.8
+                                                           3.4                                                               3.3                                                                                         1.4
+                                    3.0                                                                                                                                                                                                                              1.3                                                                                1.6
+                                                                                                                                                                                                                            1.5            1.1 1.1
+                          3                                                                                                                                                             1.5                                                                   1.2       1.2                                                       1.3
+                                2.2                   2.3              1.9 2.3                                                       1.9                 2.0                                                                                  1.1 1.1
+                                                   2.0                                       2.0     1.9             1.8                              1.9                                                     1.0                   1.0              1.0                   1.0                   1.0                  1.0                     1.0                 1.0
+                                                                    1.9                1.8                                              1.91.6
+                          2           1.6                1.5              1.5                           1.7             1.6                                                                 1
+                                                                                                           1.2             1.2                              1.4
+                              1.0               1.0              1.0             1.0     1.0       1.0             1.0             1.0             1.0
+                          1                                                                                                                                                             0.5
+
+                          0                                                                                                                                                                 0
+                                                                                                                                                                                                   VGG11            ResNet50                    MBV2               Eff-B0             VGG19             ResNet164 DeepLabV3+                         Geometric
+                                                                                                                                                                                                                                                                                                                                                     Geomean
+                                VGG11           ResNet50           MBV2            Eff-B0            VGG19         ResNet164 DeepLabV3+ Geometric
+                                                                                                                                        Geomean                                                                                                                                                                                                       Mean
+                                                                                                                                         Mean
+                                                        ImageNet                                           CIFAR-10                CamVid                                                                                         ImageNet                                                     CIFAR-10                       CamVid
+
+Fig. 10: The normalized energy efficiency (over DianNao)                                                                                                            Fig. 11: The normalized number of DRAM accesses (over the
+achieved by the SmartExchange accelerator over the four state-                                                                                                      SmartExchange accelerator) of the SmartExchange and four
+of-the-art baseline accelerators on seven DNN models and                                                                                                            state-of-the-art baseline accelerators on seven DNN models
+three datasets.                                                                                                                                                     and three datasets.
+accelerators based on the same commercial 28nm technology.                                                                                                          ciency, we compare its latency of processing one image (i.e.,
+The resulting designs operate at a frequency of 1GHz and the                                                                                                        batch size is 1) over that of the baseline accelerators on
+performance results are normalized over that of the DianNao                                                                                                         various DNN models and datasets, as shown in Figure 12.
+accelerator, where the DianNao design is modified to ensure                                                                                                         We can see that the SmartExchange accelerator achieves the
+that all accelerators have the same hardware resources (see                                                                                                         best performance under all the considered DNN models and
+Table V). We refer to [50] for the unit energy of DRAM                                                                                                              datasets, achieving a latency improvement ranging from 8.8×
+accesses, which is 100pJ per 8 bit, and the unit energy costs                                                                                                       to 19.2×. Again, this experiment validates the effectiveness
+for computation and SRAM accesses are listed in Table I.                                                                                                            of SmartExchange’s algorithm-hardware co-design effort to
+   SmartExchange vs. state-of-the-art accelerators. Energy                                                                                                          reduce the latency on fetching both the weights and the
+efficiency over that of the baseline accelerators: Figure 10                                                                                                        activations from the memories to the computation resources.
+shows the normalized energy efficiency of the SmartEx-                                                                                                              Since the SmartExchange accelerator takes advantage of both
+change and the baseline accelerators. It is shown that the                                                                                                          the weights’ vector-wise sparsity and the activations’ bit-level
+SmartExchange accelerator consumes the least energy under                                                                                                           and vector-wise sparsity, it has a higher speedup over all
+all the considered DNN models and datasets, achieving an                                                                                                            the baselines that make use of only one kind of sparsity.
+energy efficiency improvement ranging from 2.0× to 6.7×.                                                                                                            Specifically, the SmartExchange accelerator has an average
+The SmartExchange accelerator’s outstanding energy effi-                                                                                                            latency improvement of 3.8×, 2.5×, and 2.0× over SCNN [39]
+ciency performance is a result of SmartExchange’s algorithm-                                                                                                        and Cambricon-X [54] which consider unstructured sparsity,
+hardware co-design effort to effectively trade the much higher-                                                                                                     and Bit-pragmatic [1] which considers the bit-level sparsity in
+cost memory storage/accesses for the lower-cost computations                                                                                                        activations, respectively.
+(i.e., rebuilding the weights using the basis and coefficient                                                                                                          Contributions of SmartExchange’s component tech-
+matrices at the least costly RF and PE levels vs. fetching                                                                                                          niques. The aforementioned energy efficiency and latency
+them from the DRAM). Note that SmartExchange non-trivially                                                                                                          improvement of the SmartExchange accelerator comes from
+outperforms all baseline accelerators even on the compact                                                                                                           the algorithm-hardware co-design efforts including the Smar-
+models (i.e., MobileNetV2 and EfficientNet-B0) thanks to                                                                                                            tExchange algorithm’s model compression (see Section III)
+both the SmartExchange algorithm’s higher compression ratio                                                                                                         and the SmartExchange accelerator’s support for both vector-
+and the SmartExchange accelerator’s dedicated and effective                                                                                                         wise sparsity (i.e., index selecting) and bit-level sparsity (i.e.,
+design (see Section IV-B) of handling depth-wise CONV                                                                                                               bit-serial multiplier) (see Section IV-B). To quantify the contri-
+and squeeze-and-excite layers that are commonly adopted in                                                                                                          bution of SmartExchange’s component techniques, we build a
+compact models.                                                                                                                                                     similar baseline accelerator as the SmartExchange accelerator
+   Figure 11 shows the normalized number of DRAM accesses                                                                                                           and run a dense DNN on the baseline accelerator. Specifi-
+for the weights and input/output activations. We can see that:                                                                                                      cally, the baseline accelerator uses non-bit-serial multipliers,
+1) the baselines always require more (1.1× to 3.5×) DRAM                                                                                                            dimM =16, dimC =8, and dimF =8 to ensure the required hard-
+accesses than the SmartExchange accelerator, e.g., see the                                                                                                          ware resources to be the same as that of the SmartExchange
+ResNet and VGG models on the ImageNet and CIFAR-10                                                                                                                                          20                                                                                                   19.2
+                                                                                                                                                                                                       DianNao [6]
+datasets as well as the segmentation model DeepLabV3+                                                                                                                                       18         SCNN [40]
+                                                                                                                                                                                                                                                       15.7
+                                                                                                                                                                    Norm. Speedup
+
+
+
+
+                                                                                                                                                                                            16         Cambricon-X [56]             14.5
+                                                                                                                                                                                                                                                                                                                      13.7
+on the CamVid dataset; 2) SmartExchanges DRAM-access                                                                                                                                        14
+                                                                                                                                                                                            12
+                                                                                                                                                                                                       Bit-pragamatic [1]
+                                                                                                                                                                                                       SmartExchange
+                                                                                                                                                                                                                                                                                                                                              12.6                13.0
+
+                                                                                                                                                                                                              9.7
+reduction is smaller when the models’ activations dominate the                                                                                                                              10
+                                                                                                                                                                                             8
+                                                                                                                                                                                                            7.4
+                                                                                                                                                                                                                                                  8.0
+                                                                                                                                                                                                                                                     6.8
+                                                                                                                                                                                                                                                                     7.7
+                                                                                                                                                                                                                                                                             8.8                                                          9.0
+
+                                                                                                                                                                                                      6.0                         6.5                                   6.2                                       6.4                                           6.4
+                                                                                                                                                                                                                                                                                                                                        5.6
+cost (e.g., compact DNN models); and 3) the SmartExchange                                                                                                                                    6           5.3
+                                                                                                                                                                                                                            4.6                 5.2
+                                                                                                                                                                                                                                                                                            3.2
+                                                                                                                                                                                                                                                                                               3.7
+                                                                                                                                                                                                                                                                                                             3.73.2                                       3.4
+                                                                                                                                                                                                                                                                                                                                                             5.1
+                                                                                                                                                                                             4                            2.3                                                            2.2                                       2.7
+accelerator can reduce the number of DRAM accesses over                                                                                                                                      2    1                  1                      1                  1                     1                   1                    1                       1
+                                                                                                                                                                                             0
+the baselines by up to 1.3× for EfficientNet-B0, indicating the                                                                                                                                       VGG11          ResNet50                   MBV2                Eff-B0               VGG19          ResNet164            DeepLabV3+               Geometric
+                                                                                                                                                                                                                                                                                                                                                      Geomean
+                                                                                                                                                                                                                                                                                                                                                       Mean
+effectiveness of our dedicated design for handling the squeeze-                                                                                                                                                                   ImageNet                                                      CIFAR-10                      CamVid
+
+and-excite layers (see Section IV-B).                                                                                                                               Fig. 12: The normalized speedup (over DianNao) achieved by
+   Speedup over that of the baseline accelerators: Similar to                                                                                                       the SmartExchange accelerator over the four state-of-the-art
+benchmarking the SmartExchange accelerator’s energy effi-                                                                                                           baseline accelerators on seven DNN models and three datasets.
+100%                                                                             Index selector                      3                                                                                   Index selector
+                                                                                                                           Norm. energy efficiency / Speedup                  1.00/1.00
+ 90%                                                                             RE                                                                               1.04/1.10                              RE
+                                                                                 Accumulator                       2.5         1.16/1.42         1.13/1.38                                               Accumulator
+ 80%
+
+
+
+
+                                                                                                                                                                                          Latency (mS)
+ 70%                                                                             PE                                                                                                                      PE
+                                                                                                                     2
+
+
+
+
+                                                                                                     Energy (mJ)
+                                                                                 weight GB (write)                                                                                                       weight GB (write)
+ 60%
+                                                                                 weight GB (read)                  1.5                                                                                   weight GB (read)
+ 50%                                                                             output GB (write)                                                                                                       output GB (write)
+ 40%                                                                             output GB (read)                    1                                                                                   output GB (read)
+ 30%                                                                             input GB (write)                                                                                                        input GB (write)
+ 20%                                                                             input GB (read)                   0.5                                                                                   input GB (read)
+ 10%                                                                             DRAM index                                                                                                              DRAM index
+                                                                                 DRAM weight                         0                                                                                   DRAM weight
+  0%                                                                                                                            60.0%              57.5%            51.7%       45.0%
+       VGG11   ResNet50   MBV2   Eff-B0         VGG19   ResNet164   DeepLabV3+   DRAM output                                                           Sparsity Ratio                                    DRAM output
+                                                                                 DRAM input                                                                                                              DRAM input
+                                                  CIFAR-10           CamVid                                   Param.             7.68 MB           7.99 MB         8.03 MB      8.88 MB                  Latency
+                  ImageNet
+                                          (a)                                                                      Top-5         91.83%            91.77%           92.20%       92.33%
+
+100%
+ 90%
+                                                                                 Index selector
+                                                                                 RE
+                                                                                                     Fig. 14: The energy breakdown and latency of the SmartEx-
+                                                                                 Accumulator
+ 80%
+ 70%                                                                             PE                  change accelerator when running ResNet50 with four different
+                                                                                 weight GB (write)
+ 60%
+ 50%
+                                                                                 weight GB (read)    sparsity ratios.
+                                                                                 output GB (write)
+ 40%                                                                             output GB (read)
+ 30%                                                                             input GB (write)
+ 20%                                                                             input GB (read)
+ 10%                                                                             DRAM index
+  0%                                                                             DRAM weight         total energy cost, whereas the FC weight DRAM accesses in
+       VGG11   ResNet50   MBV2   Eff-B0         VGG19   ResNet164   DeepLabV3+   DRAM output
+                                                                                 DRAM input          VGG11 account for up to 43.08% of the total energy cost and
+                  ImageNet                        CIFAR-10           CamVid
+                                          (b)                                                        up to 95.66% of the total parameter size. Note that although
+Fig. 13: The energy breakdown of the SmartExchange accel-                                            the total size of the SmartExchange-compressed weights is
+erator when running the (a) CONV and squeeze-and-excite                                              similar for the VGG19 and ResNet164 models on CIFAR10
+layers and (b) CONV, squeeze-and-excite, and FC layers (all                                          (see Table II), their weight DRAM accesses cost percentages
+types of layers) of seven DNN models on three datasets.                                              are very different. This is because 1) the original ResNet164
+                                                                                                     model has much more activations than that of the VGG19
+accelerator. When running ResNet50, the SmartExchange ac-                                            model and 2) the activations in the VGG19 model [35] have
+celerator achieves 3.65× better energy efficiency than the                                           been largely pruned thanks to the models’ high filter-wise
+baseline accelerator, where the reduced DRAM accesses re-                                            sparsity (e.g., 90.79%) which enables pruning the whole filters
+sulted from the SmartExchange’s model compression, vector-                                           and their corresponding activations (e.g., enabling 81.04% and
+wise sparsity support, and bit-level sparsity support contribute                                     26.64% of the input and output activations to be pruned), both
+to 23.99%, 12.48%, and 36.14% of the total energy savings,                                           leading to the large gap in the cost percentage of the weight
+respectively. Assuming a sufficient DRAM bandwidth, the                                              DRAM accesses in the two models.
+SmartExchange accelerator achieves 7.41× speedup than the
+baseline accelerator, thanks to its 1) effort to leverage the spar-                                     SmartExchange’s effectiveness in exploiting sparsity. Fig-
+sity to reduce unnecessary data movements and computations                                           ure 14 shows the normalized energy consumption and latency
+and 2) increased parallel computation resources (note that the                                       (over the total energy cost and latency of the models) when
+number of bit-serial multipliers is 8× of that of non-bit-serial                                     the SmartExchange accelerator processes ResNet50 with four
+multipliers given the same computation resource).                                                    vector-wise weight sparsity ratios, where the corresponding
+   The SmartExchange accelerator’s energy breakdown.                                                 model size and accuracy are summarized in the bottom-left
+Figure 13 (a) shows the SmartExchange accelerator’s energy                                           corner. We can see that: 1) the total energy cost of the
+breakdown in terms of computations and accessing various                                             input activations’ DRAM and GB accesses is reduced by
+memory hierarchies, when processing only the CONV and                                                18.33% when the weight sparsity increases by 15% (from
+squeeze-and-excite layers (i.e., excluding the FC layers) of                                         45.0% to 60.0%), showing that our accelerator can effectively
+various DNN models and datasets. We can see that 1) the                                              utilize the vector-wise weight sparsity to save the energy cost
+energy cost of accessing DRAM is dominated by the in-                                                of accessing both the sparse weights and the corresponding
+put/output activations for most of the models (i.e., see the                                         inputs; and 2) the latency is reduced by 41.83% when the
+VGG11, MobileNetV2, and EfficientNet-B0 models on the                                                weight sparsity increases from 45.0% to 60.0%, indicating the
+ImageNet dataset, the ResNet164 on the CIFAR-10 dataset,                                             SmartExchange accelerator can indeed utilize the vector-wise
+and the DeepLabV3+ model on the CamVid dataset), because                                             weight sparsity to skip the corresponding input accesses and
+the SmartExchange algorithm can largely reduce the number                                            computations to reduce latency.
+of weight accesses from the DRAM; 2) the energy cost of                                                 Effectiveness of SmartExchange’s support for compact
+accessing DRAM for the weights is still dominant in models                                           models. We perform an ablation experiment to evaluate
+where the model sizes are very large, e.g., see the VGG19                                            the SmartExchange accelerator’s dedicated design including
+model on the CIFAR10 dataset and the ResNet50 model on                                               optimized dataflow and PE line configuration (see Section
+the ImageNet dataset; and 3) the RE and index selector only                                          IV-B) for handling compact models. Figure 15 (a) shows
+account for <0.78% and <0.05% of the total energy cost,                                              the normalized layer-wise energy cost on selected depth-wise
+which are negligible.                                                                                CONV layers of MobileNetV2 with and without the proposed
+   When considering all layers (see Figure 13 (b)), the trends                                       dedicated design. We can see that the proposed design can
+of the experiment results are similar to those in Figure 13                                          effectively reduce the energy cost by up to 28.8%. Meanwhile,
+(a), except for the VGG11 model. This is because the FC                                              Figure 15 (b) further shows that the normalized layer-wise
+layers in most of the models consume only <7.77% of the                                              latency can be reduced by 38.3% to 65.7%.
+                    12
+Norm. Energy Cost
+                                                  w/o the dedicated design
+                                                                                                         25   23.6
+                                                                                                                                       w/o the dedicated design
+                                                                                                                                                                                                              R EFERENCES
+                    10   9.1
+                               8.5                w/ the dedicated design                                20                            w/ the dedicated design
+
+
+
+
+                                                                                         Norm. Latency
+                     8                                                                                                  53.8%                                                    [1] J. Albericio, A. Delmás, P. Judd, S. Sharify, G. O’Leary, R. Genov,
+                                     6.4%                                                                15
+                     6                                                                                                                                                               and A. Moshovos, “Bit-pragmatic deep neural network computing,” in
+                                                                                                                     10.9
+                     4
+                                                                                                         10                                                             65.7%
+                                                                                                                                                                                     Proceedings of the 50th Annual IEEE/ACM International Symposium on
+                                                                                                                                                                  6.2
+                                            1.6
+                                                        28.8%                    11.2%
+                                                                       10.7% 1.7 1.5
+                                                                                                          5
+                                                                                                                                                  4.2
+                                                                                                                                                          65.2%                      Microarchitecture. ACM, 2017, pp. 382–394.
+                     2                            1.1           1.1 1.0                                                                   38.3%                         2.1
+                                                                                                                                1.6 1.0                 1.5                      [2] D. Bankman, L. Yang, B. Moons, M. Verhelst, and B. Murmann, “An
+                     0                                                                                    0                                                                          always-on 3.8j/86% cifar-10 mixed-signal binary cnn processor with all
+                           5                  20                  23           38                                5                20                23              38
+                                              Layer No.                                                                          Layer No.                                           memory on chip in 28nm cmos,” in 2018 IEEE International Solid -
+                                                        (a)                                                                                (b)                                       State Circuits Conference - (ISSCC), Feb 2018, pp. 222–224.
+Fig. 15: The normalized (a) energy cost and (b) latency of the                                                                                                                   [3] R. Banner, I. Hubara, E. Hoffer, and D. Soudry, “Scalable methods for
+depth-wise CONV layers w/ and w/o the proposed dedicated                                                                                                                             8-bit training of neural networks,” in Advances in neural information
+design for compact models, when processing MobileNetV2 on                                                                                                                            processing systems, 2018, pp. 5145–5153.
+                                                                                                                                                                                 [4] G. J. Brostow, J. Shotton, J. Fauqueur, and R. Cipolla, “Segmentation
+the ImageNet dataset.                                                                                                                                                                and recognition using structure from motion point clouds,” in European
+                                                                                                                                                                                     conference on computer vision. Springer, 2008, pp. 44–57.
+                                                                 VI. R ELATED W ORKS                                                                                             [5] L.-C. Chen, G. Papandreou, I. Kokkinos, K. Murphy, and A. L. Yuille,
+                                                                                                                                                                                     “Deeplab: Semantic image segmentation with deep convolutional nets,
+   Compression-aware DNN accelerators. To achieve ag-                                                                                                                                atrous convolution, and fully connected crfs,” IEEE transactions on
+gressive performance improvement, researchers have explored                                                                                                                          pattern analysis and machine intelligence, vol. 40, no. 4, pp. 834–848,
+from both the algorithm and architecture sides. In general,                                                                                                                          2017.
+                                                                                                                                                                                 [6] T. Chen, Z. Du, N. Sun, J. Wang, C. Wu, Y. Chen, and O. Temam,
+there exist three typical algorithm approaches, weight de-                                                                                                                           “Diannao: A small-footprint high-throughput accelerator for ubiquitous
+composition, data quantization, and weight sparsification, that                                                                                                                      machine-learning,” in Proceedings of the 19th International Conference
+have been exploited by hardware design. H. Huang et al. [23]                                                                                                                         on Architectural Support for Programming Languages and Operating
+                                                                                                                                                                                     Systems, ser. ASPLOS 14, 2014, p. 269284.
+demonstrate DNNs with tensorized decomposition on non-                                                                                                                           [7] Y.-H. Chen, J. Emer, and V. Sze, “Eyeriss: A spatial architecture for
+volatile memory (NVM) devices. For the weight sparsification                                                                                                                         energy-efficient dataflow for convolutional neural networks,” in Com-
+accelerators, [18], [39], [54] have been proposed for making                                                                                                                         puter Architecture (ISCA), 2016 ACM/IEEE 43th Annual International
+                                                                                                                                                                                     Symposium on. IEEE Press, 2016, pp. 367–379.
+use of unstructured sparsity. Cambricon-S [56] proposes a co-                                                                                                                    [8] Y.-H. Chen, T. Krishna, J. S. Emer, and V. Sze, “Eyeriss: An energy-
+designed weight sparsity pattern to reduce irregularity. Most                                                                                                                        efficient reconfigurable accelerator for deep convolutional neural net-
+of recent accelerators use equal or less than 16-bit fixed-                                                                                                                          works,” IEEE Journal of Solid-State Circuits, vol. 52, no. 1, pp. 127–
+                                                                                                                                                                                     138, 2017.
+point quantized data [39], [54]. The works in [18], [56] uses                                                                                                                    [9] Y.-H. Chen, T.-J. Yang, J. Emer, and V. Sze, “Eyeriss v2: A flexible
+clustering to further encode weights; Stripes [25] and UNPU                                                                                                                          accelerator for emerging deep neural networks on mobile devices,” IEEE
+[27] leverage a bit-serial processing to support flexible bit                                                                                                                        Journal on Emerging and Selected Topics in Circuits and Systems, 2019.
+                                                                                                                                                                                [10] A. Delmas Lascorz, P. Judd, D. M. Stuart, Z. Poulos, M. Mahmoud,
+widths to better balance the accuracy loss and performance                                                                                                                           S. Sharify, M. Nikolic, K. Siu, and A. Moshovos, “Bit-tactical: A
+improvement; Bit-pragmatic [1] utilizes the input bit-level                                                                                                                          software/hardware approach to exploiting value and bit sparsity in
+sparsity to improve throughput and energy efficiency; and                                                                                                                            neural networks,” in Proceedings of the Twenty-Fourth International
+                                                                                                                                                                                     Conference on Architectural Support for Programming Languages and
+Bit-Tactical [10] combines the weight unstructured sparsity                                                                                                                          Operating Systems. ACM, 2019, pp. 749–763.
+with input bit-level sparsity. To our best knowledge, Smar-                                                                                                                     [11] J. Deng, W. Dong, R. Socher, L. jia Li, K. Li, and L. Fei-fei, “Imagenet:
+tExchange is the first formulation that unifies weight decom-                                                                                                                        A large-scale hierarchical image database,” in Proceedings of the IEEE
+                                                                                                                                                                                     conference on computer vision and pattern recognition, 2009.
+position, quantization, and sparsification (especially vector-                                                                                                                  [12] E. L. Denton, W. Zaremba, J. Bruna, Y. LeCun, and R. Fergus,
+wise structured sparsity) approaches to simultaneously shrink                                                                                                                        “Exploiting linear structure within convolutional networks for efficient
+the memory footprint and simplify the computations when                                                                                                                              evaluation,” in Advances in neural information processing systems, 2014,
+                                                                                                                                                                                     pp. 1269–1277.
+recovering the weight matrix during runtime.                                                                                                                                    [13] Z. Du, R. Fasthuber, T. Chen, P. Ienne, L. Li, T. Luo, X. Feng, Y. Chen,
+                                                                                                                                                                                     and O. Temam, “Shidiannao: Shifting vision processing closer to the
+                                                                       VII. C ONCLUSION                                                                                              sensor,” in 2015 ACM/IEEE 42nd Annual International Symposium on
+                                                                                                                                                                                     Computer Architecture (ISCA), vol. 43, no. 3. ACM, 2015, pp. 92–104.
+   We propose SmartExchange, an algorithm-hardware co-                                                                                                                          [14] R. Gong, X. Liu, S. Jiang, T. Li, P. Hu, J. Lin, F. Yu, and J. Yan,
+design framework to trade higher-cost memory storage/access                                                                                                                          “Differentiable soft quantization: Bridging full-precision and low-bit
+for lower-cost computation, for boosting the energy efficiency                                                                                                                       neural networks,” in Proceedings of the IEEE International Conference
+                                                                                                                                                                                     on Computer Vision, 2019, pp. 4852–4861.
+and speed of DNN inference. Extensive experiments show                                                                                                                          [15] Y. Gong, L. Liu, M. Yang, and L. Bourdev, “Compressing deep
+that the SmartExchange algorithm outperforms state-of-the-                                                                                                                           convolutional networks using vector quantization,” arXiv preprint
+art compression techniques on seven DNN models and three                                                                                                                             arXiv:1412.6115, 2014.
+                                                                                                                                                                                [16] S. Gui, H. Wang, C. Yu, H. Yang, Z. Wang, and J. Liu, “Adversarially
+datasets under various settings, while the SmartExchange                                                                                                                             trained model compression: When robustness meets efficiency,” 2019.
+accelerator outperforms state-of-the-art DNN accelerators in                                                                                                                    [17] S. Gui, H. N. Wang, H. Yang, C. Yu, Z. Wang, and J. Liu, “Model
+terms of both energy efficiency and latency (up to 6.7× and                                                                                                                          compression with adversarial robustness: A unified optimization frame-
+                                                                                                                                                                                     work,” in Advances in Neural Information Processing Systems, 2019,
+19.2×, respectively).                                                                                                                                                                pp. 1283–1294.
+                                                                                                                                                                                [18] S. Han, X. Liu, H. Mao, J. Pu, A. Pedram, M. A. Horowitz, and
+                  ACKNOWLEDGMENT                                                                                                                                                     W. J. Dally, “Eie: efficient inference engine on compressed deep neural
+  We thank Dr. Lei Deng (UCSB) for his comments and                                                                                                                                  network,” in 2016 ACM/IEEE 43rd Annual International Symposium on
+suggestions. This work is supported in part by the NSF                                                                                                                               Computer Architecture (ISCA). IEEE, 2016, pp. 243–254.
+                                                                                                                                                                                [19] S. Han, H. Mao, and W. J. Dally, “Deep compression: Compressing
+RTML grant 1937592, 1937588, and NSF 1838873, 1816833,                                                                                                                               deep neural networks with pruning, trained quantization and huffman
+1719160, 1725447, 1730309.                                                                                                                                                           coding,” International Conference on Learning Representations, 2016.
+[20] S. Han, J. Pool, J. Tran, and W. Dally, “Learning both weights and con-          2017 ACM/IEEE 44th Annual International Symposium on Computer
+     nections for efficient neural network,” in Advances in neural information        Architecture (ISCA). IEEE, 2017, pp. 27–40.
+     processing systems, 2015, pp. 1135–1143.                                    [40] Z. Qin, D. Zhu, X. Zhu, X. Chen, Y. Shi, Y. Gao, Z. Lu, Q. Shen, L. Li,
+[21] Y. He, X. Zhang, and J. Sun, “Channel pruning for accelerating                   and H. Pan, “Accelerating deep neural networks by combining block-
+     very deep neural networks,” in Proceedings of the IEEE International             circulant matrices and low-precision weights,” Electronics, vol. 8, no. 1,
+     Conference on Computer Vision (ICCV), 2017, pp. 1389–1397.                       p. 78, 2019.
+[22] A. G. Howard, M. Zhu, B. Chen, D. Kalenichenko, W. Wang,                    [41] M. Sandler, A. Howard, M. Zhu, A. Zhmoginov, and L.-C. Chen,
+     T. Weyand, M. Andreetto, and H. Adam, “Mobilenets: Efficient convo-              “Mobilenetv2: Inverted residuals and linear bottlenecks,” in Proceedings
+     lutional neural networks for mobile vision applications,” arXiv preprint         of the IEEE Conference on Computer Vision and Pattern Recognition,
+     arXiv:1704.04861, 2017.                                                          2018, pp. 4510–4520.
+[23] H. Huang, L. Ni, K. Wang, Y. Wang, and H. Yu, “A highly parallel            [42] Synopsys, “PrimeTime PX: Signoff Power Analysis,” https://www.
+     and energy efficient three-dimensional multilayer cmos-rram accelerator          synopsys.com/support/training/signoff/primetimepx-fcd.html, accessed
+     for tensorized neural network,” IEEE Transactions on Nanotechnology,             2019-08-06.
+     vol. 17, no. 4, pp. 645–656, 2018.
+                                                                                 [43] M. Tan and Q. V. Le, “Efficientnet: Rethinking model scaling for
+[24] J. Jin, A. Dundar, and E. Culurciello, “Flattened convolutional neural
+                                                                                      convolutional neural networks,” Proceedings of the 25th International
+     networks for feedforward acceleration,” arXiv preprint arXiv:1412.5474,
+                                                                                      Conference on Machine Learning, 2019.
+     2014.
+[25] P. Judd, J. Albericio, T. Hetherington, T. M. Aamodt, and A. Moshovos,      [44] N. Wang, J. Choi, D. Brand, C.-Y. Chen, and K. Gopalakrishnan, “Train-
+     “Stripes: Bit-serial deep neural network computing,” in 2016 49th                ing deep neural networks with 8-bit floating point numbers,” in Advances
+     Annual IEEE/ACM International Symposium on Microarchitecture (MI-                in Neural Information Processing Systems 31, S. Bengio, H. Wallach,
+     CRO). IEEE, 2016, pp. 1–12.                                                      H. Larochelle, K. Grauman, N. Cesa-Bianchi, and R. Garnett, Eds.
+[26] A. Krizhevsky, V. Nair, and G. Hinton, “Cifar-10 (canadian institute             Curran Associates, Inc., 2018, pp. 7675–7684.
+     for advanced research).” [Online]. Available: http://www.cs.toronto.edu/    [45] Y. Wang, Z. Jiang, X. Chen, P. Xu, Y. Zhao, Y. Lin, and Z. Wang, “E2-
+     ∼kriz/cifar.html                                                                 Train: Training state-of-the-art cnns with over 80% energy savings,” in
+[27] J. Lee, C. Kim, S. Kang, D. Shin, S. Kim, and H.-J. Yoo, “Unpu: A 50.6           Advances in Neural Information Processing Systems, 2019, pp. 5139–
+     tops/w unified deep neural network accelerator with 1b-to-16b fully-             5151.
+     variable weight bit-precision,” in 2018 IEEE International Solid-State      [46] Y. Wang, J. Shen, T.-K. Hu, P. Xu, T. Nguyen, R. Baraniuk, Z. Wang,
+     Circuits Conference-(ISSCC). IEEE, 2018, pp. 218–220.                            and Y. Lin, “Dual dynamic inference: Enabling more efficient, adaptive
+[28] H. Li, A. Kadav, I. Durdanovic, H. Samet, and H. P. Graf, “Pruning               and controllable deep inference,” IEEE Journal of Selected Topics in
+     filters for efficient convnets,” International Conference on Learning            Signal Processing, 2019.
+     Representations, 2017.                                                      [47] J. Wu, C. Leng, Y. Wang, Q. Hu, and J. Cheng, “Quantized convolutional
+[29] Z. Li, Y. Chen, L. Gong, L. Liu, D. Sylvester, D. Blaauw, and H. Kim,            neural networks for mobile devices,” in Proceedings of the IEEE
+     “An 879GOPS 243mw 80fps VGA fully visual cnn-slam processor for                  Conference on Computer Vision and Pattern Recognition (CVPR), 2016,
+     wide-range autonomous exploration,” in 2019 IEEE International Solid-            pp. 4820–4828.
+     State Circuits Conference - (ISSCC), 2019, pp. 134–136.                     [48] J. Wu, Y. Wang, Z. Wu, Z. Wang, A. Veeraraghavan, and Y. Lin,
+[30] Z. Li, J. Wang, D. Sylvester, D. Blaauw, and H. S. Kim, “A 1920 × 1080           “Deep k-means: Re-training and parameter sharing with harder cluster
+     25-Frames/s 2.4-TOPS/W low-power 6-D vision processor for unified                assignments for compressing deep convolutions,” Proceedings of the
+     optical flow and stereo depth with semi-global matching,” IEEE Journal           25th International Conference on Machine Learning, 2018.
+     of Solid-State Circuits, vol. 54, no. 4, pp. 1048–1058, 2019.               [49] P. Xu, X. Zhang, C. Hao, Y. Zhao, Y. Zhang, Y. Wang, C. Li, Z. Guan,
+[31] Y. Lin, C. Sakr, Y. Kim, and N. Shanbhag, “PredictiveNet: An energy-             D. Chen, and Y. Lin, “AutoDNNchip: An automated dnn chip predictor
+     efficient convolutional neural network via zero prediction,” in 2017 IEEE        and builder for both FPGAs and ASICs,” The 2020 ACM/SIGDA
+     International Symposium on Circuits and Systems (ISCAS), May 2017,               International Symposium on Field-Programmable Gate Arrays, Feb
+     pp. 1–4.                                                                         2020. [Online]. Available: http://dx.doi.org/10.1145/3373087.3375306
+[32] Y. Lin, S. Zhang, and N. Shanbhag, “Variation-Tolerant Architectures for    [50] X. Yang, M. Gao, J. Pu, A. Nayak, Q. Liu, S. E. Bell, J. O. Setter,
+     Convolutional Neural Networks in the Near Threshold Voltage Regime,”             K. Cao, H. Ha, C. Kozyrakis et al., “Dnn dataflow choice is overrated,”
+     in 2016 IEEE International Workshop on Signal Processing Systems                 arXiv preprint arXiv:1809.04070, 2018.
+     (SiPS), Oct 2016, pp. 17–22.                                                [51] Y. Yang, S. Wu, L. Deng, T. Yan, Y. Xie, and G. Li, “Training
+[33] S. Liu, Y. Lin, Z. Zhou, K. Nan, H. Liu, and J. Du, “On-demand deep              high-performance and large-scale deep neural networks with full 8-bit
+     model compression for mobile devices: A usage-driven model selection             integers,” 2019.
+     framework,” in Proceedings of the 16th Annual International Conference
+                                                                                 [52] X. Yu, T. Liu, X. Wang, and D. Tao, “On compressing deep models
+     on Mobile Systems, Applications, and Services. ACM, 2018, pp. 389–
+                                                                                      by low rank and sparse decomposition,” in The IEEE Conference on
+     400.
+                                                                                      Computer Vision and Pattern Recognition (CVPR), July 2017.
+[34] Z. Liu, J. Li, Z. Shen, G. Huang, S. Yan, and C. Zhang, “Learning
+     efficient convolutional networks through network slimming,” in The          [53] X. Yu, T. Liu, X. Wang, and D. Tao, “On compressing deep models
+     IEEE International Conference on Computer Vision (ICCV), Oct 2017.               by low rank and sparse decomposition,” in Proceedings of the IEEE
+[35] J.-H. Luo, J. Wu, and W. Lin, “Thinet: A filter level pruning method             Conference on Computer Vision and Pattern Recognition, 2017, pp.
+     for deep neural network compression,” in The IEEE International                  7370–7379.
+     Conference on Computer Vision (ICCV), 2017, pp. 5058–5066.                  [54] S. Zhang, Z. Du, L. Zhang, H. Lan, S. Liu, L. Li, Q. Guo, T. Chen, and
+[36] J.-H. Luo, J. Wu, and W. Lin, “Thinet: A filter level pruning method             Y. Chen, “Cambricon-x: An accelerator for sparse neural networks,” in
+     for deep neural network compression,” in The IEEE International                  The 49th Annual IEEE/ACM International Symposium on Microarchi-
+     Conference on Computer Vision (ICCV), 2017, pp. 5058–5066.                       tecture (MICRO). IEEE Press, 2016, p. 20.
+[37] H. Mao, S. Han, J. Pool, W. Li, X. Liu, Y. Wang, and W. J. Dally,           [55] S. Zhou, Y. Wu, Z. Ni, X. Zhou, H. Wen, and Y. Zou, “Dorefa-net:
+     “Exploring the granularity of sparsity in convolutional neural networks,”        Training low bitwidth convolutional neural networks with low bitwidth
+     in Proceedings of the IEEE Conference on Computer Vision and Pattern             gradients,” in Proceedings of the IEEE Conference on Computer Vision
+     Recognition Workshops, 2017, pp. 13–20.                                          and Pattern Recognition, 2018.
+[38] P. Nakkiran, R. Alvarez, R. Prabhavalkar, and C. Parada, “Compressing       [56] X. Zhou, Z. Du, Q. Guo, S. Liu, C. Liu, C. Wang, X. Zhou, L. Li,
+     deep neural networks using a rank-constrained topology,” 2015.                   T. Chen, and Y. Chen, “Cambricon-s: Addressing irregularity in sparse
+[39] A. Parashar, M. Rhu, A. Mukkara, A. Puglielli, R. Venkatesan,                    neural networks through a cooperative software/hardware approach,” in
+     B. Khailany, J. Emer, S. W. Keckler, and W. J. Dally, “Scnn: An                  IEEE/ACM International Symposium on Microarchitecture (MICRO),
+     accelerator for compressed-sparse convolutional neural networks,” in        2018, pp. 15–28.
+

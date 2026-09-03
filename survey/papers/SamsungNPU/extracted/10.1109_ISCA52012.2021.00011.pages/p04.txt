@@ -1,0 +1,72 @@
+          Tile
+                                                                                (Figure 2). The proposed NPU computes an entire layer
+                                          ③                                     by iteratively performing partial computations. The overall
+          Subtile
+                                                                                execution flow of the proposed NPU is summarized as follows:
+                                   ①                                              1) Given a convolutional layer, we first divide the output
+                                                                                      feature map along a channel (ctout in Figure 2) and the
+           ③                                                                          spatial dimension to generate a partial computation unit,
+                           ctout
+                                                                                      which we call tile. Each tile can be assigned to a single
+                                                                                      NPU engine or a set of NPU engines.
+      ②                                             ②
+                                                                                  2) Similarly, the computation in a tile is divided into
+                                                                                      multiple subsets called subtiles, where the computation
+                                                                                      result of each subtile is the partial sum of the same
+                                                                                      output feature map. Each subtile includes chunks of the
+                                                                                      input feature map and weights divided along the input
+     Input Feature Map                 Weights       Output Feature Map
+                                                                                      channel dimension (cst in in Figure 2)
+ Fig. 2: Work distribution model of the convolutional layer.                      3) The inputs assigned to each subtile are further divided
+                                                                                      into 1D tensors. To process a subtile, the NPU engine
+                                                                                      generates a partial sum tensor (e.g., the partial output
+   Even if we find an excellent strategy for mapping the tensors                      feature map tensor in Figure 2 sized 1 × 1 × ctout ), using
+to the computation unit, the NPU might suffer from utilization                        an input feature map tensor (e.g., the input feature map
+degradation if the bandwidth between the computation unit                             tensor in Figure 2 sized 1×1×cst                t
+                                                                                                                        in ) and the cout weights
+and memory is insufficient. When executing neural networks,                           tensors (e.g., the weight tensors in Figure 2 sized 1×1×
+the computation unit requires (or generates) different types of                       cst
+                                                                                        in ). The above process is repeated until all the weight
+data, such as the input feature map, weight, and output feature                       tensors are computed ( 1 in Figure 2), and the results
+map, and communicates with the memory. In case each data                              are accumulated to generate the final partial sum tensor.
+type has a designated data fetcher and/or on-chip memory,                             Architectural parameters cst           t
+                                                                                                                   in and cout are multiples of
+the maximum bandwidth for each data is fixed during design,                           16 and 64, respectively.
+where their sum is the total on-chip bandwidth. In this case,                     4) Step 3 is repeated until all the partial sum tensors are
+even if certain data traffic are dominant and the ports for the                       computed ( 2 in Figure 2) to complete a subtile.
+other data types are idle, each data transfer only occurs through                 5) Steps 2–4 are repeated until all the subtiles are computed
+the designated port. As a result, the overall memory bandwidth                        ( 3 in Figure 2) to complete a tile.
+is wasted. To completely utilize the overall memory bandwidth                     6) The proposed NPU iterates steps 2–5 until all the tiles
+during runtime, we propose a shared on-chip memory and                                in the layer are completed. The generated output feature
+dynamic data fetcher, which can fetch arbitrary data types,                           map is then used as the input feature map for the next
+as detailed in Section V-C.                                                           layer.
+C. Mixed-Precision Requirement                                                  B. Overall Architecture and Computation Process
+   Commercial mobile devices are required to run a compre-                         The proposed NPU includes three cores. Figure 3 illustrates
+hensive range of applications while satisfying various require-                 the top-level core design. The core includes two engines
+ments. However, it is difficult to simultaneously satisfy some                  called NPUEs (e.g., NPUE 0 and NPUE 1); the engines are
+of the representative requirements such as high-throughput                      each equipped with 1k MACs and share an on-chip scratch-
+and high-accuracy. For instance, although quantization is                       pad memory. The NPU controller orchestrates data transfer
+promising for achieving high throughput using restricted re-                    between the on-chip scratchpad memory and an external
+sources, it is often accompanied by accuracy reduction. Thus,                   memory. The NPUE comprises a data fetcher, tensor unit,
+there is a growing demand for supporting mixed-precision                        and vector unit.
+arithmetic to satisfy the various requirements. Based on the                       As we employ weight-stationary dataflow to maximize the
+observation that 8-bit integer arithmetic is sufficient for most                reuse of weights, in order to process each subtile, the weight
+mobile applications, we optimize the proposed NPU for 8-                        fetcher loads the associated weight tensors and then stores
+bit integer arithmetic. In addition, to cope with applications                  them in a local buffer called weight buffer. During each cycle,
+requiring high accuracy, the proposed NPU supports 16-bit                       the IFM fetcher loads the associated input feature map tensors
+integer arithmetic using multiple cycles without an additional                  from the scratchpad memory. Note that the loaded input feature
+accumulator, as described in Section V-D.                                       map tensor is stored as sparse data, which includes zero values.
+                   IV. A RCHITECTURE                                            In order to skip the ineffectual computations associated with
+                                                                                a zero input feature map, the sparsity unit generates a dense
+A. Work Distribution Model
+                                                                                tensor, which maximizes nonzero data through zero-skipping.
+  We describe our work distribution model using an example,                     Further, the dense tensors are transferred to four 16×16 MAC
+where a single NPU engine computes the convolutional layer                      arrays (MAAs) for generating a partial sum tensor. The four
+
+
+
+
+                                                                           18
+
+       Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:08:00 UTC from IEEE Xplore. Restrictions apply.
+

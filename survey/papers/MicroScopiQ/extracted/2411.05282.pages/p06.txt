@@ -1,0 +1,87 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                   Akshat Ramachandran, Souvik Kundu and Tushar Krishna
+
+
+                                                                                 (c) Schedule
+                                                  Time dimension                                                                         1 One 𝜇B or multiple 𝜇Bs of weights are mapped to each PE row
+
+
+
+
+                               Space dimension
+                                                                                                                                     as typically 𝐵 𝜇 ≤ # of columns in PE array [39]. Each PE in a row
+  (a) Sample GEMM Operation                                                                                         PE Array         either receives a weight at high-precision (e.g. 4-bit) or multiple
+                                                                                          To oAct Buffer
+                                                                                                                                     packed weights at low-precision (e.g. two 2-bits).
+                                                                                                                                         2 PE row 0 receives quantized input activation (iAct) from left
+                                                                           Staggered         perm_list                               and input accumulation (iAcc) from top. The PEs in row 0 perform
+                                                                            input to
+                                                                                                                                     multiplication of the stationary weights with the iActs, regardless
+
+
+
+
+                                                                                                 ReCoN
+                                                                            ReCoN
+                                                         Row 1 outputs
+             perm_list                                   sent to ReCoN                                               ReCoN           of outlier/inlier weights. During accumulation, assuming the 𝜇Bs
+                                                          for reordering
+       (b) Weights Mapping                                                                                                           mapped to PE row 0 do not contain outliers (see Figure 6(c)), the
+                                                 Overlapped
+         on MicroScopiQ                          scale factor
+                                                                                                                  Post Processing    PEs accumulate the computed multiplication result with iAcc and
+
+
+                                                                                       Compute
+                                                 computation
+                                                                                                                    and Scale        direct the partial sums to PE row 1.
+                                                                                                                  Compute Unit
+                                                                                                                                         3 PE row 1 receives partial sums from the top and similarly
+                                                                                LEGEND                                               performs INT multiplication between weights and iAct. As shown
+             ReCoN                                  iActs          Metadata             Inlier Weights               oAct/PSum       in the scheduling figure, in parallel, the output scale factors can be
+                                                                  Outlier                                Outlier                     calculated (§5.5).
+                                                                  WeightsLower Half                      WeightsUpper Half
+                                                                                                                                         4 The mapped 𝜇Bs to PE row 1 have outliers, the controller
+Figure 6: Example scheduling of a GEMM operation on a 2 × 2                                                                          directs all PE outputs to ReCoN. PE row 1 offloads the accumulation
+MicroScopiQ accelerator.                                                                                                             to ReCoN (shown by dotted lines in Figure 6(c)). This is needed
+𝐵𝑀 , its contribution to the EBW is negligible and hence ignored.                                                                    because the outlier will have its two halves distributed in different
+As a rule of thumb, if there are no outlier present in a 𝜇B the EBW                                                                  locations and mapped to different PEs. While the PEs in row 0 with
+of that 𝜇B is equal 𝑏𝑏 else the EBW includes the contribution of all                                                                 inlier weights can accumulate the partial sum output, the PEs in
+outlier-specific metadata. Additionally, the presence or absence of                                                                  row 1 with the Upper and Lower outlier halves cannot compute
+outlier metadata is delineated by a 1-bit identifier per 𝜇B, wherein a                                                               the outlier partial sum output. After receiving outputs from row 1,
+1 indicates presence of outlier metadata. This identifier contributes                                                                ReCoN reorders and calculates FP-outlier partial sum.
+negligible overhead to the EBW (0.05-0.09 bits) similar to the inlier                                                                    5 The controller signals PE row 2 to expect input partial sums
+scale factor and is hence ignored in the EBW calculation. For a                                                                      from ReCoN and not from the previous row. If PE row 1 is the last
+FM with 𝑙 layers and each layer having 𝑚 𝜇Bs and 𝑥% of these 𝜇Bs                                                                     row as in Figure 6(c), the oActs are directed to the oAct buffer.
+consist of outliers, the EBW of the FM is,                                                                                               6 oActs are post-processed (scaled and quantized). The post-
+                                                                                                                                     processing of oActs does not require all the oActs to be computed.
+                                                                                                                                     The post processing operations can be conducted as and when the
+                     Í𝑙                                                                                                              oActs are generated and overlapped with the rest of the computation
+                         𝑖=1 (𝑥 · 𝑚 · EBW𝑂 + (100 − 𝑥) · 𝑚 · EBW𝐼 )/𝑚
+       EBW𝐹 𝑀 =                                                                                                                (4)   so as to hide computation and memory access latency overhead.
+                                                                           𝑙
+                                                                                                                                     5.2    On-chip Storage and Control
+5 MicroScopiQ Accelerator Architecture
+                                                                                                                                     Weight/Activation Organization. The input activations (iActs)
+5.1 Architecture Overview                                                                                                            are stored in the iAct buffer as 8-bit INTs. Lower-precision iActs
+In Figure 4, we depict the MicroScopiQ accelerator architecture,                                                                     (<8-bit) are supported through sign-extension. The same process is
+integrated into a standard weight stationary systolic array. The ac-                                                                 followed for oActs (output activations). The weight buffer stores
+celerator is optimized for throughput and all compute units (PE ar-                                                                  weights at 4-bit granularity. At lower precision (2-bits), each buffer
+ray, ReCoN etc.) are internally pipelined with interleaved pipeline                                                                  location simultaneously stores two 2-bit weights. The MODE signal
+stages. Figure 5 illustrates MicroScopiQ’s interaction with on-chip                                                                  from the controller delineates the bit format of weights in the weight
+and off-chip memories. Following prior work [15, 22, 41], off-chip                                                                   buffer i.e, one 4-bit weight or two 2-bit weights.
+memory is modeled as HBM2 with a 256 GB/s bandwidth. The                                                                             Instruction Buffer (IB). It stores all the metadata required for
+off-chip memory layout [29, 99] of a MicroScopiQ-quantized ten-                                                                      inference of MicroScopiQ quantized FMs. Particularly, the IB stores
+sor, shown in Figure 5, consists of two sections: quantized weights                                                                  the outlier distribution permutation list i.e., configurations for Re-
+and metadata. Following prior work [29, 30, 77] a two-level on-                                                                      CoN and scale factors.
+chip memory hierarchy is employed: 2MB L2 global SRAM loads                                                                          MicroScopiQ Controller. The controller generates appropriate
+data from DRAM and transfers it to MicroScopiQ buffers (§5.2)                                                                        control and signals to all units. It is functionally very similar to stan-
+via an Open Compute Protocol OCP-SRAM interface [86] with a                                                                          dard systolic array controllers [84], however, with added function-
+bandwidth of 64 GB/s.                                                                                                                ality to support specific features of ReCoN (arbitration of simultane-
+   Through the numbered steps in Figure 4, we explain the compu-                                                                     ous access by multiple rows), multi-precision PEs, post-processing
+tational flow of the MicroScopiQ accelerator. And in Figure 6(a-c),                                                                  unit. Furthermore, unlike traditional controllers, the MicroScopiQ
+we demonstrate the mapping and schedule for a sample 2×2 GEMM                                                                        controller exerts fine-grained control using handshaking signals
+operation with inlier and outlier weights, following the same com-                                                                   on the streaming of iActs, iAccs into the PE array to account for
+putation flow.                                                                                                                       the increased pipeline depth through ReCoN for rows with outliers.
+   Assume a quantized FM with outliers distributed within a 𝜇B                                                                       The controller also generates OCP-SRAM interface control signals
+and corresponding metadata calculated offline.                                                                                       to manage data flow between the buffers and the L2 global SRAM.
+

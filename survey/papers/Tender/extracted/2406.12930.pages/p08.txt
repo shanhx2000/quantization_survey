@@ -1,0 +1,75 @@
+values by shifting 1 bit of the accumulator register to the                    HBM2                                    IndexBuffer
+                                                                                                                             Buffer
+                                                                                                                      Index
+left. Since each PE finishes matrix reduction for a given                               0           HBM        ①                         ②      Exe
+                                                                                                    Ctrl                 11003322               Ctrl
+                                                                                                            Program                   Channel
+decomposed matrix at different cycles, the rescale signal is                            1                                    ∙∙∙
+                                                                                                                            ∙∙∙
+                                                                                        2
+                                                                                                                                       Index
+synchronized with the wavefront of the input and is passed                 0 1 2 3      3
+                                                                                                   ① Transfer
+along to the next PE in the same row. To generate rescale                                            Data             Scratchpad       ③ Base + Index
+signals at the right cycles, the Execution Controller has the             Required Order           Input     Ch 0           Ch 0
+                                                                                                   Banks     Ch 1     ∙∙∙   Ch 1
+metadata of the number of channels executed, indices of tensor                          1                     ∙∙∙            ∙∙∙         ④
+                                                                                                                                                MSA
+splitting points, and rescale factors (if needed).                                      0          Weight    Ch 0           Ch 0      Forward
+                                                                                        3          Banks     Ch 1     ∙∙∙   Ch 1       Data
+   We choose our systolic array to be output stationary for two            1 0 3 2
+                                                                                        2                     ∙∙∙            ∙∙∙
+reasons. First, it allows us to easily extend the systolic array
+to handle arbitrary rescale factors (i.e., other than α = 2)                                Figure 8: Dataflow of Tender.
+when needed. Since the accumulator register is wired with the
+multiplier and shifter within a PE, we can split the register into       HBM Controller handles data transfers between HBM2 and
+equal parts and multiply each part with an arbitrary integer             Scratchpad Memory, where the weights, inputs, and computed
+rescale factor that can come from the 4-bit input or weight              outputs are stored at INT4/INT8 precision. The Execution
+datapath. For example, with a given rescale factor α (e.g., 3)           Controller sends an address to Scratchpad Memory and control
+coming from the input datapath, the accumulator is split into            signals (e.g., enable, rescale, and done signal) to the MSA.
+8 parts (each with 4 bits). Then, at each cycle, it is multiplied           As discussed in Section III-B, Tender needs certain channels
+with the rescale factor, starting from the part with the lowest          to be processed before the others (e.g., channel order 1-0-3-2
+bits, and its partial product is shifted to the original position        in Figure 8). To avoid explicit reordering of the data layout
+to be added to the resulting value. The process is repeated for          in memory, which incurs costly read and write operations, we
+eight cycles to compute all the parts for rescaling.                     instead implicitly reorder channels through indirect indexing.
+   Second, the dataflow of the output stationary systolic array          Figure 8 shows how channels are sent to the MSA in the
+requires a minimal hardware extension for rescaling. The                 required order. Specifically, we first store the computation
+output stationary systolic array can be seen as an output value          order of the channel indices in the Index Buffer, which is
+mapped to each PE, and a partial product is produced and                 pre-determined at static time through calibration (① Program).
+accumulated in the same PE every cycle. Thus, an additional              The channel indices are reused over the entire row group to
+1-bit shifter with control logic for each PE is enough for               amortize memory access overhead, and the Index Buffer is
+conventional hardware. For weight stationary design, we need             double-buffered to hide memory access latency as it is on the
+a shifter in the accumulator (which resides outside of PE                critical path. While the HBM Controller also sends data from
+arrays) as well as in the PEs. Rescaling can be done as                  the off-chip memory into the Scratchpad Memory (① Transfer
+follows: 1) Weights are loaded in the group order, and the               Data), the Execution Controller looks up in the Index Buffer
+PEs at the boundary of each group are programmed to shift the            and obtains the channel indices (②) to generate an address for
+partial product after MAC operations. 2) Each corresponding              the target channel to load (③). Finally, channels are sent to
+accumulator shifts its value before adding an incoming partial           the MSA in the order of the required computation (④).
+product. Note that although the above procedure requires
+                                                                         E. Scratchpad Memory & Output Buffer
+slightly more changes in hardware than output stationary, it
+is still a small extension to existing hardware, and Tender can             As previously mentioned, all the inputs and weights are
+also be implemented on the weight stationary design.                     quantized into INT4/INT8 and stored in the Scratchpad Mem-
+                                                                         ory. Without the need for mixed precision storing, the memory
+C. Vector Processing Unit (VPU)                                          access is aligned, and the addressing logic becomes simpler.
+   The Vector Processing Unit (VPU) is a SIMD-style floating-            The Output Buffer stores the computation result from the MSA
+point unit (FPU) that operates on vector elements. It performs           in INT32 and sends them to the VPU for rescaling back to
+scaling of incoming INT32 results from the Output Buffer                 INT4/INT8, which is also highly banked to match the compute
+(i.e., matrix multiplication results) into INT4/INT8 with an             throughput of the VPU.
+optional activation (e.g., ReLU, GeLU) before storing it back
+                                                                                                 V. E VALUATION
+to the Scratchpad Memory. It uses calibrated bias and scale
+factors, which are computed before inference. VPU consists of            A. Experimental Methodology
+64 FPUs and internal vector registers for pipelining. There are          Software Implementation. We implement our algorithm us-
+additional registers to buffer scaling factors for quantization.         ing PyTorch Hugging Face [63]. For evaluation, we use the
+Note that VPU also performs computation for the softmax and              Open Pre-trained Transformers (OPT) suite [72], LLaMA [57],
+LayerNorms in the Transformer block.                                     and Llama-2 [58] with varying model sizes ranging from 6.7B
+                                                                         to 70B to demonstrate the general applicability of our proposed
+D. Controllers & Index Buffer                                            method. We mainly evaluate language modeling tasks using
+  The Execution Controller and HBM Controller operate                    WikiText-2 [37] and Penn Treebank (PTB) [36] datasets. We
+independently during computation to keep the MSA busy. The               use perplexity as an evaluation metric, which is a widely used
+
+
+
+                                                                     8
+

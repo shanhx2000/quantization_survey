@@ -1,0 +1,92 @@
+        Shared Exponent Config                            Block (N elements)                           TABLE I: Comparison of value representation between E1M2
+               8b                 1         4b   4b   4b       4b   4b   4b                            and E2M1 configurations in MXFFP4
+              E8M0                0        E1M2 E1M2 E1M2 ... E1M2 E1M2 E1M2
+
+               8b                 1         4b   4b   4b       4b   4b   4b                                Relative       E1M2             E2M1         Configuration
+              E8M0                1        E2M1 E2M1 E2M1 ... E2M1 E2M1 E2M1                               exponent   representation   representation    comparison
+                                                                                                             0         21 × 1.xx2        22 × 1.x2      E1M2 > E2M1
+Fig. 9: Example of 4-bit MXFFP format with a shared expo-
+                                                                                                             −1        21 × 0.1x2        21 × 1.x2      E1M2 = E2M1
+nent and a configuration bit selecting E1M2 or E2M1 (ExMy:
+                                                                                                             −2        21 × 0.012        20 × 1.x2      E1M2 < E2M1
+1 sign bit, x exponent bits, y mantissa bits).
+                                                                                                             −3        21 × 0.002        20 × 0.12      E1M2 < E2M1
+     Configs &                 Elements                Configs &                 Elements                    −4        21 × 0.002        20 × 0.02      E1M2 = E2M1
+ Shared Exponents               (N = 32)           Shared Exponents               (N = 32)
+        8b                       128b                     8b                       128b
+Conf. 0 1 0 0 0 1 1 0
+                        4b     4b     4b     4b   Conf. 0 1 0 0 0 1 1 0
+                                                                          4b     4b     4b   4b        contrast, input activations in ML computations are runtime
+Blk 0    Shared Exp     E1M2      ... E1M2 E1M2
+                               E1M2               Sub 0    Shared Exp     E1M2      ... E1M2 E1M2
+                                                                                 E1M2
+Blk 1    Shared Exp     E2M1 E2M1 ... E2M1 E2M1   Sub 1      None         E2M1 E2M1 ... E2M1 E2M1
+                                                                                                       data and thus unknown prior to execution. Applying the same
+            …               …             …                   …               …             …          comparison process for activations in runtime would incur
+Blk 6    Shared Exp     E2M1 E2M1 ... E2M1 E2M1   Sub 6      None         E2M1 E2M1 ... E2M1 E2M1
+Blk 7    Shared Exp     E1M2 E1M2 ... E1M2 E1M2   Sub 7      None         E1M2 E1M2 ... E1M2 E1M2      significant conversion overhead. To address this, we propose
+         Metadata size = 9B / 256 elements                 Metadata size = 2B / 256 elements           an efficient conversion mechanism that exploits the exponent
+ (a) Block set (8 blocks, block size 32) (b) Large block (1 block, block size 256)
+                                                                                                       distribution of elements within a block (or sub-block) to select
+                                                                                                       the most suitable bit configuration for runtime data conversion
+Fig. 10: Memory layout of MXFFP format. (a) and (b) shows                                              with negligible overhead.
+the layout of block size 32 and 256.                                                                      In runtime conversion, MXFFP follows a conversion flow
+                                                                                                       similar to MXFP: each block is normalized using a shared
+rather than relying on a fixed configuration. This composition
+                                                                                                       exponent and then quantized into a low-bit format. How-
+generalizes directly to the 6- and 8-bit MXFFP variants.
+                                                                                                       ever, unlike MXFP, the shared exponent in MXFFP depends
+   A 1-bit configuration field is not byte addressable, which
+                                                                                                       on the bit configuration (E1Mx or E2Mx), because each
+can reduce hardware efficiency. To address this issue, we
+                                                                                                       configuration uses a different exponent bias and maximum
+utilize a block-set structure, as illustrated in Fig. 10(a). Each                                                         MAX
+                                                                                                       exponent value(Eelement   ). Therefore, MXFFP must select the
+block set groups eight 1-bit configuration fields from eight
+                                                                                                       configuration before computing the shared exponent.
+blocks into a single one-byte configuration set, thereby main-
+                                                                                                          To efficiently determine the configuration, we exploit the
+taining byte addressability in memory and enabling a more
+                                                                                                       value distribution within each block. Specifically, we examine
+practical hardware design. Consequently, each set requires 9B
+                                                                                                       the exponent of each element and compute their relative
+of metadata, 1B for configuration bits, and 8B for shared
+                                                                                                       magnitude. Let Ei denote the exponent of the element i. We
+exponents to manage 8 blocks (256 elements in total).
+                                                                                                       first find the maximum exponent in the block EbMAX , and
+   As demonstrated in Fig. 8, using a large block reduces
+                                                                                                       subtract it from all element exponents to obtain a relative
+the overhead of the 8-bit shared exponent, thereby improv-
+                                                                                                       exponent:
+ing hardware efficiency, but unfortunately leads to accuracy
+degradation. To mitigate this limitation, we employ a sub-                                                                     Eir = Ei − EbMAX .                   (4)
+blocking mechanism for large block sizes (e.g., 256 block
+size), as illustrated in Fig. 10(b). Each sub-block consists                                           The resulting Eir values are always 0 or negative, reflecting
+of 32 elements and utilizes its own 1-bit configuration field.                                         how small each element is relative to the block maximum.
+The configuration bits from eight sub-blocks are grouped into                                             These relative exponents reveal which configuration pro-
+a single configuration set, enabling byte-addressable access.                                          vides better representational fidelity. As shown in Table I, in
+In addition, a single shared exponent is used across all sub-                                          MXFFP4, E1M2 provides finer resolution when Eir = 0 due
+blocks. This unified layout design supports a wide range of                                            to its larger number of mantissa bits, whereas E2M1 yields
+block sizes without structural modification and maintains a                                            a more expressive representation for Eir ∈ {−2, −3} because
+byte-aligned organization with a small metadata footprint.                                             of its additional exponent bit. For intermediate or very small
+                                                                                                       relative exponents, both configurations offer comparable repre-
+B. Efficient Conversion Mechanism                                                                      sentational capability. Importantly, while the exact thresholds
+                                                                                                       differ for MXFFP6 and MXFFP8, the overall trend remains
+   To convert high-precision data into the MXFFP format, the
+                                                                                                       the same across all precisions: E1Mx favors larger relative
+bit configuration of each block or sub-block (for large block
+                                                                                                       exponents, whereas E2Mx favors smaller ones.
+sizes) must be determined. Since the weights of ML moduels
+are known in advance, we perform static offline conversion of                                             Based on this observation, we design a lightweight
+weights into the MXFFP format. Each block (or sub-block)                                               configuration-selection rule. In MXFFP4, we count the number
+is quantized under both E1Mx and E2Mx configurations,                                                  of elements with Eir = 0 (favoring E1M2), denoted countE1 ,
+and the one that yields a smaller quantization error (e.g.,                                            and the number of elements with Eir ∈ {−2, −3} (favoring
+lower MSE) is selected as the oracle format, as described                                              E2M1), denoted countE2 . Because Eir = 0 elements carry
+in Section III-C, without incurring any runtime overhead. In                                           larger magnitudes and dominate numerical fidelity, we apply
+                                                                                                       quadratic weighting. The configuration decision rule is:
+
+
+
+
+                                                                                                    2510
+

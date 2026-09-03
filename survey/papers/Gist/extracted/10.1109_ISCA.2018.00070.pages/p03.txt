@@ -1,0 +1,68 @@
+                           10                                                                                                                            Forward pass            Backward pass
+                                                                                                                                     Lx       Ly                                                       Lz
+                            9          Weights                Weight gradients        Workspace
+Allocated memory (in GB)
+
+
+
+
+                            8          Stashed feature−maps   Imm. consumed                                                         ta             tb                       tc                         td
+                                                                                                               Timeline
+                            7
+                            6                                                                                  Feature map : Generated         1st use     long temporal gap between two uses 2nd use
+                            5
+                                                                                                                                                        Stashed in FP32 format during (tb, td)
+                            4                                                                                  Baseline       X:
+                            3
+                                                                                                               Gist           X:
+                            2                                                                                         Encode(X) :         Encode()           Encoded during (tb, td)             Decode()
+                            1
+                            0
+                                AlexNet (256)     NiN (256)   Overfeat (256)     VGG16 (64)   Inception (64)   Figure 2: Long temporal gap between uses of a feature map
+Figure 1: Breakdown of memory footprint in DNN training                                                        consumption in CNN training.
+amongst different data structures
+                                                                                                               B. Limitations of Prior Work
+Hence, we conduct our study on a modern GPU (Maxwell                                                              In this paper, we develop techniques to reduce the DNN
+GTX Titan X in our case). However, our approaches are                                                          training memory footprint. Here, we briefly describe the
+applicable to optimized hardware as well (Section V-H).                                                        limitations of existing approaches.
+   Figure 1 shows the breakdown of total memory footprint                                                      Prefetch and Swap-out. One potential approach is to move
+across different data structures. Feature maps are the inter-                                                  parts of the working set between CPU and GPU memory
+mediate layer outputs that are passed on as an input to the                                                    using PCIe links and smart prefetching analysis [39]. How-
+following layer. Gradient maps are the intermediate gradients                                                  ever, this approach still suffers from significant overheads of
+generated in the backward pass and passed as an input to the                                                   data transfer with respect to power/energy and their inability
+previous layer. In CNNs, not every feature map has to be                                                       to completely mask the performance cost of swapping data
+saved for the backward pass. We thus distinguish stashed                                                       in and out of GPU memory (upto 27% for Inception).
+feature maps (generated in the forward and used in both                                                        In addition, it uses a shared resource, PCIe links, which
+forward and backward passes) from immediately consumed                                                         sometimes can be of critical importance in distributed DNN
+feature maps (generated in the forward pass and consumed                                                       training [9].
+immediately in the forward pass) and gradient maps (gen-                                                       Reducing Minibatch Size. While reducing minibatch size is
+erated in the backward pass and consumed immediately).                                                         effective at reducing the memory footprint during training, it
+Stashed feature maps are required in the backward pass and                                                     adversely affects the runtime of the training process because
+thus stored for a long time in a minibatch processing. In con-                                                 smaller minibatches lead to GPU underutilization [12]. This
+trast, immediately consumed feature maps and gradient maps                                                     performance hit can be recovered by using more GPUs,
+can be discarded as soon as they are used. Finally, workspace                                                  where each GPU works on a smaller minibatch. But this
+is deep learning library’s (cuDNN in this case) intra-layer                                                    is also an inefficient solution as GPU machines are both
+storage to support layer computations [7]. cuDNN provides                                                      costly and power hungry, and might also result in sub-linear
+a choice between memory-optimal and performance-optimal                                                        scaling due to stragglers and transfer across workers [9].
+implementations, translating to a tradeoff between algorithm                                                   Recompute. Instead of a saving the output of a large layer,
+performance and workspace storage requirements. In this                                                        prior work has considered recomputing the output of a
+work, we choose its memory-optimal implementation as an                                                        layer’s forward pass again in the backward pass [4]. Unfor-
+optimized baseline.                                                                                            tunately, we observe that the largest layers are usually the
+   We draw two major conclusions from this figure. First,                                                      ones that also take the longest to recompute, that can cause
+larger (deeper) DNNs consume a large amount of memory                                                          significant performance overhead. Yet, this technique is still
+even with relatively small minibatch sizes (64). VGG16 and                                                     applicable for some specific layers (like batch normalization)
+Inception can only fit in our GPU memory if the minibatch                                                      and can be used in conjunction with our work.
+size is 64 and start exceeding the 12 GB GPU memory limit
+at higher minibatch size. Higher minibatch size is desirable                                                                               III. G IST: K EY I DEAS
+as it leads to better GPU utilization [12], [51]. Second,                                                         In this work, we design techniques to reduce DNN train-
+training memory footprint tends to be dominated primarily                                                      ing memory footprint by focusing on the primary contrib-
+by stashed feature maps, followed by immediately consumed                                                      utors – feature maps. We find that a feature map typically
+data structures. For example, in VGG16, 83% of memory                                                          has two uses in the computation timeline and these uses
+is consumed by stashed feature maps and immediately                                                            are spread far apart temporally, as shown in Figure 2. Its
+consumed data; this number grows to 97% for Inception.                                                         first use is in the forward pass and the second use is much
+This result stands in stark contrast to inference where feature                                                later in the backward pass. In the baseline, the data is
+maps don’t need to be stashed and memory consumption is                                                        stashed in single precision (FP32) even though these uses
+dominated by weights. We conclude that the stashed feature                                                     are far apart. In our approach, we represent the data in
+maps and immediately consumed data structures (in that                                                         a much smaller encoded format in the temporal gap and
+order of importance) are key for optimizing GPU memory                                                         decode it just before it is needed again in the backward
+

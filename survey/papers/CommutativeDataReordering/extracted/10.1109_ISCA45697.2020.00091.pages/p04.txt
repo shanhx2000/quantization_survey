@@ -1,0 +1,72 @@
+    0   1   2   3   4   5
+0 A 0 B 0 0             0   0 0 1 2 2 2 3 4 4 5    0 2 1 0 2 3 3 3 4 5
+                                                                                   the same data layout traits, we discuss only CSR; however,
+1 0 C 0 0 0             0                                                          the analyses presented in the paper are equally applicable to
+                            0 2 1 0 2 3 3 3 4 5    A B C D E F G H I J
+2 D 0 E F 0             0                                                          CSC.
+3 0 0 0 G 0             0   A B C D E F G H I J
+4 0 0 0 H I             0
+                                                   0 2 3 6 7 9     10
+5 0 0 0 0 0             J                                                             III. K EY I DEA : F ETCHING THE M ATRIX C OEFFICIENTS IN
+        a) Matrix             b) COO Format           c) CSR Format                              AN O RDER THAT M INIMIZES E NERGY
+Fig. 2: Example of a sparse matrix in two different sparse
+                                                                                      When fetching a matrix row from memory, the order in
+matrix representations.
+                                                                                   which the coefﬁcients are fetched directly impacts the energy
+MVM can be found in [49], and an analysis of different                             of the data transmissions. Data similarity based encoding tech-
+formats on GPUs can be found in [12], [13]. This paper                             niques reduce the overall energy consumption on a speciﬁed
+focuses on the widely used compressed sparse row (CSR)                             transmission order. However, since many of these proposals
+format; however, CDR can also be applied to other formats,                         rely solely on hardware mechanisms, they miss an important
+including ELLPACK [14] and its derivatives.                                        optimization opportunity—the order in which the application
+   Coordinate (COO) Format. Coordinate (COO) is the sim-                           accesses the matrix coefﬁcients. To see the potential, con-
+plest sparse matrix format. In COO, a non-zero is represented                      sider fetching a four element vector (0001, 1111, 1110, 1001)
+by a three-element <row, column, value> tuple. Figure 2b                           (Figure 3) over an interconnect that consumes energy when
+shows the COO representation of the matrix in Figure 2a:                           transmitting a 1. Further assume that the data is to be encoded
+the top two arrays are the row and column ﬁelds, and the                           using a Base+XOR scheme: the ﬁrst coefﬁcient is transmitted
+bottom array is the value ﬁeld such that the ith element of                        explicitly as a base, and each subsequent coefﬁcient is XORed
+each array gives the <row, column, value> tuple. Although                          with the previous coefﬁcient prior to transmission. This en-
+COO is conceptually straightforward, the explicit storage of                       coding reduces the number of 1s by representing the data as
+row and column indices increases the bandwidth requirements                        (0001, 1111 ⊕ 0001, 1111 ⊕ 1110, 1110 ⊕ 1001), which has
+of the format—a hindrance in sparse MVM, which is generally                        eight 1s as compared to the initial ten. The encoding can be
+bandwidth limited. Notably, although COO makes no ordering                         improved by reordering the vector to (0001, 1001, 1111, 1110),
+assumptions about the tuples, many COO kernels assume that                         resulting in only ﬁve 1s.
+the values are ordered in a row or column major order for
+                                                                                                         0001         1111         1110         1001
+performance reasons [12], [13].
+   Compressed Sparse Row (CSR) Format. Compressed                                         Original
+Sparse Row (CSR) reduces the bandwidth requirements of                                                   0001         1110         0001         0111
+COO by eliminating repetitions of the same row index when
+the matrix is stored in a row-major order. Instead of storing an                                         0001         1001         1111         1110
+explicit row index for each non-zero, CSR stores a row pointer                         Reordered
+array (the bottom array in Figure 2c) while maintaining the
+                                                                                                         0001         1000         0110         0001
+column and value ﬁelds from COO. The row pointer array
+stores the index of the ﬁrst element in each row. Thus, the                        Fig. 3: Illustrative example of the beneﬁts of data reordering.
+row coordinate of the ith tuple is the index of the largest row
+pointer entry with a value less than or equal to i. For example,                      Although this example shows signiﬁcant potential, it also
+in Figure 2c, the 5th tuple <2, 2, E> is in row 2 since it falls                   raises important questions. The ﬁrst is whether this reordering
+between the second and third entries in the row pointer array.                     maintains correctness. If the vector is being fetched to com-
+   CSR is one of the most widely used sparse matrix formats                        pute a subsequent summation, correctness is maintained since
+due to its ability to efﬁciently store unstructured sparse matri-                  addition has the commutative property, (a + b = b + a). In
+ces, and ease of parallelization. On CPUs, CSR based MVM                           general, data reordering is valid whenever the fetched data is
+is typically parallelized by giving each thread a row, or set of                   used to compute only commutative operations. Notably, many
+rows, such that the working set matches the cache size [49].                       parallel applications already exploit the commutative property
+For GPUs, Bell and Garland [12], [13] identify two different                       to partition operations among parallel threads [16], [46].
+MVM kernels; the ﬁrst, which they call CSR-Scalar, is similar                         A second question is whether this reordering requires addi-
+to the aforementioned approach adopted on CPUs where each                          tional metadata, which may reduce the potential energy sav-
+thread is responsible for one row. CSR-Scalar results in poor                      ings. For instance, if the vector in the previous example is to
+memory access patterns on GPUs, and an alternative, CSR-                           be used to calculate a dot product rather than a summation, the
+Vector, with one row per warp1 is favored.                                         order in which the coefﬁcients are fetched must be speciﬁed
+   A column-major variant of CSR, compressed sparse column                         using metadata such that the appropriate vector elements can
+(CSC), is used in applications where the matrix is accessed in                     be matched prior to multiplication. Notably, prevalent sparse
+a column-major order. Since CSR and CSC share many of                              matrix formats used in CPU- and GPU-based systems already
+                                                                                   contain the necessary metadata since they represent the matrix
+    1 We adopt NVidia’s terminology for thread groups (warps) in this paper.       as <coordinate, value> tuples (Section II-B1). CDR leverages
+
+
+
+
+                                                                               1079
+
+            Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:03 UTC from IEEE Xplore. Restrictions apply.
+

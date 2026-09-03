@@ -1,0 +1,70 @@
+                     2026 ACM/IEEE 53rd Annual International Symposium on Computer Architecture (ISCA)
+
+
+
+
+       EVA: Accelerating LLM Decoding via an Efficient
+              Vector Quantization Architecture
+                    Bowen Duan†* , Cong Guo†*§ , Chiyue Wei† , Haoxuan Shan† , Yuzhe Fu† , Xinhua Chen† ,
+                           Yifan Xu† , Ziyue Zhang† , Changchun Zhou† , Hai Li† , Yiran Chen†
+                                   †
+                                       Duke University, USA * Equal contribution § Corresponding author
+                                             {bowen.duan, cong.guo, hai.li, yiran.chen}@duke.edu
+
+      Abstract—Large Language Models (LLMs) have achieved                     Fig. 1 (a), this fundamental difference in computational gran-
+   impressive performance across diverse domains but remain                   ularity makes the decoding phase significantly less efficient.
+   inefficient during the autoregressive decoding phase. Unlike the              Quantization has become an essential technique for effi-
+   prefill stage, which employs compute-bound GEMM operations,
+   decoding executes a sequence of small GEMV-like computations               cient LLM inference [19], [21], [23], [26], [37], [39], [45].
+   that are memory-bound and underutilize modern accelerators.                Conventional quantization methods [24], [26], [31] typically
+   Weight-only vector quantization (VQ) has emerged as an effective           apply low-precision formats to both weights and activations,
+   compression technique that clusters model weights into a shared            enabling reduced-precision computation and lower memory
+   codebook and replaces the original weight matrix with low-                 access cost. Recent frameworks primarily focus on weight-
+   precision indices, enabling 2-bit-level weight compression. While
+   this approach substantially reduces model size and memory                  only quantization [16], [33], [61], [62], such as AWQ [37] and
+   bandwidth, it still suffers from two critical inefficiencies: the low      SqueezeLLM [32]. These methods compress model weights
+   utilization of GEMV computation and frequent memory conflicts              into low-bit representations (e.g., 4-bit) while retaining high-
+   during codebook lookups.                                                   precision computation (e.g., FP16) for activations. Weight-only
+      This paper presents EVA, an efficient vector-quantization-              quantization directly targets the decoding bottleneck of LLMs,
+   based architecture that addresses both computational and mem-
+   ory bottlenecks in LLM decoding. EVA builds on a simple yet
+                                                                              where activations are lightweight but weight tensors dominate
+   effective insight that combines input-codebook computation with            memory traffic. Although activations remain in high precision
+   conflict-free memory access. Instead of reconstructing quan-               to preserve model accuracy, weight-only quantization achieves
+   tized weights from indices, EVA directly performs dot products             nearly linear speedup in the decoding stage as the weight
+   between input vectors and the weight codebook, transform-                  precision decreases [37]. This improvement arises because
+   ing LLM decoding from GEMV to GEMM computation. It
+   then performs structured lookups from an intermediate output
+                                                                              LLM decoding is inherently memory-bound, and quantization
+   buffer, eliminating memory bank conflicts. We further design               effectively mitigates the bandwidth bottleneck caused by fre-
+   a hardware-software co-optimized architecture specialized for              quent weight loading.
+   LLM decoding while remaining compatible with conventional                     Pushing this trend further leads to codebook-based com-
+   prefill execution. Evaluations show that EVA achieves up to                pression [6], [15], [22], where weight tensors are represented
+   11.17× speedup and 7.17× higher energy efficiency compared
+   with the SOTA lookup-based architecture, while preserving arith-
+                                                                              using lookup tables (LUTs) instead of arithmetic quantiza-
+   metic precision after vector quantization. Our code is available           tion functions. Unlike integer or floating-point quantization,
+   at https://github.com/dbw6/Eva.git.                                        lookup-based quantization provides higher flexibility and bet-
+      Index Terms—Large Language Models, Vector Quantization,                 ter fidelity by enabling non-uniform representations. Recently,
+   LLM Decoding, AI Accelerator, Hardware-Software Co-design.                 Vector Quantization (VQ) [15], [18], [25], [40], [58] has
+                                                                              emerged as a pivotal technique that extends codebooks from
+                          I. I NTRODUCTION                                    single-element (scalar) to multi-element (vector) representa-
+                                                                              tions, allowing each codebook entry to encode multiple weight
+      Large Language Models (LLMs) [2], [14], [38], [50], [56]                elements (e.g., 4 or 8). Compared with arithmetic quantization
+   have achieved remarkable success across a wide range of                    methods such as AWQ [37], which are typically limited to 4-
+   domains, from natural language understanding [13], [46] to                 bit precision, VQ pushes this limit further to 2-bit quantiza-
+   code generation [17], [55], [63]. However, the inference effi-             tion while maintaining high accuracy, demonstrating superior
+   ciency of LLMs remains a critical challenge, particularly in the           algorithmic efficiency. As illustrated in Fig. 1 (b), an example
+   decoding phase of the autoregressive (AR) mechanism [60].                  with a vector size of d = 4 partitions the weight matrix into 4-
+   During inference, computation is divided into two distinct                 element vectors, which are then mapped to a compact weight
+   phases: prefill and decoding. The prefill phase processes the              index (WI) matrix and a weight codebook (WC). This multi-
+   entire input sequence and can be efficiently executed as large-            dimensional compression enhances quantization expressive-
+   scale General Matrix Multiplication (GEMM) operations. In                  ness and achieves state-of-the-art accuracy-compression trade-
+   contrast, the decoding phase generates one token at a time,                offs while significantly reducing model size.
+   resulting in a sequence of small-scale General Matrix–Vector                  Despite its effectiveness in model compression, conven-
+   Multiplication-like (GEMV-like) operations. As illustrated in              tional VQ offers no speedup on current hardware accelera-
+
+
+979-8-3315-5065-3/26/$31.00 ©2026 IEEE                                     1351
+DOI 10.1109/ISCA66397.2026.00102
+

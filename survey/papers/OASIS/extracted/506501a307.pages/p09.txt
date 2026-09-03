@@ -1,0 +1,59 @@
+   Note that after repeating the maintenance process multiple         the Language Model Evaluation Harness [13] framework.
+times, there may be cases where both leaf nodes under a               All algorithm performance experiments are conducted on an
+certain non-leaf node are popped out. For instance, after             NVIDIA A100-80GB GPU.
+retrieving the top-3 largest values, both child nodes of node 7       OASIS’ NU-WAQ Implementation Details                 In OASIS,
+may be popped out. In this case, the MUX of node 7 outputs            both weights and activations are quantized using K-Means
+negative inﬁnity for the register update on its parent node           clustering. Weights undergo 4-bit per-output-channel quantiza-
+(node 3) in the subsequent cycle. Obviously, as long as the           tion without outlier protection, while activations are quantized
+tree is not entirely emptied, i.e., fewer than N elements have        per-token with 3/4-bit precision. We ﬁrst perform post-training
+been popped out, this negative inﬁnity cannot propagate all           K-Means quantization on the LLM weights to obtain the
+the way to the root node.                                             weight centroids and indices. Next, the activation centroids
+Combining two trees into Orizuru A key advantage of                   are trained ofﬂine using 16 calibration samples from the C4
+Orizuru’s two-fold binary tree architecture is its ability to reuse   dataset [9], and the indices are computed online. We incor-
+the max tree’s results to reduce the number of comparisons            porate a weighted-K-Means algorithm to obtain the activation
+needed for the min tree. Given the limited number of com-             centroids, where the weights are determined by Fisher infor-
+parators, the runtime bottleneck in Orizuru occurs during the         mation matrices [45] of the activations. To handle outliers, the
+initial tree setup, which requires N/2 comparisons. However,          top 0.5% largest and bottom 0.5% smallest activation values
+the comparison results from this step can be directly reused          are preserved in FP16 format, while the inliers are quantized.
+to initialize the min tree. Speciﬁcally, the registers at the         During inference, OASIS dynamically identiﬁes outliers using
+log2 (N )-th level of the min tree can adopt the reversed com-        the Orizuru units, while OASIS-S reuses the thresholds from
+parison results from the max tree. This allows the min tree’s         the ofﬂine training process on the calibration dataset.
+initialization to skip the log2 (N )-th level and begin directly at   Baseline LLM Quantization Methods                  We compare
+the (log2 N − 1)-th level, reducing the total comparisons for         OASIS with INT-WAQ baselines round-to-nearest (RTN),
+its initialization by 50%.                                            SmoothQuant [58], QuaRot [3], and Atom [62]. Except for
+   In summary, Orizuru picks the k maximums and k min-                Atom, which uses group-wise quantization for both weights
+imums from an N -input activation vector x at the cost of             and activations with a group size of 128, all other baseline al-
+1.5N + 2k · log2 (N ) comparisons. This is signiﬁcantly smaller       gorithms employ per-output-channel quantization for weights
+than the 6N comparisons required by the top-k engine in [55].         and per-token quantization for activations.
+Dealing with ties Since the outlier detection is performed on         Architecture Modeling and Comparison              The hardware
+the FP16 activations, which have limited precision, multiple          performance of the OASIS architecture is modeled using
+activation values within each token can be identical, leading         a cycle-accurate simulator modiﬁed from DnnWeaver [48].
+to ties when determining the k-th largest or smallest values.         The area and power metrics of the core logic units in the
+On average, such ties occur in approximately 2% of activation         OASIS accelerator, such as the Concat Unit, MAC Tree, Index
+tokens across all evaluated layers and models. To address this        Counter, and Orizuru, are derived from synthesis results using
+issue, we always output exactly k outliers for each of the            the TSMC 28 nm standard cell library. Table II shows the
+max and min trees to maintain a consistent number of outliers         detailed conﬁgurations of the hardware components on-chip.
+for error compensation. This is achieved by the following                We use Cacti [27] and DRAMSim3 [26] to simulate the
+tie-breaking strategy: in cases where there are ties in the           overhead of on-chip SRAM and off-chip HBM, respectively.
+comparison results, we deterministically select the left child        We denote W4A3 OASIS as OASIS-A3 and W4A4 OASIS
+node as the larger value in the max tree and as the smaller           as OASIS-A4, and similarly for OASIS-S. We compare the
+value in the min tree.                                                hardware performance of OASIS with a series of baseline
+                        V. E VALUATION                                hardware accelerators, including the GPU-based platforms of
+                                                                      NVIDIA A100-80GB GPU [40] and QuaRot [3] and an ASIC
+A. Experimental Setup                                                 accelerator of FIGLUT [42]. Unless otherwise speciﬁed, the
+Models and Tasks           We examine the algorithm perfor-           hardware performance of OASIS and the baseline accelerators
+mance of OASIS on a spectrum of LLMs and tasks. Speciﬁ-               are evaluated on the next-word-prediction task with an output
+cally, the models include OPT-6.7B/13B/30B [61], LLaMA-               sequence length of 2048.
+7B/13B/30B [52], LLaMA-2-7B/13B/70B [53], LLaMA-3-
+8B [15], and Mistral-7B [20], which are implemented with              B. Algorithm Performance Analysis
+Transformers [56] and PyTorch [44]. These LLMs are eval-                 Table III shows the WikiText-2 PPL results for OASIS and
+uated on two tasks: (i) the next-word prediction task using           baseline INT-WAQ methods across various models with a se-
+the WikiText-2 [36] dataset, measured by the perplexity (PPL)         quence length of 2048. OASIS consistently achieves the low-
+metric, and (ii) the zero-shot accuracy task across six common        est PPL for both W4A4 and W4A3 precisions, outperforming
+sense datasets: PIQA [4], ARC-easy (ARC-E) [7], ARC-                  the INT-WAQ methods. This demonstrates the effectiveness of
+challenge (ARC-C) [7], BoolQ [6], HellaSwag [59], and Wino-           OASIS’s NU-WAQ and outlier protection methods in reducing
+Grande [47]. The zero-shot performance evaluation utilizes            quantization errors and enhancing model performance. For
+
+
+                                                                  315
+

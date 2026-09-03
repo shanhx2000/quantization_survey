@@ -1,0 +1,63 @@
+LightNobel: Improving Sequence Length Limitation in Protein Structure Prediction Model via Adaptive Activation Quantization   ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+atively small variance between channels and a large variance be-                        4.1      Baseline Token-wise Quantization
+tween tokens. Figure 5(a) shows the distribution of absolute values                     AAQ specifically targets activations in Pair Representation dataflow,
+for three random channels, and Figure 5(b) shows the value dis-                         the main bottleneck of PPM as mentioned in Section 3.1. To maxi-
+tribution of the random tokens from the same PPM activation. As                         mize model accuracy, we use a 16-bit fixed-point format for weights
+shown in Figure 5(a), the variance between channels is small, as                        without quantization. For activations, quantized inlier values are
+it shows a similar pattern. However, as shown in Figure 5(b), the                       represented using INT4 or INT8 formats, and outliers are repre-
+variance between tokens is large, as they show significantly dif-                       sented in an INT16 format to minimize information loss.
+ferent value ranges and distributions depending on their position.                         Token-wise Quantization. In an attention-based model, in-
+All channels have similar minimum and maximum values at the                             cluding PPM, most computations, including linear layers or layer
+same position, and outliers identified by the 3𝜎-rule [25, 62] are                      normalization, are performed token-wise. Therefore, supporting
+concentrated only at tokens in certain positions. This behavior                         dynamic token-level parallelism is critical for efficient processing
+arises because the Pair Representation in PPM shares distogram                          in attention-based models [61]. However, conventional attention-
+patterns specific to the input protein, which is a pairwise distance                    based models employing quantization often use channel-wise quan-
+representation that captures spatial relationships specific to pro-                     tization for accuracy. This approach necessitates the dequantization
+tein structures [24]. Therefore, we chose a token-wise quantization                     of individual values within a token before every operation to enable
+scheme that aligns with the characteristics of tokens to minimize                       token-wise parallel computations, making the process highly inef-
+accuracy degradation.                                                                   ficient [35, 64]. In contrast, PPM also exhibits a pattern in which
+                                                                                        large values are concentrated in specific tokens. To exploit this
+                                                                                        property, we adopt a token-wise quantization. By applying token-
+3.4     Characteristic Difference Across Activations
+                                                                                        wise quantization and setting the scaling factor dynamically at
+To efficiently perform token-wise quantization in PPM, we analyze                       runtime, where each token is adjusted with a unique scaling factor,
+the characteristics of every activation value across all iterations.                    we achieve superior quantization accuracy.
+Precise understanding of these activation patterns is essential for                        Dynamic Outlier Handling. Although activations in PPM can
+designing effective quantization schemes, particularly in setting                       be quantized token-wise, handling outliers remains another chal-
+appropriate scaling factors and handling outliers. If the scaling                       lenge. In typical attention-based models, channel-wise quantiza-
+factor is too large, quantization errors increase as the gap between                    tion allows predetermination of quantization parameters based on
+original and quantized values widens. Conversely, if the scaling                        dataset analysis. However, since the number of tokens varies sig-
+factor is too small, large values may get clipped or distorted due                      nificantly depending on input, predefining thresholds for outlier
+to the limited range of representation. While handling outliers can                     classification is not feasible in a token-wise manner. Additionally,
+mitigate these issues, it increases data size and complicates dataflow,                 in PPM, unpredictable outliers arise due to biasing and merging
+reducing overall efficiency. Therefore, a balanced design between                       with Sequence Representation, depending on the input protein type,
+scaling and outlier handling is important.                                              making it more difficult. To resolve this, we propose a dynamic
+   Prior quantizations for attention-based models have predomi-                         outlier handling. During each quantization process, we utilize a
+nantly employed conservative activation quantization strategies to                      top-k algorithm to identify the dynamic number of outliers. The
+preserve model accuracy [25, 64]. For instance, quantization for ac-                    number of outliers, k, can be set adaptively based on the activation
+tivations such as pre-LayerNorm or Score Matrix is rarely explored.                     characteristics. The computational complexity of the top-k selection
+However, to minimize activation overhead, we aim to quantize                            is 𝑂 (𝑛𝑙𝑜𝑔𝑛), making it impractical for large-scale attention-based
+most of the activations in Pair Representation dataflow, includ-                        models. However, in PPM, the hidden dimension is just 128, which
+ing these underexplored regions. At the same time, it is essential                      is very small compared to the general attention-based model [58],
+to maintain accuracy comparable to the baseline in the PPM. Our                         and the cost is manageable. We further design hardware support
+analysis reveals that activations within a single PPM layer exhibit di-                 for efficient top-k algorithms, enabling this approach.
+verse characteristics depending on their position, posing challenges                       Uniform and Symmetric Quantization. After outlier han-
+to optimizing all activations using a single quantization scheme.                       dling, the distribution of inliers is uniform. Hence, we employ uni-
+Consequently, we propose an adaptive quantization approach that                         form symmetric quantization for each token. Equation 1 presents
+applies different quantization schemes based on the characteristics                     the formulation of uniform symmetric quantization. Here, Min and
+of each activation, thereby maximizing model performance.                               Max denote the minimum and maximum values within the target
+                                                                                        quantization group, 𝜎 represents the scaling factor, and m is the
+                                                                                        bit-width used for quantization.
+4     Token-wise Adaptive Activation Quantization
+As mentioned in Section 3.1, the significantly large activation size                                                  𝑀                     𝑥 
+in the Protein Structure Prediction Model (PPM) presents a ma-                            𝑀 = max(|Min|, |Max|), 𝜎 = 𝑚−1    , 𝑄 (𝑥) = round      (1)
+                                                                                                                    2    −1                  𝜎
+jor limitation. To address this, we propose Token-wise Adaptive
+Activation Quantization (AAQ), which optimally quantizes Pair                              If the absolute difference between the scale range within a quan-
+Representation activations by fully leveraging their characteristics.                   tization group is significant, asymmetric quantization can use ad-
+By integrating dynamically adjusted precision and adaptive outlier                      ditional bias to focus on a narrower range. However, according to
+handling into token-wise quantization, AAQ effectively mitigates                        our experimental results, symmetric quantization without outlier
+activation size issues in PPM while ensuring accurate inference.                        handling leads to a 27.35% increase in RMSE. In contrast, when
+

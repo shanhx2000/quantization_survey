@@ -1,0 +1,130 @@
+the activation tensor has W ≤ 32. If W ≤ 32, eight sequential                                 0
+                                                                                                  1B                                         1D DCT 1
+                                                                                                                                                         0
+                                                                                              1                                                          4
+cache lines are loaded, containing exactly four JPEG blocks                           8B      2
+                                                                                                                               6
+                                                                                                                                                         2   8B
+
+
+
+
+                                                                   Alignment Buffer
+                                                                                              3                                                          6
+(Fig. 12a and 12b). If W > 32, eight cache lines with a                                       4
+                                                                                              5
+                                                                                                                                                         7
+                                                                                                                                                         3
+                                                                                              6                       1                                  5
+stride of W are loaded (not shown). To force alignment, we                                                        3
+
+
+
+
+                                                                                                                                                                       SH
+                                                                                              7                                                          1
+
+zero pad the input activations’ width up to a multiple of the                                                                                                     3
+                                                                                                                                             1D DCT 8
+JPEG block width, eight elements (W pad, Figure 12a). Rather
+                                                                                                  64B                                            64B
+than padding the height of each activation channel, we instead                                                    Transpose                                       >>
+pad a reshaped activation. The 4D tensors, RN ×C×H×W , are
+                                                                       Symbol Key:                                                    n
+reshaped to a 2D tensor, RN CH×W , and padded along the
+reshaped dimension (N CH pad, Figure 12b). Reshaping re-           Fig. 13: The JPEG-ACT 2D DCT unit. 1D DCT is reproduced
+quires no data movement as only the indices are changed, and       from the LLM fast DCT [52]. Bottom: DCT algorithm building
+padding in this manner requires no framework modifications.        blocks with cn = cos(nπ/16), sn = sin(nπ/16).
+   Padding increases the memory footprint of the activations
+and causes a performance overhead, however, this increase
+is usually small. Padding could be performed at the hard-          implementation with a two-pass structure and four pipeline
+ware level, however, this introduces additional hardware and       stages.
+unaligned access overheads. It is preferable to have N ∈
+8, 16, 32, ... due to warp sizing on GPUs, which results in        E. DIV and RLE (JPEG-BASE)
+no N CH padding. Similarly, activation tensors with W ∈               JPEG-BASE uses a hardware implementation of the JPEG
+8, 16, 32, ... result in no W padding. Out of the datasets         standard quantization and coding stages. DIV quantization is
+and networks this work examines, only ResNet18/ImageNet            a simple division by the DQT, and RLE coding combines run-
+and ResNet50/ImageNet [3] require padding, with a storage          length encoding and Huffman coding. We implement the DIV
+overhead of 6.4% for H, W padding, and 3.0% for N CH, W            unit as a parallel multiplier, and use designs from OpenCores
+padding on ResNet50. These overheads are low as most               for RLE (encoding) [53], and RLD (decoding) [54]. Hardware
+activation storage is in the widest layers of the network,         is duplicated as necessary to meet throughput requirements.
+making the relative size of the padded elements small.
+   The alignment buffer is designed with one 8B read/write         F. SH and ZVC (JPEG-ACT)
+port, and one 64B read/write port. During compression, the
+                                                                      The JPEG standard was designed for software compression
+SFPR unit may perform 8B writes, while the DCT and other
+                                                                   of images. We developed the shift (SH) and ZVC back-end,
+compression units perform 64B reads. Once the first JPEG
+                                                                   replacing steps from the standard JPEG algorithm to reduce
+block has been loaded, the DCT stage proceeds until all 4
+                                                                   hardware overheads and improve compression on activations.
+blocks have been read (4 cycles) and the buffer is freed for
+                                                                   SH quantization is designed to remove the multipliers used
+use by the next set of blocks. During decompression, roles are
+                                                                   in the DIV stage of JPEG-BASE. ZVC coding [21] is used
+reversed, with 64B writes from the decompression pipeline,
+                                                                   because of our observations that activation frequency distribu-
+and 8B reads by the SFPR unit. Structuring allows us to
+                                                                   tions vary drastically from images. SH and ZVC, combined
+maintain fewer read and write ports on the buffer.
+                                                                   with SFPR and the DCT, compose the JPEG-ACT accelerator.
+D. Discrete Cosine Transform                                          SH is motivated by our observations that exact quantization
+                                                                   is often unnecessary. By switching the division to a shifting
+   The DCT unit used by JPEG-BASE and JPEG-ACT is
+                                                                   operation (Figure 14), the area associated with the quantization
+implemented by utilizing eight 8-point 1D DCT units (Figure
+                                                                   operation can be reduced by 88%. This has the effect of limit-
+13). We use the well known 8-point DCT of Loeffler et al. (the
+                                                                   ing DQT values to powers of 2. In compression mode, 64 right
+LLM DCT) [52] due to its ease of pipelining, and efficient use
+                                                                   shift operations are performed in parallel. In decompression
+of multipliers. The LLM implementation requires 11 multipli-
+                                                                   mode, the right shifts are replaced by left shifts. SH comes at
+cations, and 29 additions for each 8-point DCT, resulting in 88
+                                                                   the expense of having only eight available quantization modes
+multipliers for the JPEG-ACT DCT. We implement the JPEG-
+                                                                   for each frequency. When performing activation compression,
+ACT DCT as two passes through the 1D DCT units. After
+computing the DCT along the first dimension, the block is
+transposed and processed again for the DCT along the second                                                  log(DQT) 64x3
+                                                                                                  64B                                      64B
+dimension. Each pass through the unit takes four cycles to
+                                                                                           DCT
+
+
+
+
+                                                                                                                                                 ZVC
+
+
+
+
+                                                                                                        1B                         1B                  Compr.
+complete. After being transformed by the 2D DCT, the block                                                   >>
+                                                                                                                          ⋯
+                                                                                                                              SH 64
+                                                                                                                  SH 2
+
+
+
+
+is sent to the DIV unit for JPEG-BASE (not shown) or the                                                     <<                                        Decompr.
+                                                                                           iDCT
+
+
+
+
+                                                                                                                                                 ZVD
+
+
+
+
+SH unit for JPEG-ACT (right, Figure 13 and Section III-F).                                        64B
+                                                                                                        1B SH 1                       1B
+                                                                                                                                           64B
+
+   The iDCT unit is fashioned similarly to the DCT unit. In
+brief, eight 8-point iDCT units are combined with a normal-        Fig. 14: Shift (SH) unit showing 64 parallel units. The log
+izing shift stage. The stages are inverted relative to the DCT,    DQT has 64, 3-bit outputs. Colored arrows indicate compres-
+i.e. multipliers become dividers, etc. This results in a similar   sion and decompression paths.
+

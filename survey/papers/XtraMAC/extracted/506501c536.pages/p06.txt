@@ -1,0 +1,123 @@
+       Input
+     data type           Mapping                     Register Slice                                                       Reg                                    Reg
+                                                                                     Post-compute                                        Adder
+                  Special Value Handling                                          Special Value Handling                                                               SVH
+                                                                                                                                      INT Adder 1
+                                               Reg                                                                  Reg                                         Reg
+                                                                                                                                          +
+                     Type 1                                                     Shift &
+
+
+
+
+                                                                                                                                                      Combine
+    Input A                                                                                                                                                     Reg
+                       …                                                        MASK 1
+
+
+
+
+                                       MUX
+
+
+
+
+                                                                                                        Normalize
+                                                                                                                    Reg
+
+
+
+
+                                                                                             Combine
+                                                              Multiplier
+                     Type N
+                                                                                Shift &                                                  …                             SVH
+                                                                                                                                                                                            Output P
+                                               Reg                              MASK 2
+                                                                                  …
+
+
+
+
+                                                                                                                                                                              MUX
+                                                                                                                                      INT Adder P
+                     Type 1                    Reg                              Shift &
+    Input B                                                                                                                                                                         Register Slice
+                      …                                                         MASK P                                                 FP Adder 1
+
+
+
+                                       MUX
+                                                              DSP slice
+
+                                                                                                                                          +
+
+
+
+
+                                                                                                                                                      Combine
+                     Type N                                                          ADD               XOR
+                                                            mantissa bits                                                                                       Reg
+                                                              exp & sign bits        exp               sign                              …                             SVH
+                                                                                                                    Register Slice
+    Input C                                                                                                                           FP Adder P
+                                             Reg
+                   Stage #1                                                     Stage #2                                                   Stage #3                          Stage #4
+
+
+
+    Fig. 5. Overview of the XtraMAC architecture supporting N datatype combinations and up to P -way parallelism. (SVH: special value handling).
+
+
+
+mixed-precision semantics. The bit-level control forms the                                                              is parameterized by (i) the number of supported datatypes N ,
+basis of our mixed-precision support and allows multiple low-                                                           chosen at synthesis time, and (ii) the maximum parallelism P
+precision MAC lanes to execute in parallel.                                                                             across these N datatypes, which defines the uniform per-lane
+                                                                                                                        structure shared by all stages and is chosen no larger than the
+D. Special Value Handling
+                                                                                                                        bound in Eq. 12. This section details how XtraMAC realizes
+   1) Numerical Coverage: XtraMAC adopts flush-to-zero                                                                  a fully pipelined mixed-precision MAC datapath with runtime
+(FTZ) and denormals-are-zero (DAZ) semantics throughout                                                                 datatype switching.
+the computation datapath, consistent with the numerical con-
+ventions widely employed in modern floating-point compute                                                               A. Overall Architecture
+hardware, such as NVIDIA A100/H100 Tensor Cores [27],                                                                      Figure 5 illustrates the four-stage pipeline of XtraMAC. A
+[28] and the AMD Xilinx Floating-Point Operator [1]. Sub-                                                               dedicated datatype-select signal is registered at pipeline entry
+normal inputs are treated as zero upon ingestion and outputs                                                            and propagated through all four stages via matched delay
+falling below the minimum value are flushed to zero. NaN                                                                slices, selecting one of the N supported datatypes each cycle.
+inputs propagate as canonical quiet NaN (qNaN), infinity                                                                All datatype-specific mapping and reconstruction submodules
+is preserved with its sign, and conflicting cases such as                                                               are instantiated statically, and runtime switching is achieved
+∞ × 0 and +∞ + (−∞) resolve to qNaN. For formats                                                                        entirely through input datatype controlled multiplexing without
+that do not encode infinity, all-ones exponent encodings are                                                            any form of reconfiguration. The pipeline processes up to
+treated as NaN. Integer-to-floating-point conversion is exact,                                                          P logical lanes per operation, where P corresponds to the
+and floating-point accumulation applies round-to-nearest-even                                                           maximum parallelism among the N supported datatypes, en-
+(RN-even) throughout.                                                                                                   suring that all formats share a common parallel substrate. The
+   2) Pipeline-Invariant Exception Handling: A key design re-                                                           four stages perform operand interpretation and DSP packing
+quirement is that exception handling must not disrupt the tim-                                                          (Stage 1), datatype-invariant multiplication and per-lane post-
+ing behavior of the main datapath. XtraMAC achieves this by                                                             computation (Stage 2), datatype-specific accumulation via
+detecting all special cases, including NaN, infinity, subnormal,                                                        decoupled INT/FP adder paths (Stage 3), and final output
+and overflow, at the input and encoding them as status flags                                                            selection and assembly (Stage 4). The following subsections
+that are forwarded through the same matched register slices as                                                          describe each stage in detail.
+the operands, ensuring that control and data remain temporally
+                                                                                                                        B. Stage 1: Operand Interpretation and Bit-Mapping
+aligned throughout the pipeline. At the output, the appropriate
+result is selected through purely combinational logic, requiring                                                           Stage 1 receives input operands A and B, which may encode
+no stalls, pipeline flushes, or control flow divergence. Overflow                                                       multiple concatenated low-precision values, and translates
+is resolved by saturating the result to ±∞ through the same                                                             them into datatype-specific bit-packed DSP-port operands for
+flag selection mechanism, ensuring uniform treatment across                                                             Stage 2. The datatype input identifies the active format among
+all exception types. Thus, the pipeline’s latency and throughput                                                        the N supported datatypes and determines how each data value
+are preserved unconditionally, independent of whether inputs                                                            is interpreted. To support N datatypes without reconfiguration,
+are normal or exceptional.                                                                                              Stage 1 instantiates N parallel mapping submodules. Each
+                                                                                                                        submodule decodes A and B according to its datatype def-
+              IV. X TRA MAC A RCHITECTURE D ETAILS                                                                      inition. Floating-point submodules extract the sign, exponent,
+   Guided by the processing-pattern formulation in Section III,                                                         and mantissa fields, restore the implicit leading 1, and pack the
+XtraMAC separates numeric interpretation from numeric ex-                                                               mantissa bits into the designated DSP input positions, while
+ecution: lightweight peripheral logic performs format decod-                                                            forwarding the exponent and sign fields as metadata. Integer
+ing, bit-mapping, packing, and post-computation, while the                                                              submodules perform two’s-complement decoding, pack the
+arithmetic core comprises a datatype-invariant DSP multiplier                                                           magnitude bits into the DSP inputs, and forward the sign bit.
+and decoupled INT/FP accumulation paths. The architecture                                                               For pure integer datatypes, the exponent metadata is set to
+
+
+
+
+                                                                                                                2541
+

@@ -1,0 +1,74 @@
+                                                                                                                                                                  Block (32 elements)
+                                                                        MXFFP4 0         S E MM                     1    S E E M
+                        Register File
+                                                                                                                                                        S E E E E E E E E MMMMMMM
+                                                                                             Bit Mapper                  Bit Mapper
+                      Operand Buses                                                                                                                                 MXFFP Converter
+                                                                        E2M2         S       0 E      MM            S    E E          M 0
+                                                                                                                                                              Max               Select max of exp (𝐸𝑏𝑀𝐴𝑋 )
+                     MXFFP Tensor Core                              INT8            MXFFP4            MXFFP4            MXFFP4            MXFFP4
+                                                                   SA       SB      A0       B0       A1       B1       A2       B2       A3       B3      Subtractor             Get relative exp (𝐸𝑖𝑟 )
+                                         Octet #0
+                                                                                    Mapper            Mapper            Mapper            Mapper            Counter                     Count 𝐸𝑖𝑟
+     Octet   Octet     Octet   Threadgroup Threadgroup                               E2M2              E2M2              E2M2              E2M2
+      #3      #2        #1                                                                                                                               Config Selector
+                                Matrix Buffer   Matrix Buffer           ×                ×                 ×                 ×                 ×                                      Select config
+                                                                                                                                                         ×     +      >
+                                                                                                  +                                   +
+                                 Converter       Converter                                                                                                          Normalize & Round
+                                                                                                                    +
+                                                                                                                                                          Block (E1M2)               Block (E2M1)
+                                                                                                  ×
+                      Operand Buses                                                                                                                                        or
+                                                                                 S E E E E E E E E MMMMMMM                                                S E MM                     S E E M
+
+             (a) MXFFP Tensor Core overview                                      (b) MXFFP dot-product unit design                                          (c) MXFFP converter design
+                                                                Fig. 12: MXFFP Tensor Core design.
+buffer and performs operations on the corresponding input and                                         most-significant exponent bit into the exponent field and fills
+output tiles. For example, TG0 multiplies the first 4×4 tile of                                       the remaining positions using the most-significant mantissa
+matrix A with the corresponding 4×8 tiles of matrices B and C                                         bits. When the configuration is E2M1, two exponent bits are
+to produce the first 4×8 tile of matrix D.                                                            forwarded directly, and a single mantissa bit is appended to
+   Building upon this mapping, MXFFP assigns each block                                               form the final aligned format.
+within a block set to specific threadgroups and steps, as                                                To accommodate both mapped representations, the FP4
+illustrated in Fig. 11. For instance, different subsets of thread-                                    (E2M1) arithmetic core is minimally extended to support an
+groups are responsible for distinct blocks of matrices A                                              internal E2M2 format. Specifically, one additional mantissa bit
+and B during Step 1, ensuring that all TGs operate on                                                 is added to the significand path. The corresponding normaliza-
+separate MXFFP blocks while maintaining consistent data                                               tion unit is widened to handle the increased precision, while
+reuse. Steps 2–4 follow the same mapping pattern, with                                                exponent biasing and range handling remain unchanged. The
+each threadgroup accessing the corresponding blocks for its                                           area and power overhead to support this is negligible since
+designated step.                                                                                      only the significand pipeline is widened (see Section VI-D).
+   To support this mapping, each threadgroup maintains two                                               After computation, each element is multiplied by its cor-
+small registers: a configuration register (2B) and a shared ex-                                       responding block’s shared exponent prior to accumulation,
+ponent register (2B) for matricies A and B. The configuration                                         consistent with MX processing semantics. Accumulated re-
+register stores the configuration set of the block set, while                                         sults are stored in high-precision accumulators (e.g., FP16 or
+the shared exponent register holds the shared exponent value                                          BF16), ensuring numerical stability across the full dot-product
+for each block. At the beginning of a block-set operation, the                                        sequence. Although the example focuses on MXFFP4, the
+configuration register is loaded and retained across the four                                         same mechanism applies to MXFFP6 and MXFFP8.
+steps, enabling each TG to select the appropriate configuration
+                                                                                                      D. Converter
+bit for the block it processes in each step. The shared exponent
+register is updated at every step, loading the scale value                                               After completing the computation of a block set, each
+corresponding to the assigned block for that step.                                                    threadgroup produces its own output tile consisting of 32 ele-
+                                                                                                      ments, as illustrated in Fig. 11. These 32 elements correspond
+C. Dot-product Unit                                                                                   to a single MXFFP block. To finalize the computation, each
+   The dot-product unit performs the core fused multi-                                                threadgroup aggregates its high-precision results into a block
+ply–accumulate operations using tiles fetched from the matrix                                         and converts them back into the MXFFP format through a
+buffer [17], [29], [51], [55]. Each unit receives a 4×1 fragment                                      dedicated MXFFP converter, as shown in Fig. 12(c).
+from matrix A and a 1×4 fragment from matrix B, producing                                                The MXFFP converter performs the dynamic conversion
+a four-element dot product every cycle. Since operands are                                            procedure described in Algorithm 1. It first determines the
+stored in MXFFP format, which supports multiple expo-                                                 maximum exponent (EbMAX ) among the 32 elements using
+nent–mantissa configurations under the same bit-width, the                                            the Max unit. The Subtractor then computes the difference
+unit must first expand and align incoming elements before                                             between EbMAX and each element’s exponent to obtain relative
+computation.                                                                                          exponents (Eir ). To capture the exponent distribution across the
+   Fig. 12(b) illustrates the MXFFP dot-product datapath for                                          block, a Counter counts the occurrences of each Eir . Based on
+MXFFP4. Each MXFFP operand is fed through a lightweight                                               the counter output, the Config Selector determines the optimal
+bit mapper prior to entering the arithmetic core. The mapper is                                       configuration (e.g., E1M2 or E2M1) for the block. Finally,
+implemented as a compact multiplexer array that reinterprets                                          the Normalization & Round unit normalizes all elements
+the incoming 4-bit word according to the configuration bit.                                           according to the selected configuration and generates the final
+When the configuration is E1M2, the mapper routes only the                                            MXFFP block.
+
+
+
+
+                                                                                             2512
+

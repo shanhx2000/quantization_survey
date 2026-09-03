@@ -1,0 +1,79 @@
+          JPEG-ACT: Accelerating Deep Learning via
+             Transform-based Lossy Compression
+              R. David Evans                                  Lufei Liu                                           Tor M. Aamodt
+  Electrical and Computer Engineering          Electrical and Computer Engineering                   Electrical and Computer Engineering
+      University of British Columbia               University of British Columbia                        University of British Columbia
+            Vancouver, Canada                            Vancouver, Canada                                     Vancouver, Canada
+            rdevans@ece.ubc.ca                        lucy.lufei@alumni.ubc.ca                                 aamodt@ece.ubc.ca
+
+
+
+   Abstract—A reduction in the time it takes to train machine
+learning models can be translated into improvements in accuracy.
+                                                                      a)
+                                                                      vDNN
+                                                                                     offload
+                                                                                   no compr.
+                                                                                                                     ⋯⋯    c   b)                          Error
+                                                                                                                                                           +0.0%
+
+                                                                                                                      ⋯⋯
+                                                                                                                       m
+An important factor that increases training time in deep neural                compr. offload
+                                                                      cDMA                                                                                 +0.0%
+networks (DNNs) is the need to store large amounts of temporary                sparse compr.
+
+data during the back-propagation algorithm. To enable training
+very large models this temporary data can be offloaded from lim-
+                                                                               sparse compr.
+                                                                      GIST reduced precision
+                                                                                                                       ⋯                                   +3.2%
+
+ited size GPU memory to CPU memory but this data movement                                                              ⋯
+                                                                                                                       ⋯
+                                                                      JPEG-     compr. offload
+                                                                              lossy transform
+                                                                                                                                                           +0.2%
+incurs large performance overheads.                                   ACT
+                                                                                                                                       2x   4x   6x   8x
+   We observe that in one important class of DNNs, convolutional                                          Time                      Average compr. ratio
+neural networks (CNNs), there is spatial correlation in these                                            compr.
+                                                                        memcpy            compress       memcpy       CNN kernels conv norm ReLU
+temporary values. We propose JPEG for ACTivations (JPEG-
+ACT), a lossy activation offload accelerator for training CNNs
+                                                                      Fig. 1: a) Forward pass offload schedules for repeating conv/
+that works by discarding redundant spatial information. JPEG-
+ACT adapts the well-known JPEG algorithm from 2D image                norm/ReLU (CNR) blocks in ResNet50/ImageNet. c: compute
+compression to activation compression. We show how to optimize        streams, m: memcpy stream, arrows: corresponding activation
+the JPEG algorithm so as to ensure convergence and maintain           offloads. b) Compression ratios on ResNet50/ImageNet, er-
+accuracy during training. JPEG-ACT achieves 2.4× higher               ror indicates change from no compression on the validation
+training performance compared to prior offload accelerators,
+                                                                      dataset.
+and 1.6× compared to prior activation compression methods. An
+efficient hardware implementation allows JPEG-ACT to consume
+less than 1% of the power and area of a modern GPU.
+   Index Terms—GPU, Hardware Acceleration, CNN Training,              which is greater than the memory available on consumer-grade
+Compression                                                           GPUs (e.g. 12GB, NVIDIA Titan V). State-of-the-art networks
+                                                                      contain more layers and larger input image dimensions [3],
+                       I. I NTRODUCTION                               [8]–[10]. E.g., GPIPE increases memory storage by 4.6× to
+   Reductions in training time of deep neural networks [1]            achieve 10% higher accuracy versus ResNet50 [9].
+played an important role in enabling dramatic improvements in            Cost-effective activation storage can be achieved via recom-
+accuracy [2]. Those accuracy improvements, in turn, led to an         putation, GPU memory compression, and transfer to CPU-
+explosion in the application of deep learning in recent years.        attached memory. Recomputing activations in the backward
+These speedups were due to the use of graphics processor              pass incurs compute overhead [11], [12]. Memory compression
+units (GPUs) in place of out-of-order superscalar processor           has been evaluated on GPUs and activations (GIST, Figure
+architectures. While many recent papers propose advances in           1) [13] and is well studied on CPUs [14]–[18] but is still
+specialized hardware acceleration of networks during inference        limited by the amount of GPU memory. Naively offloading
+(after a network has been trained) far less have discussed            activations to CPU DRAM (e.g., vDNN in Figure 1) [19] or
+hardware acceleration of the training process.                        disaggregated memory [20] is limited by PCIe throughput or
+   In this paper, we focus on accelerating the training of            requires expensive specialized interconnects (e.g., NVLINK
+Convolutional Neural Networks (CNNs). CNNs have produced              on the IBM Power9). However, the cost effectiveness of
+state-of-the-art results in image classification, object detection,   offloading can be enhanced by compressing the data before
+and semantic labelling [2]–[5]. Typically when training a CNN         it is transferred [21] (cDMA, Figure 1). We build upon the
+the output of each individual neuron, called its activation,          latter approach as it allows for lower cost interconnect and
+is computed, saved to memory and, later restored. Activa-             memory technologies (JPEG-ACT, Figure 1).
+tion values are needed again when updating weights using                 Activation compression for CPU offload has been studied
+backpropagation [6]. Saving these activation values requires          for shallow networks containing high sparsity [13], [19], [21].
+large memory capacities. For example, ResNet50 [3] trained            However, during training, ResNets and other extremely deep
+on the ImageNet dataset [7] requires over 40GB of storage,            networks have a high proportion of dense activations and
+

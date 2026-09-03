@@ -1,0 +1,81 @@
+LUT Tensor Core: A Software-Hardware Co-Design for LUT-Based Low-Bit LLM Inference                                                   ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+                                                             Original Uint W3W2W1W0
+ r=S(q-z)                       0000   0001 ... 1110   1111 q∈{0,1,…,14,15}                     and 𝑧 = 1/2 .The calculation proceeds as follows:
+  =S'(q'-z')
+                                                             S = 1, z = 0                                           ∑︁
+                      q value    0      1       14      15                                                    𝐷𝑃 =     𝐴𝑐𝑡𝑖 𝑠 𝑤 (𝑞 𝑤𝑖 − 𝑧 𝑤 )
+        0000           0001      ...   1110            1111 Reinterpreted W3'W2'W1'W0'
+                                                             q'∈{-15,-3,…,13,15}                                  = 𝐴 · 2 · (0 − 0.5) + 𝐵 · 2 · (1 − 0.5)
+q' value -15            -13             13              15 S' = 0.5, z' = -15
+                                                                                                                  + 𝐶 · 2 · (1 − 0.5) + 𝐷 · 2 · (1 − 0.5)
+                                                                                                                  = −𝐴 + 𝐵 − 𝐶 − 𝐷
+Figure 7: Reinterpreting 0,1 to -1,1 to enable symmetry,
+thereby cutting the table size by half.                                                          After reinterpretation, the binary values {‘0’,‘1’} are remapped to
+                                                                                                                                               ′ = 1 and bias 𝑧 ′ = 0.
+                                                                                                represent {-1,1}, with adjusted scale factor 𝑠 𝑤                𝑤
+                                                                                                The updated computation is:
+precompute unit shares a table across a LUT-based Tensor Core                                                        ∑︁
+                                                                                                                                ′   ′     ′ 
+                                                                                                               𝐷𝑃 =      𝐴𝑐𝑡𝑖 𝑠 𝑤 𝑞 𝑤𝑖 − 𝑧𝑤
+within an array size of N=4. In this setup, each table is computed re-
+peatedly (12288/4 = 3072 times) by different LUT units throughout                                                  = 𝐴 · 1 · (−1 − 0) + 𝐵 · 1 · (1 − 0)
+the process, imposing a significant computational burden.                                                         + 𝐶 · 1 · (−1 − 0) + 𝐷 · 1 · (−1 − 0)
+   To address this inefficiency, we first transform the DFG to split                                               = −𝐴 + 𝐵 − 𝐶 − 𝐷
+the precomputation into an independent kernel, enabling one-time
+precomputation that can be broadcasted to all LUT units. This modi-                              It is clear that the two expressions remain mathematically equiva-
+fication reduces the precomputation overhead by hundreds of times,                              lent. As the table entries are symmetric about zero, the lookup table
+making it manageable by existing vector units like CUDA Cores.                                  exhibits properties similar to odd functions. Assuming the index
+To amortize the additional memory traffic introduced by broad-                                  is a 4-bit value 𝑊3𝑊2𝑊1𝑊0 , a naive implementation of the lookup
+casting, LUT Tensor Core fuses the precompute operator with                                     table (LUT) requires 24 = 16 entries. However, it can be observed
+the preceding operator, leveraging its element-wise computation                                 that the following property, akin to that of odd functions, holds:
+pattern, as shown in Figure 6 and detailed in §3.3.2. This fusion                                          LUT[𝑊3𝑊2𝑊1𝑊0 ] = −LUT[∼ (𝑊3𝑊2𝑊1𝑊0 )]                          (4)
+reduces memory access and brings precomputation overhead down
+                                                                                                  Therefore, the number of entries in the LUT can be reduced to
+to almost zero. as evaluated in §4.6.1.
+                                                                                                half of the original, which is 24−1 = 8, and the equation becomes:
+                                                                                                                           (
+3.1.2 Reinterpreting weight for table symmetrization. The                                                                    −LUT[∼ (𝑊2𝑊1𝑊0 )], if 𝑊3 = 1
+2𝐾 table size of precomputing a length 𝐾 activation vector intro-                                    LUT[𝑊3𝑊2𝑊1𝑊0 ] =                                           (5)
+                                                                                                                             LUT[𝑊2𝑊1𝑊0 ],           if 𝑊3 = 0
+duces a significant cost in both table storage and table accesses. To
+address this issue, we observed and leveraged the symmetrization                                Here, ∼ denotes the bit-wise NOT operation. Therefore, given a
+property of the integer representation.                                                         length 𝐾 activation vector, table symmetrization can reduce the
+    Assume that the originally quantized weights are represented                                table length to 2𝐾 −1 . The table size not only affects the computa-
+as:                                                                                             tional operations required during the precompute stage, but also
+                                                                                                the multiplexers’ size. Furthermore, each entry in the table also
+                                 𝑟 𝑤 = 𝑠 𝑤 (𝑞 𝑤 − 𝑧 𝑤 )                               (1)
+                                                                                                needs to be broadcast to 𝑁 PEs, typically 64 or 128, for dot prod-
+where 𝑟 𝑤 is the real-valued weight, 𝑠 𝑤 is the scale factor, 𝑧 𝑤 is the                        uct computations. Such an optimization significantly reduces the
+bias, and 𝑞 𝑤 is the 𝐾-bit integer representation.                                              broadcasting overhead and the MUX selection overhead. Note that
+   Our goal is to map 𝑞 𝑤 such that it is symmetric around zero while                           𝑊3𝑊2𝑊1𝑊0 in Equation 5 are static weights. The bit-level negation
+maintaining mathematical equivalence. To achieve this, both 𝑠 𝑤                                 can be done offline to simplify the design as follows:
+and 𝑧 𝑤 must be adjusted. When mapping a uint 𝑞 𝑤 to be symmetric                                                             (
+                                                                                                              ′ ′ ′ ′           −LUT[𝑊2′𝑊1′𝑊0′ ], if 𝑊3′ = 1
+about zero, the following adjustments are required:                                                    LUT[𝑊3 𝑊2 𝑊1 𝑊0 ] =                                       (6)
+                                                                                                                                LUT[𝑊2′𝑊1′𝑊0′ ],     if 𝑊3′ = 0
+     ′
+    𝑞𝑤 = 2𝑞 𝑤 − (2𝐾 − 1),               ′
+                                       𝑠𝑤 = 𝑠 𝑤 /2,       ′
+                                                         𝑧𝑤 = 2𝑧 𝑤 + 1 − 2𝐾           (2)       This simplification can eliminate the negation operation in circuit
+                                                                                                design, which will be introduced in §3.2.
+   This process is illustrated in Figure 7, showing an example of
+transforming 4-bit unsigned integers. By calculating 𝑠 𝑤         ′ and 𝑧 ′ , 𝑞 ′                3.1.3 Table quantization. For high-precision activations such as
+                                                                         𝑤 𝑤
+is mapped from {0, 1, . . . , 14, 15} to {−15, −13, . . . , 13, 15}, achieving                  FP32 or FP16, we employ table quantization techniques to convert
+symmetry around zero.                                                                           the precomputed table elements to a lower, unified precision like
+   Next, the dot product can be represented as:                                                 INT8. This approach offers flexibility through support for multiple
+                                                                                                activation precisions and improves efficiency by reducing table size.
+                                                      ′    ′     ′
+               𝐷𝑃 = Σ𝐴𝑐𝑡𝑖 𝑠 𝑤 (𝑞 𝑤𝑖 − 𝑧 𝑤 ) = Σ𝐴𝑐𝑡𝑖 𝑠 𝑤 (𝑞 𝑤𝑖 − 𝑧𝑤 )                  (3)          Compared to traditional activation quantization, table quanti-
+                                                                                                zation allows for more dynamic, fine-grained quantization during
+where 𝐷𝑃 is the dot product and 𝐴𝑐𝑡𝑖 is the activation value. There-                            the table precomputation stage. For example, with a group size of 4
+fore, the quantization process remains the same as before, with the                             activation elements, we perform quantization for each table that
+additional step of an offline mapping for the weight’s 𝑠 𝑤 (𝑞 𝑤𝑖 − 𝑧 𝑤 )                        contains 8 precomputed dot products. Our empirical experiments,
+     ′ (𝑞 ′ − 𝑧 ′ ). Let us consider a dot product between the binary
+to 𝑠 𝑤                                                                                          discussed in § 4.6.2, demonstrate that INT8 table quantization main-
+          𝑤𝑖    𝑤
+representation 𝑊3𝑊2𝑊1𝑊0 = 0100 and variables 𝐴, 𝐵, 𝐶, 𝐷. Initially,                             tains high accuracy while simplifying hardware design, thereby
+the binary values {‘0’,‘1’} are interpreted as {0,1}. Assume 𝑠 𝑤 = 2                            validating the effectiveness of our approach.
+                                                                                            5
+

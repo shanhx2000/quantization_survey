@@ -1,0 +1,79 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                   Chiyue Wei, Bowen Duan, Cong Guo, Jingyang Zhang, Qingyue Song, Hai Li, and Yiran Chen
+
+
+                                                                                          Spike Activation
+significant deviations in the resulting inner products. To mitigate
+                                                                                         Preprocessor                              L1 Processor
+this issue and ensure minimal degradation in model accuracy, we                                              L1 Pattern Index                                          Spiking
+                                                                                      Pattern Matcher             Buﬀer                     Adder Tree     L1          Neuron
+propose a novel Pattern-aware Fine-tuning (PAFT) technique to                             Pattern 0
+                                                                                                                                                         Partial
+
+enhance Level 2 sparsity.
+                                                                                                                Prefetcher              …    +            Sum            LIF
+                                                                                          Pattern 1          Pattern Weight                              Buﬀer
+                                                                                                             Product Buﬀer                                               LIF
+   The core idea of PAFT is to fine-tune a trained SNN model with                                                                       8 Channels x32
+
+                                                                                                                                                                   +
+an additional regularization term. This regularization term encour-                    Compressor                                  L2 Processor                          …
+                                                                                        & Packer             L2 Pack Buﬀer                                              x32
+ages the spike activations to align more closely with the calibrated                                                                        Reconfig.      L2
+                                                                                                                                            Adder Tree
+                                                                                                                                                         Partial
+patterns. Specifically, in addition to targeting high accuracy as                                                                      …    +             Sum            LIF
+                                                                                                                                                         Buﬀer
+usual, the training objective also integrates a penalty that aims to                                          Weight Buﬀer                                               LIF
+                                                                                                                                        8 Channels x32
+                                                                                        Controller
+reduce the Hamming distance between the spike activations and the
+                                                                                                                                DRAM
+assigned patterns. By progressively aligning activations with the
+patterns through backpropagation, PAFT improves computational
+efficiency with minimum compromise of model accuracy.                                                   Figure 3: Phi architecture overview.
+   PAFT is applied after the Phi calibration stage of an SNN model.
+To compute the regularization term, we follow the pattern assign-
+ment rules outlined in Sec. 3.1. Each row in every partition of the                 4 Phi Architecture Design
+activation matrix is assigned a pattern, and the Hamming distance
+between the assigned pattern and the corresponding activation is                    4.1 Overview
+calculated. The regularization term is then defined as the sum of                   We present Phi, a novel architecture dedicated to our proposed Phi
+these Hamming distances, which directly correlates to the number                    sparsity, which efficiently addresses the challenges in exploiting
+of nonzeros in the Level 2 sparse matrix.                                           Phi sparsity.
+   Since our goal is to optimize computation by enhancing Level 2                      Our Phi architecture dynamically generates Phi sparsity infor-
+sparsity, the regularization term is weighted by the 𝑁 -dimension                   mation and efficiently processes two distinct levels of sparsity. The
+of the matrix multiplication at each layer. This weighting ensures                  overview of the Phi architecture is shown in Fig. 3. The architec-
+the regularization term is directly proportional to the computa-                    ture comprises four main components: the Preprocessor, the L1
+tional cost associated with Level 2 sparsity. The formula for the                   Processor, the L2 Processor, and a Spiking Neuron Array. The Pre-
+regularization term is as follows:                                                  processor, L1 and L2 processors are optimized for specific aspects
+                                                                                    of sparse processing.
+                  ∑︁            𝑀 𝐾/𝑘
+                                ∑︁ ∑︁                                                  Tiling Strategy. We adopt tiling strategy [7, 9, 13], a fundamen-
+          𝑅=               𝑁𝑙             𝐻 (Act[𝑖, 𝑗 : 𝑗 + 𝑘], Pattern)            tal technique in DNN accelerators that partitions computations
+               𝑙 ∈Layers        𝑖=0 𝑗=0                                             to maximize data reuse in on-chip buffers while minimizing ex-
+   The final loss function incorporates this regularization term with               pensive off-chip memory accesses. We perform tiling across all
+a balancing hyperparameter 𝜆:                                                       three dimensions (M, N, K) of the matrix multiplication operation,
+                                                                                    with a carefully designed execution schedule that prioritizes K-
+                           Loss = Lossoriginal + 𝜆 · 𝑅                              dimension traversal. This K-first ordering enables early reduction
+                                                                                    operations, which is particularly advantageous for the Phi archi-
+   This regularization term complements the original loss (e.g.,                    tecture. The tiling strategy enables each computational round to
+cross-entropy), enabling a trade-off between computational effi-                    produce an output tile that flows directly to the Spiking Neuron
+ciency and model accuracy by tuning 𝜆.                                              Array. The resulting spike activations are immediately forwarded
+   Our proposed PAFT is general and can be seamlessly integrated                    to the Preprocessor to process activation for the subsequent layer,
+into any SNN model with backpropagation training. Moreover,                         enabling a highly efficient overlap of three key operations: matrix
+PAFT is lightweight and efficient, instead of retraining the model                  multiplication, spiking neuron computations, and preprocessing.
+from scratch, it requires only a few epochs (e.g., 5) of fine-tuning                This pipelined execution effectively eliminates preprocessing over-
+to achieve 1.26× of runtime improvements during inference.                          head, as these operations are seamlessly integrated into the main
+                                                                                    computational flow rather than occurring as separate, sequential
+3.4     Phi Framework Overall Workflow                                              steps.
+Our Phi framework takes a pre-trained SNN model and the training                       Preprocessor. The Preprocessor transforms spike activations
+dataset as input. Phi calibration is performed on a small subset of                 into our two-level Phi sparsity representation and optimizes the
+the training dataset to derive patterns specific to the model and                   representation of Level 2 sparsity for efficient processing. It employs
+dataset. Next, PAFT is applied to the pre-trained model to further                  a pattern matcher that compares predefined patterns with each
+align activations with the calibrated patterns.                                     activation row. For each row, the pattern in Level 1 is determined by
+   The calibrated patterns and model weights are then fed into                      identifying the best-matching stored pattern, which simultaneously
+the Phi architecture, which generates and processes two levels of                   generates the corresponding Level 2 sparsity information. To help
+sparsity. Notably, PAFT is an optional step that can be skipped if                  address the challenges of unstructured sparsity of Level 2, including
+accuracy is a priority. We provide two versions of Phi: one with                    workload imbalance and irregular memory access patterns, the
+PAFT for improved efficiency and one without PAFT for accuracy-                     compressor and packer modules consolidate multiple rows of the
+sensitive applications.                                                             Level 2 sparse matrix in an optimized scheduling order.
+

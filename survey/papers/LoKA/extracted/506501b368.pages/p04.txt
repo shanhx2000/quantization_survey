@@ -1,0 +1,110 @@
+                                                                 663                                                                          𝒚 = 𝑾𝒙 + 𝒃
+                                                    611
+               600
+
+
+
+
+                                                                                                         Training Time
+                                                                            Throughput
+                                                                 225
+                                                    189                        Loss
+    TFLOPS/s
+
+
+                        404           409                                                                                              Act. Tracker   Weight Tracker
+               400
+                         149          124
+                                                                                                                                             Online Tracking
+               200                                  422          438
+                                                                          Actual                                              Sampling 𝒙
+                                      285                                                                                                                       Sampling 𝑾
+                         255                                            Throughput
+
+
+
+
+                                                                                                        Offline Benchmarks
+                0
+                        BF16     TorchAO*       DeepGEMM**    FBGEMM
+                                                                                                                                            = 𝑾𝒙 + 𝒃                 FP8
+
+
+                 123
+                       Compute-only          Quantization throughput loss                                                                   = 𝑾𝒙 + 𝒃              TF32
+                       Throughput            Effective Throughput
+                                                                                                                                           loss = MERE(          ,         )
+                                                                                                                                       speedup = Lat( )/Lat( )
+Fig. 4. Compute throughput ablation of low-precision kernels on representative                                                          Accuracy Benchmarking
+LRM shapes. */**: Padding overheads not included in both TorchAO and
+DeepGEMM; torch.compile not available for DeepGEMM.
+
+
+
+
+                                                                                                         Loss versus Steps
+
+
+
+
+                                                                                                                                                      Speedup
+demonstrates that out-of-distribution activations significantly
+
+
+
+
+                                                                                                                             MERE
+amplify quantization errors, precisely the failure mode not
+revealed by conventional random benchmarks.                                                                                          Steps
+Throughput Analysis We benchmarked 27 GEMM shapes                                                                               Linear 1   Linear 2        Recipe 1            Recipe 2
+from production LRMs, ranging from (2048, 256) @ (256,
+768)1 . to (2048, 123200) @ (123200, 1024) on H100 GPUs.                                        Fig. 5. LoKA Probe learns and stores necessary parameters online for offline
+Figure 4 shows results separated into pure compute throughput                                   accuracy benchmarks to derive statistically significant loss for each linear layer
+                                                                                                under low precision execution.
+versus end-to-end performance including quantization overhead.
+Key findings:
+                                                                                                communication-dominated runtimes, and all these impede FP8
+• End-to-end FP8 speedup over BF16 is limited to 1.6× on
+                                                                                                deployment at scale.
+   average.
+• Maximum effective TFLOPS/s remains under 20% of hard-
+                                                                                                                                           III. L O KA
+   ware capacity.
+• Quantization overhead consumes over 30% of end-to-end                                        As established in §I, the fundamental barriers to low-
+   GEMM latency.                                                                            precision LRM training cannot be addressed by better kernels
+• Including memory allocation overhead (e.g., layout manipu-                                alone. They require a systematic approach guided by three
+   lation), FP8 can perform worse than BF16.                                                principles: profiling under realistic distributions to know
+   These results demonstrate that applying low-precision compu-                             where low precision is safe, co-designing model components
+tation to LRMs requires addressing both accuracy degradation                                with hardware to expand where it is safe, and orchestrating
+from realistic data distributions and performance overhead from                             across kernel libraries to maximize the resulting gains. LoKA
+quantization operations which are challenges that cannot be                                 instantiates each principle as a concrete component. LoKA
+solved by library improvements alone.                                                       Probe Probe implements distribution-aware profiling (Principle
+                                                                                            1). LoKA Mods realizes precision-aware model-hardware co-
+D. The Deployment Status Quo of Low Precision Kernels
+                                                                                            design (Principle 2). LoKA Dispatch provides per-operator
+                                                                                            kernel orchestration (Principle 3). We describe each below.
+                                             Training      Inference
+                          TF32                95%            0%                                 A. LoKA Probe: Distribution-Aware Profiling
+                          BF16/TF32            5%             -
+                          FP16                  -           99%                                    The critical insight behind LoKA is that standard low-
+                          FP8                   0         1% (PTQ)
+                                            TABLE III
+                                                                                                precision testing fundamentally underestimates real-world
+   P ROPORTION OF MODELS TRAINED AND SERVED USING A SPECIFIC                                    quantization errors. Existing libraries benchmark accuracy
+         DATATYPE . - MEANS THIS CHOICE IS NOT APPLICABLE .                                     using random tensors (typically normal distributions) which
+                                                                                                fail to capture the complex statistical properties of actual
+   Real-world adoption of low-precision training and inference                                  LRM activations and weights. This leads to overly optimistic
+for LRMs remains limited. In a survey of top 500 Ads ranking                                    error estimates and explains why “battle-tested” low-precision
+LRMs at a large social-media company (Table III), we observed:                                  kernels still cause training divergence in practice.
+in training, 95% of models run in high precision (TF32), 5%                                        LoKA Probe addresses this by learning the true distributions
+use mixed precision (BF16/TF32), and 0% train in FP8; in                                        of inputs and weights during training, then using these learned
+inference, 99% of models serve in FP16, with only 1% using                                      distributions for statistically significant offline accuracy (and
+FP8 via PTQ. These figures underscore the practical hurdles:                                    throughput) assessment. This approach reveals quantization
+numerical stability, small-GEMM quantization overheads, and                                     errors that random testing misses, enabling informed decisions
+  1 Denote a matmul of two tensors with shapes (2048, 256) and (256, 768)                       about which layers can safely use low precision.
+
+
+
+
+                                                                                         1371
+

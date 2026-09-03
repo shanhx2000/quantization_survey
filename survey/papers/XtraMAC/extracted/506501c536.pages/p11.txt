@@ -1,0 +1,109 @@
+                            TABLE VI                                                                                             FP4*BF16+BF16                     INT4*BF16+BF16
+      R EPRESENTATIVE Q UANTIZED LLM D EPLOYMENT P ROFILES .                                            1000                                                       600
+
+
+
+
+                                                                                        LUT Usage (k)
+
+
+
+
+                                                                                                                                                 FF Usage (k)
+                                                                                                                                                                   500
+   Checkpoints    Downloads*     Practical use cases†                                                   800
+                                                                                                                                                                   400
+                                                                                                        600
+                                 Edge AI reasoning with 2–3% accuracy loss;                                                                                        300
+   Qwen-3-8B-                                                                                           400
+                                                                                                                                                                   200
+                    222,126      long-context NLP with 91–97% benchmark
+     AWQ                                                                                                200                                                        100
+                                 retention and a 4× context extension.
+                                                                                                          0                                                          0
+                                 Commercial chatbots with 50% memory reduction,                                128   256   512    1024   1920                            128   256   512   1024   1920
+  Llama-3.1-8B-
+                     27,536      2× throughput, and 99–100% accuracy for                                              # of XtraMAC                                              # of XtraMAC
+     W8A8
+                                 multilingual customer service.                                         2500                                                       310
+
+
+
+
+                                                                                                                                                 Frequency (MHz)
+                                                                                        DSP Usage
+                                                                                                                                                                   300
+                                 Local agentic tasks and data analytics workflows;                      2000                                                       290
+   Qwen-3-8B-                                                                                                                                                      280
+                    429,968      supports 131k-token contexts for scalable                              1500
+      FP8                                                                                                                                                          270
+                                 multilingual RAG.                                                      1000                                                       260
+                                                                                                        500                                                        250
+                                 Multilingual assistants with 99.52% accuracy                                                                                      240
+  Llama-3.1-8B-                                                                                           0                                                        230
+                    168,122      recovery; optimized for fast commercial API
+      FP8                                                                                                      128   256   512    1024   1920                            128   256   512   1024   1920
+                                 deployments.
+                                                                                                                      # of XtraMAC                                              # of XtraMAC
+                                 Consumer fine-tuning, customizable inference
+   GPT-oss-20B      4,633,438    latency, and low-latency analysis for agent-based
+                                 data research.                                             Fig. 12. Post-implementation resource usage (LUT, FF, DSP) and frequency
+* Download counts recorded on HuggingFace during October 2025.                              for mixed-precision GEMV kernel with various numbers of XtraMAC.
+† Accuracy loss in use cases only reflects model-level quantization effects.
+
+
+                                                                                            (ii) FP4×BF16→BF16. These two patterns therefore serve
+weights are supplied directly from HBM and activations are                                  as representative GEMV kernels for evaluating XtraMAC.
+buffered on-chip for reuse. XtraMAC preserves this interface                                All FPGA experiments are conducted on an AMD Xilinx
+and replaces the scalar MACs in prior designs without modi-                                 U55c accelerator card equipped with 32 HBM channels.
+fying the PE topology, tiling strategy, or global dataflow.                                 The XtraMAC-based GEMV kernel is synthesized and im-
+                                                                                            plemented using Vivado 2022.2 and Vitis 2022.2 with post-
+   During execution, each wide memory-interface word (typ-
+                                                                                            place-and-route timing. Power consumption is measured using
+ically 256 or 512 bits) read from HBM is split into per-
+                                                                                            xbutil under steady-state streaming. For comparison, GPU
+lane weight segments and dispatched to the corresponding
+                                                                                            baselines are conducted on an NVIDIA H100 PCIe card using
+XtraMAC instances within the PE. Each XtraMAC instance
+                                                                                            CUTLASS [29]; execution time is measured with official
+receives its weight segment alongside the corresponding ac-
+                                                                                            GEMV kernels, and power is monitored using nvidia-smi.
+tivation value from the on-chip buffer. A per-tile datatype
+                                                                                            This setup ensures a consistent and reproducible evaluation
+control signal, stored in memory alongside the weight tiles, is
+                                                                                            environment across both platforms.
+propagated synchronously with the operands to all XtraMAC
+units within the tile, ensuring that each instance applies the                                  To exploit HBM bandwidth, the GEMV workload is par-
+correct mapping rule and accumulation path at runtime. The                                  titioned into M tiles, each mapped to a processing element
+resulting per-lane partial sums are accumulated across the                                  (PE) connected to a distinct HBM channel. Weights are
+cascaded MAC chain and written back as the final GEMV                                       stored in HBM, whereas activations are buffered on-chip.
+output, with multiple PEs operating concurrently across HBM                                 Inside each PE, the dot product is realized through a chain
+channels to preserve bandwidth-scaling behavior.                                            of cascaded XtraMAC modules. For a given HBM-channel
+                                                                                            bitwidth, weight precision, and datatype-dependent parallelism
+B. Mixed-Precision Requirements in LLM Workloads                                            P , the number of cascaded XtraMAC instances per channel is
+    Modern LLM deployments such as Llama [16], Qwen [41],                                   determined by
+and GPT-oss [30] heavily rely on quantization to reduce mem-                                                             BitWidthchannel
+                                                                                                              NMAC =
+ory footprint and latency while preserving accuracy. Rather                                                            BitWidthweight × P
+than adopting a single numeric format, practical systems                                    In implementation, each HBM channel provides a 512-bit
+combine integer and floating-point datatypes across layers. As                              interface; with INT4 weights (4 bits) and P = 2 lanes per
+summarized in Table I, weight-only quantization uses integer                                XtraMAC, a single channel supplies 512/(4 × 2) = 64 MAC
+weights with FP activations; weight–activation approaches                                   inputs per cycle. Thus, a design with 32 HBM channels can
+quantize both operands; and mixed-format checkpoints (e.g.,                                 instantiate up to 2048 XtraMAC instances in principle, while
+GPT-oss) interleave FP4/FP8 with BF16 for stability. Table VI                               our implementation adopts a configuration with 1920 cascaded
+profiles representative quantized checkpoints deployed in mul-                              XtraMAC instances (spread across 30 active HBM channels)
+tilingual assistants, long-context RAG, and on-device LLMs.                                 to reserve one channel for activation read and one for write-
+Collectively, these models indicate active deployment of INT4,                              back, and to ensure routing timing closure.
+FP4, and FP8 formats and highlight the need for GEMV                                            Post-implementation results in Figure 12 indicate that LUT,
+engines that natively support mixed-precision and runtime                                   FF, and DSP utilization scale linearly with the number of
+datatype switching.                                                                         instantiated XtraMAC modules. The design sustains 300 MHz
+                                                                                            across configurations up to 1024 instances and exhibits only
+C. Mixed-Precision GEMV Kernel Evaluation                                                   moderate frequency degradation (250–270 MHz) at 1920 in-
+  Across all evaluated models, these two patterns consistently                              stances due to routing congestion near the HBM interface.
+dominate decode-time GEMV: (i) INT4×BF16→BF16 and                                           Because the kernel is bandwidth-bound at scale, these timing
+
+
+
+
+                                                                                     2546
+

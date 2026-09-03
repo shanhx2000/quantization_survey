@@ -1,0 +1,95 @@
+Oaken: Fast and Efficient LLM Serving with Online-Offline Hybrid KV Cache Quantization                                                         ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+Input Token(s)                                                                                                          KV Cache
+                                                                Generate        Q
+   Oaken                                                                        K                Q      KT               Softmax               S        V                  Projection
+   means            oak            trees      LayerNorm           QKV           V
+   made
+    of                                        Multi-Head
+                                              Attention                         Q1                                            Score                         Context
+                 Decoder 1     Decoder 1                       Input                                                                                                                    Output
+  Decoder 1                                                            WQ =     Q2       Softmax ( Q1            K 1T    )=     S1    ,   S1       V1       =   C1                      Hidden
+                                               Residual       Hidden
+                                                              States            Q3                                                                                                      States
+                 Decoder 2     Decoder 2                                                                                                                              C1                  E1
+  Decoder 2                                                     E1              K1
+                                              LayerNorm         E2     WK =     K2       Softmax ( Q2            K 2T    )=     S2    ,   S2       V2       =   C2    C2      Wo    =     E2
+                      ...
+
+
+
+
+                                     ...
+      ...
+
+
+
+
+                                                                E3              K3                                                                                    C3                  E3
+  Decoder N      Decoder N     Decoder N     Feed-Forward                                                                                                                  Shared
+                                               Network                          V1
+Output Token                                                           WV =     V2       Softmax ( Q3            K 3T    )=     S3    ,   S3       V3       =   C3
+                                               Residual                         V3
+     oak            trees            .
+                                                                      Shared                                 Not Shared              Not Shared
+ Prefill Phase     Generation Phase                              Activation-Weight                             Activation-Activation                                  Activation-Weight
+                             (a)                                                                                              (b)
+
+Figure 2: (a) Structure of LLM inference and decoder layer during the prefill and generation phases. (b) Operations in the
+multi-head attention layer, including activation-weight and activation-activation operations, during the generation phase of
+batched inference for three requests.
+
+
+works [11, 22, 31, 33, 37, 41, 73, 86, 87]. We synthesize the Sys-                       2.2     Batching for High-Throughput LLM
+temVerilog RTL code of our accelerator in TSMC 28nm technology                                   Inference
+using Synopsys Design Compiler, which offers the area information
+                                                                                         Batching is a commonly used method to enhance inference through-
+of each component in the accelerator. Our experimental results
+                                                                                         put in LLM serving systems [1, 20, 32, 64, 77]. It entails processing
+report that compared to NVIDIA A100 using state-of-the-art KV
+                                                                                         multiple requests simultaneously and boosts inference throughput
+cache quantization techniques, Oaken offers up to 1.58× through-
+                                                                                         by converting memory-bound operations into compute-bound ones
+put speedup, owing to the bitwidth reduction that reaches up to
+                                                                                         through on-chip data reuse. For instance, in the feed-forward net-
+70.0%. We achieve this speedup by only introducing a modest 0.87%
+                                                                                         work, weights read from memory can be reused across multiple
+accuracy degradation, which demonstrates the algorithmic robust-
+                                                                                         requests, reducing memory access and increasing throughput.
+ness of our KV cache quantization technique. Furthermore, Oaken
+                                                                                            Figure 2(b) depicts the two types of operations that comprises the
+modules incur only 8.21% area overhead, which is negligible given
+                                                                                         multi-head attention layer. In activation-weight operations, includ-
+the significant performance benefits they enable. These advantages
+                                                                                         ing Generate QKV and Projection, the activations of the requests
+demonstrate that Oaken achieves the dual objectives of bandwidth
+                                                                                         share the same weights. This enables on-chip data reuse, reduc-
+and capacity, representing an important step toward building fast
+                                                                                         ing memory access and execution time. However, in activation-
+and cost-effective LLM inference serving systems.
+                                                                                         activation operations, where the query is multiplied by the trans-
+                                                                                         posed key or the score is multiplied by the value, each request
+                                                                                         requires distinct keys or values, making batched processing chal-
+                                                                                         lenging. As a result, batching fails to reduce memory accesses in
+2 Background                                                                             this case, providing no performance benefits in terms of latency.
+2.1 A Primer on LLM Inference
+As illustrated in Figure 2(a), inference of large language model is
+mainly divided into two phases: the prefill phase and the generation                     2.3     LLM Quantization
+phase [4, 8, 25, 66, 84]. The prefill phase takes input tokens and                       Recently, as demands for LLM inference ever-increasing memory
+passes them through decoder layers to generate a single output                           capacity, the community has explored solutions to mitigate this
+token. In the generation phase, the token generated in the previ-                        demand through quantization techniques that reduce the bit pre-
+ous iteration is used to produce the next token. This process is                         cision of weights or activations. Many of these studies focus on
+autoregressive, with each iteration generating one token.                                easing the memory pressure caused by model weights, which is
+    LLMs typically consist of multiple decoder layers, with multi-                       particularly effective for accelerating small-batch inference [17,
+head attention being one of the key operations. As visualized in                         30, 40, 42, 60, 69, 70, 78]. However, these methods achieve limited
+Figure 2(b), the multi-head attention begins with generating the                         speedup for larger batches and long sequence lengths due to the KV
+query, key, and value activations. The key and value are buffered in                     cache, whose size scales with the batch size and sequence length.
+the on-chip memory for subsequent operations and are also stored                         Approaches to quantize both weights and activations also face simi-
+as KV cache in the off-chip memory for future iterations. The query                      lar limitations [15, 34, 64, 71]. To this end, researchers have recently
+is then multiplied with the transposed key, which is directly fetched                    started directing their attention to KV cache quantization. Some of
+from the on-chip memory during the prefill phase, while it is loaded                     these works propose quantizing the keys and values of the atten-
+from the off-chip KV cache during the generation phase. Similarly,                       tion layers on a per-vector basis [22, 41, 43], while others propose
+subsequent computation using the value requires access to either                         quantizing the KV cache into multiple vector groups of similar
+on-chip memory or the KV cache in the same manner as the key.                            magnitudes, applying channel reordering technique [5, 35, 39, 86].
+

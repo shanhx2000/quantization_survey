@@ -1,0 +1,80 @@
+                Spike Batches     Weight    Membrane     Spike ‫ݔ‬௜ , ‫ݕ‬௜ , ‫ݍ‬௜                                                  c                                Spikes
+    0 1 0 1     0,1,0 , (0,3,0)   1 3 2 2   3 5 4 4     ‫ݓ‬଴‫ݓ‬ଵ‫ݓ‬ଶ‫ݓ‬ଷ ‫ݕ‬௜ -th row                n-1               Flit                        Local Input          From
+(a) 1 0 1 0     1,0,0 , (1,2,0)   2 2 3 3   3 7 4 6 (b)                                   North                              d
+    1 0 0 0     2,0,0             2 4 2 4   1 3 2 2                                       m+1             Generator    SSoftmax Unit      Reducer             PE
+    0 -1 1 0    3,1,1 , (3,2,0)   1 3 1 1   0 2 -1 1    ‫ݒ‬଴ ‫ݒ‬ଵ ‫ݒ‬ଶ ‫ݒ‬ଷ ‫ݔ‬௜ -th row
+                                                                                          East
+                                                                                           n+1                              SLayerNorm                        Fire
+                   2233                                  1322                                              Arbiter    Flit   e Unit             ELSA
+      0,1,0 , (0,3,0)             3544      1,0,0 , (1,2,0)              3746             South                                         FIFO Output
+         Batch1       1311                     Batch2       2424                           m-1           N m=0? YDeco-          f
+(c)                                                                                       West Routing                                  Queue Sche-
+                                                        -2-2-3-3                                             n=0?     der       g                             Spikes
+       (2,0,0)       1322       1322     3,1,1 , (3,2,0)             0 2 -11                      Engine                    Im2col Unit         duler
+       Batch3                               Batch4       2424                                Flits from Other      c From Local PE f To Local PE
+       Spikes Tiling Weight Tiling Memb.   Spikes Tiling Weight Tiling Memb.                          Routers
+(d)   0,1,0 , (0,3,0)  1 3      3 5      0,1,0 , (0,3,0)   2 2      4 4
+      1,0,0 , (1,2,0)  2 2      3 7 PE1 1,0,0 , (1,2,0)    3 3      4 6 PE2
+      2,0,0            2 4      1 3      2,0,0             2 4      2 2             Fig. 11: ELSA Router Design. ELSA router contains ﬁve
+      3,1,1 , (3,2,0)  1 3               3,1,1 , (3,2,0)   1 1      -1 1
+                                0 2                                                 data paths, two paths   1 2 to process spikes from local PEs
+                                                                                    and three paths  3 4  5 to receive the ﬂits from neural cores.
+Fig. 10: Process of MM-sc with Mini-batch Gustavson-
+                                                                                    SSoftmax & SLayerNorm Unit performs the ssoftmax and
+Product. (a) The MM-sc in ELSA. (b). Operations per Spike.
+                                                                                    slayernorm summarized in Tab. I. m, n are the hop counts
+(c). An example of MM-sc. (d) Tiling Strategy. The process
+                                                                                    in ﬂits (Fig. 12), x, yi are the positions in spike matrix.
+of negative spikes is highlighted in blue.
+                                                                                        S./T. Id Position1Sign    S./T. Id Position2 Sign     S./T. Id Position17 Sign
+row is negated (using two’s complement) before accumulation.                             12-bit 12-bit 1-bit       12-bit 12-bit 1-bit         12-bit 12-bit 1-bit
+For MM-sc, ELSA processes one BAER packet at a time.                                                       (a) Traditional AER (17× 25-bit)
+As shown in step- 1 , spikes {{x, yi , qi }N                                            Router Dest. Type S./T. Id Position1 Sign           Position17 Sign Check
+                                           i=0 } share a common                            6-bit     2-bit 12-bit 12-bit 1-bit                12-bit 1-bit 15-bit
+row address x but have different column IDs yi . This row                                                        (b) Bundled AER (256-bit)
+alignment allows the N -way weight buffer to process the N
+spikes in one cycle, which reads N weight rows according                            Fig. 12: (a) Traditional AER and (b) Bundled AER (aka.
+to spike addresses {yi }N                                                           BAER). “S./T.” denotes Spine/Token; “Dest.” is destination.
+                          i=0 and forwards them to the adder
+trees. Fig. 10(c) presents an MM-sc example based on the                            “Type” is the ﬂit position within a spine/token.
+mini-batch Gustavson-product, with negative-spike handling                          chosen from    1 or 2 for spikes from its PEs and a remote
+highlighted in blue. The ﬁrst spike batch (0, 1), (0, 3) triggers                   path chosen from , 3 ,4 or 5 for ﬂits from other cores. Such
+the weight buffer to read the 2nd ([2,2,3,3]) and 4th ([1,3,1,1])                   an assignment prevents contention across the ﬁve data paths.
+rows. Then, the adder tree accumulates these weight rows to                         On the local path, Local Input Reducer gathers spikes
+produce the 1st row of membrane potential ([3,5,4,4]). Finally,                     until Flit Generator can bundle them into a BAER ﬂit.
+the ﬁre component receives the integrated results together with                     If there are too few spikes when computation ﬁnishes, the
+the 1st row of spike tracer, performs spike ﬁring, then writes                      ﬂit is zero-padded. On the remote path, Arbiter monitors
+the updated membrane potential and spike tracer back to the                         each ﬂit’s hop counts m, n. When both reach zero, Flit
+membrane and spike tracer buffer, respectively.                                     Decoder decodes the ﬂit back to spikes and enqueues them
+    3) MM-sc Tiling: As illustrated in Fig. 10 (d), we column-                      in FIFO Queue. These spikes feed the spine/token-wise
+wise divide the synaptic weight and membrane (1st and 2nd                           pipeline under the control of ELSA Output Scheduler.
+column to PE1 and 3rd and 4th column to PE2) rather than                            For routing, we adopt a static algorithm described in Sec. VI,
+dividing them block-wise in traditional accelerators. With the                      where Routing Engine computes the transmission port for
+tiling strategy, spikes are broadcast to all PEs. The synaptic                      each ﬂit and stores the transmission probability of all ports.
+weights and membrane potentials are distributed into PEs
+                                                                                       2) SNN Operators in Router: Router uses SSoftmax and
+without overlapping, thus improving the area utilization.
+                                                                                    SLayerNorm Units to perform ssoftmax and slayernorm
+    4) Multiple MM-sc in Single Neural Core: ELSA can map                           as summarized in Tab. I. We inherit the integer-only softmax
+multiple SNN layers with multiple MM-sc into one neural                             and layernorm from [24] to realize ssoftmax and slayernorm.
+core. When a neural core is assigned P MM-sc, it divides the                        Since the outputs of these units are also spikes, a small number
+ST-BIF neuron circuits and memories in PE into P groups and                         of ST-BIF neuron circuits, along with memory units to store
+allocates them to perform these allocated MM-sc, respectively.                      neural states, are integrated to support these operators. To
+B. Router Design and Bundled AER                                                    support convolution layers, ELSA router uses im2col Unit
+                                                                                    to perform image-to-column2 broadcasting for each spike.
+   The router in ELSA is responsible for ﬂit generation, com-                          3) Bundled AER (BAER): Fig. 12 highlights the differences
+munication, and decoding for neighboring neural cores. Note                         when ﬂits are encoded in traditional AER and our BAER.
+that our router also supports the execution of miscellaneous                        While traditional AER uses independent spine/token ID, posi-
+multiplication operators summarized in Tab. I. Moreover, we                         tion, and sign (e.g., 17 spikes and each consumes 25-bit, thus
+propose a novel bundled address-event-representation (BAER)                         425 bits total), BAER can reduce the ﬂit to 256-bit. In BAER,
+to reduce the communication trafﬁc compared to vanilla AER.                         the router destination (6-bit) records the hop count (m,n) for
+   1) Micro-architecture of Router: As depicted in Fig. 11, the
+router contains multiple modules and ﬁve distinct data paths.                              2 The image-to-column operator is a transformation used in CNNs, to
+
+Each SNN layer is mapped to one router, with a local path                               rearrange image data for efﬁcient matrix multiplications.
+
+
+
+
+                                                                                 2554
+

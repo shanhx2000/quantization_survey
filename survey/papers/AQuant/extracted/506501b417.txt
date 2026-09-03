@@ -1,0 +1,1553 @@
+                       2026 ACM/IEEE 53rd Annual International Symposium on Computer Architecture (ISCA)
+
+
+
+
+                    AQuant: Repurposing CODEC for VLM
+                    Acceleration via Adaptive Quantization
+                            Zhuoran Song† , Chunyu Qi† , Jian Weng‡ , Xiaoyao Liang† , Haibing Guan† *
+                             †
+                             School of Computer Science, Shanghai Jiao Tong University, Shanghai, China
+               ‡
+                   Computer Science, King Abdullah University of Science and Technology, Thuwal, Mecca, Saudi Arabia
+                                                   Email: songzhuoran@sjtu.edu.cn
+
+
+      Abstract—Vision-Language Models (VLMs) have reached the                                                   FP module            INT module
+   forefront of accuracy in various vision understanding tasks.                              FP Visual Tokens   NPU         FP Visual Tokens                CODEC
+   Despite their remarkable success, the computing costs of VLMs                                                                               Visual similarity
+   scale significantly with the high image resolutions or the increas-
+   ing number of video frames that need to be processed, posing                                             Expensive                                     Low-cost
+                                                                                                        Quantization                 Similarity Detect+Quantization
+   substantial challenges for deployment to real-time applications.                                    (FP MUL/ADD)                           (FP MUL/ADD)
+   Although specialized quantization accelerators have been devel-
+   oped, they may not be the optimal solutions due to their neglect                            INT8 GEMM                    INT4/INT2 Delta GEMM                   NPU
+   of the inherent data similarity within VLMs. Additionally, the                                       Dequantization                 Dequantization       CODEC
+   use of floating-point units for floating-point to integer conversion                                 (FP MUL/ADD)                   (FP MUL/ADD)
+                                                                                             FP Visual Tokens               FP Visual Tokens
+   introduces non-negligible hardware overhead.
+      This paper introduces Adaptive Quantization (AQuant), an
+   algorithm-hardware co-design framework that repurposes the
+   CODEC to accelerate VLM inference in an end-to-end and
+   unified manner. AQuant leverages the inherent similarities in                               Non-linear Op                  Non-linear Op
+                                                                                              (GELU/Softmax)                 (GELU/Softmax)
+   visual tokens, exploiting them for differential value (delta) gen-
+   eration, which is well-suited for dynamic quantization due to its                                   (a)                                 (b)
+   narrower distribution. To eliminate the expensive floating-point                   Fig. 1. Quantization comparison: (a) Prior quantization works; (b) Our
+   similarity detection, AQuant integrates an exponent-based simi-                    proposed CODEC-assisted quantization.
+   larity detection operation. On the hardware side, we enhance the
+   video CODEC’s capabilities to efficiently implement exponent-
+   similarity detection and adaptive quantization. The framework                         Quantization is a promising approach to mitigate the high
+   also incorporates a Neural Processing Unit (NPU) with mixed-                       memory and computing cost in VLM inferences. By approxi-
+   precision support, which collaborates closely with the CODEC
+                                                                                      mating the input data with lower-bit precision, the performance
+   to translate algorithmic savings into real speedup. Experimental
+   results show that AQuant achieves speedups of 4.5×, 2.8×, and                      can be orders of magnitude improved with modest accu-
+   6.9× over state-of-the-art accelerators, such as LLM.265, CMC,                     racy degradation. Many prior works proposed quantization-
+   and Xavier AGX GPU, with negligible accuracy loss.                                 accelerator codesigned [11], [12], [38], [21], [15]. These
+      Index Terms—CODEC, VLM, Quantization.                                           works are limited in two aspects: First, many prior works
+                                                                                      still focus on statically quantizing the weight matrices, while
+                            I. I NTRODUCTION                                          the similarity of the input visual tokens is often overlooked.
+                                                                                      As shown in Fig. 2, unlike LLM tokens, visual tokens in
+      Vision-Language Models (VLMs) have become powerful                              VLMs are highly similar, which enables the potential to
+   tools for a wide range of multimodal tasks [26], [5]. Their                        approximate the input tokens. Second, quantization can only
+   remarkable success has drawn substantial attention from both                       be applied to linear layers, and to preserve the accuracy,
+   the computer vision (CV) and natural language processing                           precision-critical non-linear operators (e.g., GELU, Softmax,
+   (NLP) communities. The number of visual tokens grows                               and Layer Normalization) still accept FP activations cast from
+   rapidly along with the improvements on VLMs’ capability of                         quantized INT from linear operators. Naively implementing
+   processing long visual context, such as high-resolution images,                    full floating-point operations, including but not limited to
+   multiple images, or multi-frame videos [22], leading to an                         multiplication, addition, and clamping, for quantization is
+   exponential inference latency increase. This long inference                        hardware-expensive.
+   latency significantly hinders the applicability of VLMs in real-                      Takeaway. While quantization offers significant potential for
+   time applications such as visual question answering, scene                         reducing computation costs through low-bit processing, prior
+   understanding, and image captioning [14], [36], [19], [46],                        works miss the opportunities of leveraging the visual token
+   [45], [42].                                                                        similarity, and saving the cost of casting floating-point and
+                                                                                      integer back-and-forth.
+     This work is partly supported by National Natural Science Foundation of
+   China (Grant No. 62572301, U25B2057). *Haibing Guan is the corresponding              A specialized and dedicated video encoding/decoding unit
+   author.                                                                            (also known as CODEC) is often integrated into a real-
+
+
+979-8-3315-5065-3/26/$31.00 ©2026 IEEE                                         1417
+DOI 10.1109/ISCA66397.2026.00106
+time multi-media system, like an edge multi-media SoC or
+other GPU-based systems. Such CODEC units are particularly
+attractive to our target workloads, real-time quantized VLM
+inference: 1) CODEC units already have deep specialization
+for quantization and de-quantization by exploiting the data
+similarity from the raw video frames, and such similarity
+still exists in visual tokens; 2) CODEC units are mostly idle
+during model inference, which could be leveraged. However,
+existing CODEC units were designed for INT-pixel quan-                            Fig. 2. Pair-wise differences among different token kinds.
+tization, while visual tokens to VLM models are floating-
+point. As discussed above, naively extending CODEC with                    tokens (b) using heatmaps. Token similarity is quantified by
+full floating-point operation will be hardware-expensive. In               L1 distance, where lighter colors (yellow) indicate smaller
+addition, such CODEC units are hardwired for a specific                    distances and thus higher similarity. In Fig. 2(b), the colors are
+video encoding/decoding standard, while model quantization                 consistently dark, while Fig. 2(a) shows significantly lighter
+requires some flexibility for different data distributions, which          colors, highlighting the high similarity between visual tokens.
+requires careful management to extend the CODEC micro-                        These visual and language token sequences are subsequently
+architecture.                                                              concatenated and fed into a large language model (LLM) [40]
+   Takeaway. CODEC can be a promising unit for quantization                to enable multimodal reasoning. LLM inferences typically
+and de-quantization, but some extensions are required to make              consist of two stages, prefilling and decoding. In the prefill-
+it fit input visual token quantization.                                    ing stage, the concatenated visual and language tokens are
+   Our goal is to have an end-to-end and unified flow for input            processed in parallel through multiple transformer layers to
+visual token quantization and inference. End-to-end means this             “fill” the key–value (KV) cache. Each transformer block in-
+approach is useful for both prefilling and decoding, and unified           cludes three major components: the QKV projection, the self-
+means this approach is applicable to all matrix multiplications,           attention mechanism, and the feed-forward network (FFN).
+including projection, feed forward, and attention. The quan-               The QKV projection maps the tokens into the Query (Q), Key
+tization and de-quantization shall have negligible accuracy                (K), and Value (V ) matrices, usually implemented in General
+loss, and can be achieved with modest underlying hardware                  Matrix Multiplication (GEMM). Self-attention then produces
+cost. We address these issues by presenting AQuant, a soft-                the weighted output as O = softmax(Q · K T ) · V . The FFN
+ware/hardware co-designed instance for VLM quantization and                generates the final output through linear transformations to the
+inference, as presented in Fig. 1. The technical contributions             next transformer block or used as the final representation.
+of this work are:                                                             Prefilling and decoding stages exhibit very different com-
+   • An algorithm that captures the input similarity among                 pute/memory characteristics. A single image or video frame
+       visual tokens for dynamic quantization, while avoiding              produces 0.5K-4K visual tokens. During prefilling, GEMMs
+       expensive floating-point operations. (§III-A)                       in each component of a transformer block are applied to this
+   • A software-hardware co-designed workload-balanced                     long visual token sequence, making prefilling compute-bound.
+       adaptive quantization approach that reduces cost while                 In contrast, the decoding stage recurrently generate tokens
+       improving hardware utilization. (§III-B)                            one at a time. The dominated operation shifts from GEMM
+   • Novel micro-architectural extensions to existing CODEC                to matrix-vector multiplications (GEMV). With orders-of-
+       to flexibly support different quantization configurations           magnitude lower arithmetic intensive compared with prefilling,
+       with modest cost. (§IV)                                             while keeping the same memory footprint on model weights
+                                                                           and KV-caches, decoding is memory-bound.
+            II. BACKGROUND AND M OTIVATION
+                                                                                         Wider Distribution                    Narrower Distribution
+A. Vision-Language Model                                                                                                          74% data falls
+                                                                                                                                   into [-0.3,0.3]
+   Vision-Language Models (VLMs) have proven its promise
+of integrating visual information from images and videos with
+natural language understanding. A visual encoder, such as ViT-                            46% data falls
+                                                                                           into [-0.3,0.3]
+L/14 [32], maps the raw input image/video pixels to a sequence
+of visual tokens, and the input texts are first tokenized as
+language tokens then mapped to a sequence of embeddings
+through an embedding lookup.
+   The visual token encoder essentially finds a homomorphism
+between the pixels and the visual tokens, which indicates
+that two similar pixels are still similar in visual tokens, as                   Fig. 3. Data distribution of (a) visual tokens, and (b) deltas.
+demonstrated in our profiling in Fig. 2. This figure captures              Motivation. Compared to the 0.5K-4K visual tokens for a
+pair-wise differences between visual tokens (a) and language               single image or video frames, the text prompt description is
+
+
+
+
+                                                                    1418
+typically around 40-60 tokens. Considering the visual tokens’                                                    Quantization. The quantization phase operates on the resid-
+dominance, this work targets to dynamic visual token quantiza-                                                   uals Res to reduce bit width. A common form is an affine
+tion/compression by leveraging the token temporal and spatial                                                    transform followed by a right shift and clamping:
+(intra- and inter-frames, see below) similarity. By exploiting                                                                              
+                                                                                                                                                  Res
+                                                                                                                                                                    
+these similarities, more efficient quantization can be achieved,                                                      Quant(Res) = Clamp                + Offset ≫ b
+                                                                                                                                                Factor
+as subtracting similar visual tokens results in deltas with a
+narrower distribution, as manifested in Fig. 3.                                                                  where Factor, Offset, and b are predefined parameters control-
+                                                                                                                 ling the quantization step size and dynamic range. This step
+B. Video Encoding                                                                                                introduces controlled distortion while saving fewer bits.
+   Due to the massive data volume of raw video, practi-                                                              PE Array
+cal systems almost never store or transmit uncompressed
+                                                                                                                                                 Cur         Ref         Cur         Ref
+frames. Instead, modern video is encoded using standardized                                                                                     INT8                                 INT8
+                                                                                                                                                                   ...                               Residual Quantization Unit
+compression formats to take advantage of the spatial and                                                                                               ABS                     ABS                     INT16
+                                                                                                                                                                                                                              b
+                                                                                                                                                                                            Offset
+temporal similarity to reduce the data traffic while retaining                                                                                          INT16                                          Adder              Shifter
+
+the video quality. In this section, the basics of H.265[7], [51],                                                     L1 distances
+                                                                                                                                                CMP     CMP ... CMP                  CMP     Res        INT16
+including the data format, as well as the three phases of the                                                                                                                                                                       Res’
+
+
+
+
+                                                                                                                                      6-stage
+                                                                                                                                                                                              1
+                                                                                                                   Motion Vector                      CMP                      CMP          Factor    Multiplier          Clamper
+                                                                                                                                                              ...    ...
+                                                                                                                  Generation Engine
+encoding algorithm, motion estimation, motion compensation,                                                                                                      CMP
+
+and quantization, will be explained.                                                                                                            (a)                                                                (b)
+
+                                                                                                                 Fig. 5. The hardware details of the ME module (a); details of the quantization
+                                                                 Motion Compensation                             module (b).
+                                                                                        INT4
+
+                                                                  Mcurrent
+                                                                                     0 2 8 14
+                                                                                     4 8 0 10
+                                                                                                                 Practice in Multimedia Systems. In practical multimedia
+                                                                                    14 12 8 6
+ I   B    B    P    B     B    P   I           current                              10 4 0 2
+                                                                                  Res = Mcurrent - Mref
+                                                                                                                 processing systems, these three phases are often implemented
+                                                                    Mref
+
+                                                                                          0
+                                                                                              INT2
+                                                                                              0 2     3
+                                                                                                                 by specialized software or hardware units (a.k.a. CODEC).
+                                                Best match
+
+                                              reference
+                                                                   Quant(Res)=Clamp
+                                                                    Res +Offset)>>b)
+                                                                 ((———
+                                                                   Factor
+                                                                                          1
+                                                                                          3
+                                                                                              2 0
+                                                                                              3 2
+                                                                                                      2
+                                                                                                      1          Fig. 5 shows a typical implementation of a CODEC unit,
+                                                                                          2   1 0     0
+                                          Motion Estimation                  Quantization                        specializing ME, MC, and Quantization discussed above.
+              I-/P-/B- Frame                Search            Current                 Reference
+
+                    (a)
+                                            Window           Macroblock
+                                                              (b)
+                                                                                      Macroblock                    As shown in top of Fig. 5(a), a 8×8 mesh of process
+Fig. 4. The definition of I-/P-/B-frames (a); the details of the ME phase (b).
+                                                                                                                 elements (PE) is integrated in the ME module to compute 64
+                                                                                                                 pairs of L1 distances between the current macroblock and the
+Hybrid Video Coding. H.265/HEVC adopts a hybrid, two                                                             candidate macroblocks in parallel. Within each PE, since each
+types of video frame encoding: intra-frame and inter-frame.                                                      macroblock is 8×8, L1 distance computation is specialized
+As shown in Fig. 4(a), an I-frame (intra frame) is encoded                                                       by a 64-wide subtract-and-abs reduction tree. Each channel
+by only using information from the same frame, whereas P-                                                        of image is INT8 and 64 pixels are accumulated. Thus, the
+and B-frames are encoded by predicting residuals from the                                                        addition is 16-bit. After the 64 L1 distances are computed, as
+reference frames before and after the current frame, and only                                                    shown in bottom of Fig. 5(a), these 64 L1 distances are fed to
+encoding the residuals (deltas). Conceptually, encoding both                                                     a comparison reduction tree to find the candidate macroblock
+inter and intra frames are very similar, detecting the similarity,                                               with minium L1 distance (also the best similarity) as the
+computing the residual, and quantizing the residual. In the                                                      reference macroblock. Then, the reference macroblock is fed
+rest of this section, we exemplify the inter-coded P/B frames,                                                   to the quantization unit shown in Fig. 5(b) for a block-wise
+by explaining motion estimation, motion compensation, and                                                        affine transformation, shifting, and clamping to reduce the
+residual quantization.                                                                                           bitwidth of the residual.
+Motion Estimation (ME). H.265/HEVC partitions each frame                                                         Opportunities. H265 encoding takes advantage of the simi-
+into small, fixed-size regions to form the basic units of                                                        larity in inter- and intra-frame to compress the input/output
+encoding. For simplicity, we refer to these basic coding blocks                                                  for lower bitrate, and the CODEC unit can efficiently encode
+(e.g., CTUs/CUs in H.265) as macroblocks.                                                                        and decode the raw video. Such unit is often idle during VLM
+   As illustrated in Fig. 4(b), for each macroblock in an inter-                                                 inference, which can be potentially made use of.
+predicted frame (P/B frame), the motion estimation (ME)                                                          Challenges. However, such CODEC unit is specialized for
+phase searches a window in adjacent reference frames to                                                          integer-based video compression, while VLM inference often
+find the most similar macroblock. Let Mcurrent denote the                                                        involves floating-point. Naively extending floating-point units
+current macroblock and {C1 , C2 , . . . , CK } the candidate mac-                                                may introduce expensive hardware overhead.
+roblocks in the search window. ME computes the L1 distance
+∥Mcurrent − Ck ∥1 for all candidates and selects the one with                                                    C. CODEC-Acclerated LLM Systems
+minium distance as the reference macroblock, Mref .                                                                 Prior works already recognized the opportunities of the
+Motion Compensation (MC). Given the reference mac-                                                               idle CODEC unit [39], [43] to accelerate LLM inferences.
+roblocks, the residual can be defined as Res = Mcurrent − Mref .                                                 However, few of them propose an end-to-end solution.
+Because of the similarity, the generated residual can further                                                       For example, CMC [39] leverages CODEC to accelerate
+be encoded in narrower bits by quantization.                                                                     the prefilling stage. CODEC is used to detect the similarity
+
+
+
+
+                                                                                                          1419
+                                                          Candidate Base Token                                          T2 T5 T8
+                           FP Visual Token                T2              T24                                                                                 Delta Token
+                                                                                                                             2 4 8 T1
+                      T1                                  T5                     Sign    Exponent          Mantissa
+                                                                                                                                                         δ1
+                                                                                                                             0 4 2 T2                          δ1=T1-T2
+                      T2                                  T8                     1 bit    8 bits           23 bits
+                                                                                                                                                         δ2    δ2=T2-T2
+                                                                                                                             3 1 2 T3
+                      T3                                  T1              T14
+                                                                                          Extract sign and exponent bits                                 δ3    δ3=T3-T5
+                                                                                                                             6 4 2 T4
+                      T4                     Base Token
+                                                          T2                      Approximated Distance Calculation          5 0 2 T5 Delta Generation   δ4    δ4=T4-T8
+                      T5                      Selection   T3                     &'(                                         1 9 2 T6                    δ5    δ5=T5-T5
+                      T6                                  T4                               "      $$$
+                                                                                                  # "          %      $$$#
+                                                                                                                      #                                  δ6    δ6=T6-T2
+                                                                                 ! "#$%&'(! ) × 2 − #$%&((! ) × 2 ! " 4 3 6 T7
+                                                                                                    !
+
+                      T7                                  T5                     !)*                                         3 2 0 T8                    δ7    δ7=T7-T5
+                      T8                                  T6                                                                 0 4 2 T9                    δ8    δ8=T8-T8
+                      T9                                  T7                                                                                             δ9    δ9=T9-T2
+                                                                                                                         L1 Distance Matrix
+                                                          T8
+                                                          T9
+                                                               FP Visual Token
+             Fig. 6. The details of the exponent-similarity detection operation. We use the same color to represent similar visual tokens.
+
+
+among token sequences by computing the L1 distances. Too                                                                                   TABLE I
+similar tokens are considered non-informative, and removed                                                            A REA / POWER BREAKDOWN ON NAIVE FP QUANTIZATION .
+from the input matrices to skip the computation. This results
+in performance improvement during the prefilling stage, as                                                                  Modules                              Area (mm2 )   Power (mW )
+                                                                                                                                     2
+redundant tokens are eliminated during matrix multiplications.                                               Systolic Array (64 -INT8 MAC)                            1.672       560.4
+Different from CMC that leverages CODEC motion estimation                                                     Similarity Detect+Quant (FP32)                          1.269       422.7
+for integer-domain similarity detection, AQuant extends an
+integer-native CODEC to support floating-point token quan-
+tization and mixed-precision VLM inference. To bridge the
+                                                                                                              We first explain how this algorithm quantizes the input
+representation gap between floating-point tokens and inte-
+                                                                                                           visual tokens in the prefilling stage in Section III-A — III-C,
+ger hardware, we introduce exponent-based similarity detec-
+                                                                                                           which comprises three phases:
+tion that approximates FP similarity without incurring full
+floating-point operations. Moreover, we propose lightweight                                                    • The smallest distance is approximated by floating-point
+microarchitectural extensions to the quantization datapath, en-                                                  exponent differences.
+abling dynamic precision switching and floating-point scaling                                                  • Similar tokens are adaptively quantized into different
+within the same CODEC hardware. Therefore, AQuant extends                                                        lower bits to preserve accuracy.
+CODEC from an integer raw-video compression engine to a                                                        • Finally, after processing the linear layer computation in
+precision-aware co-processor for floating-point AI inference,                                                    quantized lower bits, the results are reconstructed back
+architecturally different from CMC’s matrix-condensing de-                                                       to floating-point for further operations.
+sign.                                                                                                        Afterwards, we demonstrate how these quantized data is
+   LLM.265 [43] demonstrates that several stages in the video                                              used to save memory traffic in decoding stage in Section III-D.
+coding pipeline, including entropy coding, transform coding,                                                 The proposed AQuant algorithm aims to provide a
+and intra-frame prediction, can effectively compress tensors                                               hardware-friendly flow to quantize and de-quantize the linear
+in LLMs, including model weights and KV-cache. During                                                      operations in each transformer layer. This flow can later be
+inference, the compressed data are first decompressed by                                                   seamlessly deployed onto existing hardware units—the video
+CODEC and fed the GPU as normal. The decoding stage                                                        CODEC, as detailed in Section IV-A.
+mainly benefits from this approach, because KV-cache is
+compressed before being loaded.
+                                                                                                           A. Exponent-Similarity Detection (ME & CE)
+Motivation. Prior works on CODEC compression could only
+benefit a single aspect, either prefilling or decoding. A unified                                             As shown in Fig. 6, we use Q-matrix projection, Q = Wq T ,
+approach to accelerate end-to-end inference may fully exploit                                              as a representative example to demonstrate how our algorithm
+the potential of CODEC-based compression. Unified means all                                                is applied to input visual tokens during prefilling. The same
+matrix multiplications, including QKV project, KV-cache, and                                               procedure can be extended to other linear layers by applying
+FFN can all benefit from this approach. End-to-end means this                                              to the right matrix. To leverage the data similarity, AQuant
+approach accelerates both prefilling and decoding.                                                         adopts a base-delta quantization: The visual tokens, T , are
+                                                                                                           approximated by two parts, T ≈ B + δ, where B are base
+                 III. AQ UANT A LGORITHM                                                                   tokens, and δ are the similar deltas that can be encoded in
+                                                                                                           narrower bits.
+  In this section, our Adaptive Quantization algorithm will                                                Base Token Selection: Assuming there are N visual tokens,
+be explained. This algorithm dynamically quantizes runtime-                                                and each token is represented as a K-dimensional vector, we
+generated visual tokens and KV-caches, which enables end-to-                                               select M candidate base tokens from them, where M is a
+end and unified compute/memory savings for both prefilling                                                 predefined hyperparameter for the quantization algorithm, as
+and decoding. Note that our approach focuses on dynamic                                                    well as the underlying hardware design parameter. For every
+                                                                                                                                                  N
+tokens and KV-caches, and is orthogonal to the existing static                                             F consecutive tokens, where F = ⌊ M      ⌋, the middle token
+weight quantization [11].                                                                                  is chosen, resulting in a total of M candidates. Then we
+
+
+
+
+                                                                                                    1420
+                                                                                                                                     GEMM(WqB)
+                         Candidate Base Token                                                            High-Precision Base Token                Result of Base Token
+                         T2                                                                                                                      T2
+                         T5                                                                                                                      T5
+                         T8                                                                                                                      T8
+                              Delta Token                                                         INT8      INT4      INT2                       Result of Delta Token                                Final Output
+                        δ1     δ1=T1-T2                                                                                                          δ1
+
+
+
+
+                                                                                                                                                                         Result Reconstruction
+                                                                                                                                                                                                 Q1    Q1=δ1+T2
+
+
+
+
+                                                                  Adaptive Quantization
+                        δ2     δ2=T2-T2                                                                                                          δ2                                              Q2    Q2=δ2+T2
+                        δ3     δ3=T3-T5                                                                                                          δ3                                              Q3    Q3=δ3+T5
+
+
+
+
+                                                                                                                                     GEMM(Wqδ)
+                                             Top p
+                        δ4     δ4=T4-T8                                                                                                          δ4                                              Q4    Q4=δ4+T8
+                        δ5
+                        δ6
+                               δ5=T5-T5
+                               δ6=T6-T2
+                                            Selection
+                                             p=25%
+                                                                                                              +                                  δ5
+                                                                                                                                                 δ6
+                                                                                                                                                                                                 Q5    Q5=δ5+T5
+                                                                                                                                                                                                 Q6    Q6=δ6+T2
+                        δ7     δ7=T7-T5                                                                                                          δ7                                              Q7    Q7=δ7+T5
+                        δ8     δ8=T8-T8                                                                                                          δ8                                              Q8    Q8=δ8+T8
+                        δ9     δ9=T9-T2                                                                                                          δ9                                              Q9    Q9=δ9+T2
+                                                        Bitmask                           Low-Precision Delta High-Precision Delta
+
+
+                                             Fig. 7. The details of the adaptive quantization and result reconstruction.
+
+
+
+calculate the L1 distance between each visual token T i and                                                              Fig. 6 illustrates the process of Exponent-similarity detec-
+each candidate base token T j :                                                                                       tion. We begin by designating T 2 , T 5 , and T 8 as candidate
+                                    K−1
+                                    X                                                                                 base tokens. Next, we approximate the L1 distances between
+                        Di,j =              |Tki − Tkj |                                                              three candidate base tokens and all visual tokens using their
+                                     k=0                                                                              sign and exponent bits, which produce a 9×3 distance matrix.
+                                                                                                                      We then compare the distances to estimate the base token
+where 0 ≤ i < N and 0 ≤ j < M .
+                                                                                                                      for each visual token. Take the first row of the distance
+  To create the delta of visual token T i (δ i ) with the narrowest
+                                                                                                                      matrix (mathematically represented as D̄1,: ) as an example,
+possible distribution, the candidate base token T j with the
+                                                                                                                      we find that the minimal distance value is located in the first
+smallest distance is selected as the base token (B i = T j ). The
+                                                                                                                      column, implying that T 2 is similar to token T1 . Therefore,
+corresponding δ i is then computed as
+                                                                                                                      we construct the corresponding delta token by subtracting the
+                       δi = T i − B i = T i − T j                                                                     base token T2 from T1 (δ 1 = T 1 − T 2 ).
+                                                                                                                         This exponent approximation introduces new challenges
+which will be used for base-delta quantization.                                                                       into hardware: For example, an IEEE 754 single-precision
+   The processes of computing Di,j and δ i reveal high simi-                                                          exponent ranges from [−127, 128], which means a 2exponent
+larity to ME and MC phases in H.265. However, as discussed                                                            arithmetic operation may still span up to 256-bit scale, which
+above, CODEC is designed for integer quantization, while                                                              requires additional attention to manage the range efficiently
+input visual tokens are floating-point. Naively integrating                                                           in hardware. Our profiling reveals that during inference, the
+floating point to a CODEC unit leads to expensive power/area                                                          exponents of visual tokens exhibit a narrow dynamic range,
+overhead as shown in Table I. To sustain a 64 × 64 systolic                                                           typically confined within [0, 8], which will be further discussed
+array, a 64-wide subtract–and-abs reduction tree (abbreviated                                                         in Section IV-A.
+as Similarity Detect in the table) and a 64-lane FP32 cast
+(abbreviated as Quant in the table) shall be implemented.                                                             B. Adaptive Quantization
+These two together cost 43% of the on-chip area, which urges
+                                                                                                                           After generating δ, each element in δ should be encoded
+us to find a more efficient approach to similarity detection and
+                                                                                                                      using the minimal bitwidth while maintaining accuracy. To
+quantization.
+                                                                                                                      achieve this, we made a workload-balanced adaptive quantiza-
+Exponent-Similarity Approximation: Our insight is that the
+                                                                                                                      tion. Given a predefined threshold ratio p, for each delta vector
+exponent field of a floating-point number encodes the “order
+                                                                                                                      δ i , the top p portion of elements with the largest magnitudes
+of magnitude”, which often dominates the differences between
+                                                                                                                      are quantized to INT4, and the remaining (1 − p) portion
+two numbers. Thus, instead of performing full floating-point
+                                                                                                                      is quantized to INT2. p selection will be discussed in our
+operations to compute the L1 distance, we use the differences
+                                                                                                                      evaluation, Section V. These quantized deltas with different
+between their exponents to approximate the similarity between
+                                                                                                                      precision construct two mutually complementary sparse ma-
+tokens. We denote T̄ as the exponent field of tokens, and
+                                                                                                                      trices. As manifested in Fig. 7, we set the threshold ratio p
+the approximated similarity can be defined as the L1 distance
+                                                                                                                      as 25%, marking the elements with large magnitudes using
+among exponents:
+                                                                                                                      a bitmask. Subsequently, INT2 quantization (represented by
+                                                                                                                      yellow blocks) is applied to small delta values, and INT4
+                 K−1
+                 X                             i                                              j                       quantization (represented by blue blocks) is applied to large
+       D̄i,j =         |sign(Tki ) × 2T̄k − sign(Tkj ) × 2T̄k |                                                       delta values.
+                 k=0
+                                                                                                                           For M candidate base tokens that wait to act as the
+This approach captures the “order” of the values using integer                                                        base tokens, higher precision (INT8) is adopted to preserve
+shifts and subtractions, which significantly reduces arithmetic                                                       accuracy. These high-precision candidate base tokens are then
+complexity.                                                                                                           multiplied by the weight matrix Wq for high-precision GEMM
+
+
+
+
+                                                                                                               1421
+operations, as the resulting output features are critical for             Similarity Detection. As shown in Fig. 9, we reuse the
+reconstructing the final results.                                         subtract–and-abs reduction tree in the motion-estimation (ME)
+                                                                          module to implement similarity detection for visual tokens.
+C. Result Reconstruction                                                  To avoid expensive floating-point operations, we modify the
+   As discussed above, applying the weight matrix Wq to                   subtract unit to support exponent-similarity detection, as in-
+quantized visual tokens becomes Wq B + Wq δ. As the base                  troduced in Section III-A. The unit extracts the exponent
+token B belongs to one of M candidate base tokens, which                  field from each floating-point token, computes an approximate
+constitute only a small subset of all visual tokens, Wq B’s               magnitude 2exponent via bit shifting, and concatenates it with the
+computation can be eliminated at runtime by directly selecting            sign bit before subtraction. This subtraction is implemented as
+the results from precomputed candidate base tokens. Given the             an INT10 operation.
+data similarity among the input visual tokens, δ can be encoded              To explain this design decision: In IEEE 754 single-
+with fewer bits, allowing Wq δ to be computed at a lower cost.            precision, the exponent field has 8 bits and encodes an effective
+Summing both terms, Wq B and Wq δ, we can reconstruct the                 range of [−127, 128], which in principle could span a very
+final Q matrix.                                                           large dynamic range if used directly. However, our profiling of
+                                                                          LLM inference workloads shows that the exponents of visual
+D. Extending AQuant to the Decoding Stage                                 tokens exhibit a much narrower range of [0, 8]. Thus, 2exponent
+   The key to achieving high-performance decoding lies in                 falls into [1,256], which can be represented within 9 bits.
+reducing the memory bandwidth consumption of the KV-                      After concatenating the sign bit, we obtain a 10-bit value,
+cache. However, directly applying the procedures described                leading to a compact 10-bit integer representation suitable for
+above to the self-attention operation during decoding cannot              the similarity-detection datapath.
+effectively reduce the KV-cache loading cost, since K and V               Spatially Shared ME PE. AQuant exposes a “knob”, the
+are floating-point matrices that must first undergo exponent-             number of candidate base tokens (M introduced in Sec-
+similarity detection. Therefore, after KV -matrix projection,             tion III-A), to tune the tradeoff between quantization cost and
+instead of writing the reconstructed KV-cache back to memory,             quality. More candidates generally improve similarity match-
+we re-quantize the KV-cache and then store it in off-chip                 ing but also increase distance computation and comparison
+memory for later use in decoding. Since these data occupy                 cost. However, as discussed in Section II-B, the original ME
+significantly less memory, the proposed design effectively                module is hard-wired to evaluate 64 candidate macroblocks
+reduces memory traffic per token. The KV-cache values are                 using an 8 × 8 PE array, which leads to underutilization when
+then reconstructed online when needed. This design decision               we only need, for example, 16 or 32 candidate base tokens.
+trades off computing for memory bandwidth, and the benefit                   To support different numbers of base candidates efficiently,
+evaluation will be discussed in Section V.                                we make the ME PE array reconfigurable. We make a 4 × 4
+                                                                          PE block as the basic reconfigurable block, and no finer
+               IV. AQ UANT A RCHITECTURE                                  granularity is supported. This design decision is made be-
+                                                                          cause: 1. fewer than 16 base candidates is over aggressive
+   In this section, we explain the AQuant architecture, which
+                                                                          for quantization; 2. coarser granularity avoids the excessive
+specializes the quantization using CODEC and processing the
+                                                                          power/area overhead. Given M candidates, the array allocates
+quantized tokens using an NPU. As illustrated in Fig. 8, the
+                                                                          ⌈M16 ⌉ such blocks and merges them to form a larger logical
+input visual tokens are first read from off-chip memory and
+                                                                          PE block, allowing the same 8 × 8 mesh to serve varying base
+forwarded to the enhanced CODEC (step A ) for similarity
+                                                                          set sizes. As shown in Fig. 9, given that T 1 and T 2 both have
+detection and base-delta quantization (step B ). The resulting            32 candidate base tokens, respectively, the reconfigurable PE
+quantized data are then dispatched to the NPU (step C )                   array distributes two 4 × 8 PE blocks (outlined in yellow and
+according to their adaptive precision. The NPU consists of                red) for them, occupying the whole PE array.
+two MAC arrays (step D ) that performs matrix multiplications                We similarly adapt the comparator tree in the ME engine
+on the high- and low-precision deltas. The partial sums from              to match this 4 × 4 granularity. A 4-stage comparator tree is
+both precisions are forwarded to the accumulation engine to               used as the basic comparison unit, taking 16 distances from
+aggregate the results (step E ), and the reconstruction engine            one 4 × 4 PE block and producing the minimum. Multiple
+then combines them with the precomputed base token results                such 16-input units can then be composed with an additional
+to reconstruct the final activations (step F ).                           2-stage comparator tree to select minima across several blocks.
+                                                                          For each minimum, the corresponding visual token ID i and
+A. Enhanced CODEC Design                                                  base token ID j are packed as (T i , T j ) entries and written
+   To realize our visual token quantization algorithm on a                into the similar token table (bottom right of Fig. 9).
+video CODEC with modest hardware overhead, we extend                      Adaptive Quantization: We extended the CODEC quanti-
+the CODEC in two aspects: (i) adding flexibility for similarity           zation data path for our adaptive quantization discussed in
+detection, and (ii) augmenting the datapath to process floating-          Section III-B. As shown in Fig. 10(a), the original circuit for
+point inputs. The specialized CODEC unit builds upon the                  INT16 quantization is implemented by an affine transform
+design shown in Fig. 5 and described in Section II-B.                     followed by a right shift and clamping.
+
+
+
+
+                                                                   1422
+                                                                                                                                                                     Off-chip Momery
+                                       A                                   C                                                                                C
+                      Video CODEC                                          NPU Bitmask Buffer                                                                        Weight Buffer
+                                                                                                                                                                                                                                                        Result Accumulation Engine                                                                                            Similar Token Table
+                                                                                                                 High-precision                                                   Low-precision
+                          Enhanced ME                                                                             MAC Array                                                        MAC Array
+                                                                                                                                                                                                                                                                                                                                                               F
+
+
+
+
+                                                                                                                                                                                                                                                       High-precision
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                   Output Buffer
+                                                                                                                                                                                                                                                                          Low-precision
+                            Module
+
+
+
+
+                                                                               High-precision
+                                                                                                                                                                                                                                                                                                                   E
+
+
+
+
+                                                                                                                                                            Low-precision
+                                                                                                                                MAC                                                    MAC
+
+
+
+
+                                                                                                                                                                                                                                                         PS Buffer
+
+                                                                                                                                                                                                                                                                            PS Buffer
+                                                                                                            MAC                                 MAC                              MAC                       MAC
+
+
+
+
+                                                                                Input Buffer
+
+
+
+
+                                                                                                                                                             Input Buffer
+                                                                                                                                                                                                                                                                                                                                                                                                               Data Buffer
+                                       B
+
+
+
+
+                                                                                                                                                                                                                                                                                                  +
+                                                                                                            MAC                  D
+                                                                                                                                MAC             MAC                              MAC   D
+                                                                                                                                                                                       MAC                 MAC
+                          Augmented                                                                                                                                                                                                                                                                                                                                                        + + ... +
+                          Quantization                                                                      MAC                 MAC             MAC                              MAC   MAC                 MAC                                                                                                                                                             Result Reconstruction
+                            Module                                                                                                                                                                                                                                                                                                                                                 Engine
+
+                     AQuant Architecture
+                                                                                                                                                        Fig. 8. AQuant architecture overview.
+
+ Reconfigurable PE Array                                                                                                                        Augmented Subtractor                      of each delta element belongs to the top p values along the
+                                           C         R           C             R                C           R              C         R          Visual Token Base Token
+                                                                                                                                                 s exp frac s exp frac
+                                                                                                                                                                                          delta vector, as discussed in Section III-B.
+                                                           ...                        ...                        ...
+
+                                                                                                                                                      <<                    <<
+                                                                                                                                                                                              The key components in the quantization module are the fp-
+        T1               T2
+                                               ABS                   ABS                            ABS                        ABS
+                                                                                                                                                   concat             concat
+                                                                                                                                                                                          to-int unit and the top-k unit. Specifically, the fp-to-int unit
+                                                                     ...                              ...
+
+                                                                                                                                                                      int10
+                                                                                                                                                                                          performs floating-point to integer conversion using lightweight
+                                                                                                                                                                                          combinational logic derived from the rounding algorithm,
+                                                              4-stage                                                                                 Similar Token                       where the exponent and mantissa fields determine the integer
+                                                                                                                                                           Table
+                                                           comparator tree                                                                                i      j                        output. We implement it using two 2-to-1 multiplexers, one
+                                                     MAX                                                                                                  T1    T3                        7-to-1 multiplexer, one 32-to-1 multiplexer, an AND gate, and
+   Motion Vector                                                                                                                                          T2    T5
+  Generation Engine                                                                                                                                       T4    T3                        16 registers. The top-k unit first employs a QuickSelect unit
+                                                 2-stage
+
+
+
+
+                                                                 CMP                                             CMP
+                                                                                                                                                          T6    T5
+                                                                           T1
+                                                                                         CMP                T2
+                                                                                                                                                         ...   ...
+                                                                                                                                                                                          to identify the k-th largest element as a threshold, and then
+                                                                                                                                                                                          filters the input by comparing each element with this threshold
+                                                                                                                                                                                          to extract the top-k elements. The Quick Select unit follows a
+                      Fig. 9. AQuant-extended motion estimation module.
+                                                                                                                                                                                          pivot-based iterative selection process inspired by the quicksort
+                                                            control                                                                                                                       algorithm, progressively narrowing the candidate set until the
+                                                                  xor                                                                    sign
+                                                                                                                                         exp
+                                                                                                                                                                                          k-th largest value is identified. The hardware of the top-k unit
+         binary                                                                                                                          frac   fp to int             Quantized
+         mask                 Offset
+                                                                                                                       b                                                Res               consists of three FIFOs, four groups of comparators, an OR
+                                                                 Adder
+Delta        top-k
+                               sign1
+                               exp1
+                               frac1                                                                             Shifter                                                                  gate, an XOR gate, and a 2-to-1 multiplexer.
+                       Scaling sign2
+                               exp2
+                       Factor frac2
+                                                                                                                                                                                                                           Bitmask                         Delta Matrix                                 Weight                                                                                 Bitmask                         Delta Matrix                              Weight
+                                 Res                                                                                                                                                            int2
+                                                                                                                                                                                                                                     1     0   0     Control d11 d12 d13                           W11 W12 W13 W14                                                                                       1     0   0     Control d11 d12 d13                        W11 W12 W13 W14
+                                                             Multiplier                                         Clamper
+                                1
+                              Factor
+                                                                                                                                                                                                int4 0                                     0   0                        d21 d22 d23        × WWWW       21    22      23    14                                                                           0     1   0                    d21 d22 d23    × WWWW            21    22   23    14
+
+                                                                                                                                                                                                                                     1     1   0                        d31 d32 d33                W31 W32 W33 W34                                                                                       1     0   0                    d31 d32 d33                 W31 W32 W33 W34
+                                                                                 (a)
+                                                                                                                                                                                                                            Sparse High-precision                                Sparse Low-precision                                                                                           Sparse High-precision                           Sparse Low-precision
+                                                            control                                                                                                                                                             Delta Matrix                                         Delta Matrix                                                                                                   Delta Matrix                                    Delta Matrix
+                                                                                                                                                                                                                                    MAC line 1                                                  MAC line 1                                                                                              MAC line 1                                             MAC line 1
+                                                                                                                                         sign
+                                                                 xor                                                                     exp
+                                                                                                                                                                                                                            d11     MAC    MAC                                d12 d13             MAC        MAC           MAC         MAC                                                      d11     MAC    MAC                           d12 d13       MAC                MAC        MAC   MAC
+
+         binary                                                                                                                          frac   fp to int            Quantized
+                                                                                                                                                                                                                                               MAC line 2                                                    MAC line 2                                                                                            MAC line 2                                                 MAC line 2
+                                                                                                                                                                                                                                               MAC    MAC           d21 d22 d23                   MAC        MAC           MAC         MAC                                                       d22               MAC    MAC                d21 d23       MAC                MAC        MAC   MAC
+         mask                 Offset
+                                                                                                                                                                       Delta
+                                                                                                                   b                                                                                                                           MAC line 3                                                    MAC line 3                                                                                            MAC line 3                                                 MAC line 3
+                                                                 Adder                                                                                                                                d31 d32                                  MAC    MAC                         d33             MAC        MAC           MAC         MAC                                                       d31               MAC    MAC                d32 d33       MAC                MAC        MAC   MAC
+                               sign1
+Delta        top-k             exp1                                                                              Shifter                                                                   High-precision High-precision                                           Low-precision                            Low-precision                                      High-precision High-precision                                          Low-precision                          Low-precision
+                               frac1                                                                                                                                                        Input Buffer   MAC Array                                                Input Buffer                             MAC Array                                          Input Buffer   MAC Array                                               Input Buffer                           MAC Array
+                                                                                                                                                                                                      Low-precision High-precision
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                          Low-precision High-precision
+
+
+
+
+                                                                                                                                                                                                                                                               1                  2                     3                     4                                                                                                  1               2                       3                 4
+                                                                                                                                                                                                                     MAC Array
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                         MAC Array
+
+
+
+
+                                                                                                                                                                                                                                             Clock                                                                                                                                                               Clock
+                                                                                                                                                                                                                                                                                                                                             Synchronization
+
+
+
+
+                       Scaling sign2                                                                                                                                                                                                     MAC line 1                                                                                                                                                          MAC line 1
+                                                                                                                                                                                                                                                                                                                                                                                                                                                       Synchronization
+                               exp2                                                                                                                                                                                                                                     d11                                   Stall                                                                                                                    d11
+                       Factor frac2
+                                                                                                                                                                                           Timeline
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                               Timeline
+
+
+
+
+                                                                                                                                                                                                                                         MAC line 2                                       Stall                                                                                                              MAC line 2                d22
+                                 Res                                                                                                                                                                                                     MAC line 3         d31         d31                                    d32                                                                                           MAC line 3                d31
+                                                            Multiplier                                          Clamper                                                                                                                                                                                                                                                                                                                                                  Speedup
+                               Scale                                                                                                                                                                                                     MAC line 1         d12                 d13                                                                                                                          MAC line 1         d12            d13
+                                                                                                                                                                                                       MAC Array
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                           MAC Array
+
+
+
+
+                                                                                                                                                                                                                                                                                                              Stall
+                                                                                                                                                                                                                                         MAC line 2         d21                 d22                 d23                    Stall                                                                             MAC line 2         d21            d23
+                                                                                   (b)                                                                                                                                                   MAC line 3         d33                                     Stall                                                                                                    MAC line 3         d32            d33
+
+                                                                                                                                                                                                                                                                         (a)                                                                                                                                                             (b)
+Fig. 10. The details of the quantization module: (a) default mode; (b) adaptive
+quantization mode.                                                                                                                                                                                                                                                             Fig. 11. The details of MAC arrays.
+
+
+   As illustrated in Fig. 10(b), unlike a full floating-point mul-                                                                                                                        B. Sparsity-Supported MAC Array
+tiplier with expensive normalization, our quantization module                                                                                                                                To process mixed-precision deltas, we separate the quan-
+first clamps the mantissa of deltas and the scaling factor from                                                                                                                           tized deltas into two mutually complementary sparse matrices:
+23 bits down to 16 bits. The truncated mantissa and the                                                                                                                                   a high-precision delta matrix (INT4) and a low-precision delta
+exponent then reuse the existing multiplier and adder in the                                                                                                                              matrix (INT2). A bitmask generated by the CODEC specifies,
+CODEC datapath, while the sign bit pass through an additional                                                                                                                             for each delta, the MAC array to which it should be routed.
+XOR gate. The resulting sign bit, exponent, and mantissa are                                                                                                                                 As shown in Fig. 11, each MAC array adopts a row-wise
+concat and then fed directly into the fp-to-int unit [33] for data                                                                                                                        product dataflow. A MAC line is responsiblePfor one output
+casting, without any further floating-point normalization. The                                                                                                                            row Ci,: and iteratively accumulates Ci,: = k dik Wk,: , by
+cast precision is determined by a bitmask generated by the top-                                                                                                                           streaming one delta element δki and the corresponding weight
+k unit [41], which identifies whether the absolute magnitude                                                                                                                              row Wk,: per cycle. In other words, during each cycle a MAC
+
+
+
+
+                                                                                                                                                                                   1423
+                        Accuracy(%)      Computational Savings                                                             Accuracy(%)            Computational Savings                                                                                Accuracy(%)            Computational Savings                                                           Accuracy(%)            Computational Savings
+
+
+
+
+                                                                        Computational Savings (%)
+
+
+
+
+                                                                                                                                                                                  Computational Savings (%)
+
+
+
+
+                                                                                                                                                                                                                                                                                                       Computational Savings (%)
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                    Computational Savings (%)
+           75.0                                  Baseline Accuracy 84                                          65.0                                                          85                                           70.0                                                                    85                                              75.0
+                                                                                                                                                         Baseline Accuracy                                                                                                                                                                                                                 Baseline Accuracy   87
+           70.0                   2.1%                             82                                                                                                        83                                                                                                 Baseline Accuracy 83
+                                                                                                                                                                                                                                                                                                                                                                            2.1%
+                                                                                                               60.0                      2.7%                                                                                                                        1.2%                                                                         70.0                                                         85
+Accuracy (%)
+
+
+
+
+                                                                                                    Accuracy (%)
+
+
+
+
+                                                                                                                                                                                                               Accuracy (%)
+
+
+
+
+                                                                                                                                                                                                                                                                                                                                   Accuracy (%)
+           65.0                                                    80                                                                                                        81                                           65.0                                                                    81
+                                                                   78                                          55.0                                                          79                                                                                                                   79                                              65.0                                                         83
+           60.0
+                                                                   76                                                                                                        77                                           60.0                                                                    77                                                                                                           81
+           55.0                                                                                                50.0                                                                                                                                                                                                                               60.0
+                                                                   74                                                                                                        75                                                                                                                   75
+           50.0                                                                                                                                                                                                                                                                                                                                                                                                79
+                                                                   72                                                                                                        73                                           55.0                                                                    73
+                                                                                                               45.0                                                                                                                                                                                                                               55.0                                                         77
+           45.0                                                    70                                                                                                        71                                                                                                                   71
+           40.0                                                    68                                          40.0                                                          69                                           50.0                                                                    69                                              50.0                                                         75
+                  10%    15%    20%   25%     30%   35%      40%                                                      8%    13%    18%   23%     28%         32%    37%                                                                         7%      12%    17%   22%     27%   32%      37%                                                          9%    14%    19%   24%      29%       34%    39%
+                                   Threshold p                                                                                        Threshold p                                                                                                                 Threshold p                                                                                            Threshold p
+                                         (a)                                                                                                    (b)                                                                                                                         (c)                                                                                                    (d)
+                                                                                                                                         Fig. 12. Exploration of the threshold ratio p.
+
+
+line receives a delta from row i of the delta matrix and the                                                                                                                                                                  B. AQuant Algorithm Evaluation
+k-th row of the weight matrix, computes Wk,: δki , and adds it
+into the running partial sum for Ci,: . This row-wise product                                                                                                                                                                    Methodology. We adopt open-source implementations of
+dataflow naturally matches the sparsity pattern of the delta                                                                                                                                                                  the aforementioned VLM models, running on the PyTorch
+matrices and allows the high- and low-precision arrays to run                                                                                                                                                                 framework [31]. We implement the proposed AQuant algo-
+in parallel.                                                                                                                                                                                                                  rithm in Python and integrate it into the models’ implemen-
+   The key to achieve high hardware utilization is to have a                                                                                                                                                                  tations. Note that the AQuant algorithm does not require
+proper hyperparameter p, the fraction of high-precision deltas,                                                                                                                                                               retraining, making our approach highly deployable without the
+p, to avoid stalls on synchronization. If p is too large, the high-                                                                                                                                                           need for extensive reconfiguration. The required calibration
+precision MAC array becomes the bottleneck; if p is too small,                                                                                                                                                                data for threshold selection is 10% of the training dataset. In
+the accuracy of the VLMs may become unacceptable. Our                                                                                                                                                                         the experiment, we use INT2 and INT4 for deltas, and INT8
+workload-balanced adaptive quantization mechanism enforces                                                                                                                                                                    for base tokens.
+a target high/low ratio p : q (with q = 1 − p) on a per-row basis                                                                                                                                                                Accuracy and Selection of Threshold p. To determine
+by selecting the top p deltas in each row as high precision                                                                                                                                                                   the optimal threshold ratio p for adaptive quantization (see
+and marking the rest as low precision. The high- and low-                                                                                                                                                                     Section III-B), we vary p and measure its impact on accuracy
+precision MAC arrays are then configured to match this p : q                                                                                                                                                                  and theoretical computational savings. Generally, a large p
+ratio. This alignment ensures that both MAC arrays progress                                                                                                                                                                   results in low computational savings but high accuracy, while a
+in lockstep, as illustrated in Fig. 11(b). We will empirically                                                                                                                                                                smaller p improves performance at the cost of accuracy. Fig. 12
+evaluate different choices of p and their impact on performance                                                                                                                                                               reports the accuracy and computational savings across four
+and accuracy in Section V.                                                                                                                                                                                                    benchmarks (VideoLLaVA-MSVD, LLaVA-GQA, LLaVA-
+                                                                                                                                                                                                                              ScienceQA, and Qwen2.5-VL-VideoMME) when varying p.
+C. Result Reconstruction Engine                                                                                                                                                                                               These benchmarks are carefully chosen to cover diverse sce-
+   To support efficient reconstruction, we equip the reconstruc-                                                                                                                                                              narios, including highly dynamic and complex scenes. For
+tion engine with three on-chip buffers and multiple adders.                                                                                                                                                                   the VideoLLaVA-MSVD benchmark (Fig. 12(a)), setting p =
+The base buffer stores the precomputed outputs for base                                                                                                                                                                       20% leads to a 2.1% accuracy drop, which is unacceptable.
+tokens, the delta buffer holds the outputs produced from                                                                                                                                                                      Increasing p to 25% provides a better tradeoff, reducing
+the delta matrices, and the recovery buffer accumulates the                                                                                                                                                                   theoretical computation by 3.2× compared to the full INT8
+reconstructed visual token outputs, thereby reducing off-chip                                                                                                                                                                 model while maintaining acceptable accuracy. For the LLaVA-
+memory traffic. During reconstruction, multiple entries in the                                                                                                                                                                GQA benchmark (Fig. 12(b)), p = 23% achieves a favorable
+similar token table are processed in parallel. For each entry                                                                                                                                                                 balance between accuracy and computational savings. Across
+(T i , T j ), the engine reads the feature vector of the base token                                                                                                                                                           all benchmarks, p = 25% consistently satisfies the accuracy
+T j from the base buffer and the corresponding delta feature                                                                                                                                                                  constraint and is close to the hardware-optimal point, while
+for T i from the delta buffer, using different banks to enable                                                                                                                                                                smaller p values may cause noticeable accuracy degradation.
+feature-level parallelism. The adders sum these features and                                                                                                                                                                  Therefore, we set p = 25% in the remaining experiments.
+write the reconstructed results back into the recovery buffer.
+After all entries have been processed, the recovery buffer
+                                                                                                                                                                                                                                                                                   Baseline                                          AQuant-Pruning                                          AQuant
+contains the final activations for all visual tokens.                                                                                                                                                                                                 90
+                                                                                                                                                                                                                                                      80
+                                                       V. E VALUATION                                                                                                                                                                                 70
+                                                                                                                                                                                                                                       Accuracy (%)
+
+
+
+
+                                                                                                                                                                                                                                                      60
+A. Workloads                                                                                                                                                                                                                                          50
+                                                                                                                                                                                                                                                      40
+   To validate the effectiveness of AQuant, we evaluate its                                                                                                                                                                                           30
+                                                                                                                                                                                                                                                      20
+performance on three VLM models, including LLaVA [26],                                                                                                                                                                                                10
+                                                                                                                                                                                                                                                       0
+VideoLLaVA [25], and Qwen2.5-VL 72B [2] across four-
+teen datasets. The datasets utilized for evaluation include
+VQAv2 [10], GQA [16], TextVQA [37], POPE [24], MM-
+Bench [27], MMVet [47], Wild [26], ScienceQA [28],
+VisWiZ [13], ActivityNet [48], MSVD [4], TGIF [18],
+MSRVTT [44], and Video-MME [9].
+                                                                                                                                                                                                                                                                                       Fig. 13. Model accuracy results.
+                                                                                                                                                                                                                                                                                       Baseline-Accuracy                                                             AQuant-Accuracy
+                                                                                                                                                                                                                                                78.0
+                                                                                                                                                                                                                                                77.0
+                                                                                                                                                                                                                                                76.0
+                                                                                                                                                                                                                                 Accuracy (%)
+
+
+
+
+                                                                                                                                                                                                                                                75.0
+                                                                                                                                                                                                              1424                              74.0
+                                                                                                                                                                                                                                                73.0
+                                                                                                                                                                                                                                                72.0
+                                                                                                                                                                                                                                                71.0
+                                                                                                                                                                                                                                                70.0
+   We further evaluate the accuracy of all workloads using                                                               8
+                                                                           to a full INT8 model: Speedup= 4×0.25+2×0.75          = 3.2×.
+p = 25% in AQuant. As shown in Fig. 13, AQuant incurs an                   This model assumes ideal mixed-precision execution on the
+average accuracy drop of only 0.7% compared to the base-                   GPU without overheads from precision switching or additional
+line. Moreover, to demonstrate the necessity of INT2 delta                 control complexity. For CMC, LLM.265, and Olive, we repro-
+quantization in AQuant, we keep p deltas in INT4 precision                 duce their algorithms and try our best to build cycle-accurate
+and prune the remaining 1 − p deltas (denoted as AQuant-                   simulators.
+Pruning). This results in an average accuracy degradation of                  Speedup. Fig. 14 reports the performance of the
+23% compared to the baseline.                                              AQuant architecture and several baselines, including GPU-
+                                                                           Full, GPU-Full-unscale, GPU-Mixed-precision, GPU running
+C. AQuant Architecture Evaluation
+                                                                           the AQuant algorithm (GPU-AQuant), GPU running Vis-
+   Methodology. To evaluate the performance of the AQuant                  Pruner (GPU-VisPruner), AQuant integrated with VisPruner
+architecture, we develop a cycle-level simulator to collect the            (AQuant+VisPruner), LLM.265, CMC, Olive, and AQuant
+latency statistics of matrix multiplications and the number of             integrated with CMC (AQuant+CMC). All results are nor-
+buffer accesses for each workload. The simulator is integrated             malized to GPU-Full. On average, the AQuant architecture
+with Ramulator [20] for DRAM timing. We make efforts to                    achieves 6.9×, 2.1×, and 2.2× speedup over GPU-Full, GPU-
+ensure the accuracy of the simulator by following the widely               Full-unscale, and GPU-Mixed-precision. The performance im-
+adopted open-source simulator, Scale-Sim [34]. Moreover, we                provement stems from several factors: 1) The AQuant algo-
+implement the proposed AQuant architecture in Verilog and                  rithm reduces computations and lessens stress on the main
+synthesize it by Synopsys Design Compiler to get the chip                  memory by lowering the bit-width of deltas. 2) The collabo-
+area and total power under 28nm technology with a frequency                ration between the NPU and the enhanced CODEC enables
+of 500MHz. This synthesis process generates a comprehensive                highly parallelized operations such as Exponent-similarity
+report containing the gate-level netlist, timing information, and          detection and matrix multiplications. In contrast, the GPU
+area breakdown of various components within the AQuant                     executes kernels serially. 3) The sparsity-supported MAC array
+architecture, including the enhanced video CODEC, NPU, and                 along with the workload-balanced adaptive quantization in
+control logic. We also employ CACTI [3] to derive the energy               AQuant can fully exploit the mixed-precision deltas while
+and area of on-chip buffers based on parameters such as bus                achieving high hardware utilization.
+width, size, and the number of reads/writes. Additionally, we                 Additionally, AQuant outperforms GPU-VisPruner, Olive,
+modify OpenASIC [8], an open-source tool for simulating the                LLM.265, and CMC by 2.8×, 2.5×, 4.6×, and 2.8× in
+enhanced video CODEC. AQuant adopts LPDDR4x as the                         performance. AQuant is superior to VisPruner for two reasons.
+external memory, with 32GB capacity and a bandwidth of                     First, VisPruner prunes 61.1% visual tokens but still processes
+136.5 GB/s, the same configuration as the NVIDIA Jetson                    the rest in FP16, while AQuant converts tokens to mixed-
+AGX Xavier [30].                                                           precision (75% INT2, 25% INT4 deltas, 7.4% INT8 bases),
+   As shown in Table II, we compare AQuant with several                    yielding 2.16× compute reduction. Moreover, the repurposed
+platforms, including a representative edge GPU—NVIDIA                      CODEC and dedicated NPU in AQuant enable more efficient
+Jetson AGX Xavier, a software-only token pruning method                    similarity detection and mixed-precision GEMM. AQuant is
+VisPruner [49] (denoted as GPU-VisPruner), and three accel-                orthogonal to token pruning method. When combined with
+erators: CMC [39], LLM.265 [43], and Olive [11].                           VisPruner (denoted as AQuant+VisPruner), we observe 8.3×
+   For a fair comparison with GPUs, we construct three                     speedup over GPU-Full.
+variants: (1) GPU-Full-unscale, the original GPU without any                  AQuant surpasses Olive, LLM.265, and CMC because
+performance scaling; (2) GPU-Full, where the GPU is scaled                 AQuant provides an end-to-end unified approach for VLM
+in the number of compute cores to match the area budget of                 acceleration, while other accelerators optimize only one of the
+AQuant; and (3) GPU-Mixed-precision, a hypothetical GPU                    prefilling or decoding stages. AQuant can also be integrated
+with native mixed-precision MAC support. For GPU-Full-                     with CMC (denoted as AQuant+CMC), and experimental
+unscale, we directly measure execution time by running full-               results show that AQuant+CMC achieves an additional 3.4×
+precision VLMs on Jetson AGX Xavier. For GPU-Full, we                      speedup over CMC.
+scale the execution time of GPU-Full-unscale according to the                 Fig. 14 also evaluates the performance of AQuant when the
+ratio between the number of GPU cores and the compute units                CODEC is actively decoding videos, during which AQuant
+in AQuant. We profile GPU execution across all workloads and               cannot be executed simultaneously. To quantify this scenario,
+observe memory bandwidth utilization ranging from 31.4% to                 we measure the video decoding latency and add it to the
+62.8%, indicating that memory is not saturated and the work-               AQuant latency (denoted as AQuant-Decoding). Since the
+loads remain primarily compute-bound. Therefore, scaling                   CODEC is only used for video processing, this constraint af-
+GPU time by the compute-core ratio does not distort memory-                fects VideoLLaVA and Qwen2.5-VL models, but not LLaVA.
+bound behavior. According to Fig. 12, AQuant generates 75%                 The results show that video decoding accounts for only 8.3%
+INT2 and 25% INT4 deltas. Therefore, to compare with                       of the end-to-end VLM inference time, and AQuant-Decoding
+GPU-Mixed-precision, we construct an optimistic analytical                 still achieves 6.8× speedup over GPU-Full. This indicates that
+upper bound by proportionally scaling throughput relative                  video decoding does not become a performance bottleneck
+
+
+
+
+                                                                    1425
+                                                                       GPU-Full     GPU-AQuant      GPU-Mixed-precision     GPU-Full-unscale     LLM.265    GPU-VisPruner                     CMC    Olive    AQuant-Decoding     AQuant    AQuant+VisPruner                 AQuant+CMC
+                                                               12
+                                                               10
+
+
+
+
+                                                     Speedup
+                                                                8
+                                                                6
+                                                                4
+                                                                2
+                                                                0
+                                                                                                                                                 TABLE II
+                                                                                                                                        D ESCRIPTIONS OF BASELINES .
+
+                                                                                                                                                  GPU-                           GPU-
+                                                                          Platform             GPU-Full-unscale           GPU-Full                                                                              CMC               LLM.265             Olive
+                                                                                                                                              Mixed-precision                  VisPruner
+                                                                        Category              Edge GPU                   Edge GPU            Hypothetical GPU                  Software                      Accelerator         Accelerator       Accelerator
+                                                                       Measurement         PyTorch on Xavier            Scaled GPU             Scaled GPU                     Scaled GPU                     Simulation          Simulation        Simulation
+                                                                                             Baseline VLM              Baseline VLM           Baseline VLM                   Token Pruning
+                                                                        Description                                                                                                                         CODEC+NPU            CODEC+NPU        Quantization
+                                                                                                on GPU                    on GPU                 on GPU                         on GPU
+                                                                       GPU-Full     GPU-AQuant      GPU-Mixed-precision     GPU-Full-unscale     LLM.265    GPU-VisPruner                     CMC    Olive    AQuant-Decoding     AQuant    AQuant+VisPruner                 AQuant+CMC
+                                                               10
+                               Energy Efficiency
+
+
+
+
+                                                       8            GPU-Full      GPU-AQuant     GPU-Mixed-precision      GPU-Full-unscale     LLM.265     GPU-VisPruner                  CMC       Olive    AQuant-Decoding      AQuant    AQuant+VisPruner                 AQuant+CMC
+                                                    12 6
+                                                    10
+                                                       4
+                            Speedup
+
+
+
+
+                                                     8
+                                                       2
+                                                     6
+                                                     4 0
+                                                      2
+                                                      0
+
+
+
+
+                                                                                                                                               Fig. 14. Speedup results.
+                                                                    GPU-Full DRAM
+                                                                              GPU-AQuant         GPU-Mixed-precision
+                                                                                                 ME Module             GPU-Full-unscale
+                                                                                                                     Quantization Module       LLM.265High-Precision
+                                                                                                                                                          GPU-VisPruner     CMC
+                                                                                                                                                                     MAC Array                      Olive Low-Precision
+                                                                                                                                                                                                             AQuant-Decoding
+                                                                                                                                                                                                                        MAC ArrayAQuant     AQuant+VisPruner
+                                                                                                                                                                                                                                            Result                AQuant+CMC
+                                                                                                                                                                                                                                                   Reconstruction Engine
+                                                    10
+                                                     4,096
+                                             (ms)
+
+
+
+
+                                                     2,048
+                                      Efficiency
+
+
+
+
+                                                     8
+                                                     1,024
+                                                       512
+                                    Latency
+
+
+
+
+                                                     6 256
+                                                       128
+                                                        64
+                               Energy
+
+
+
+
+                                                     4 32
+                          Execution
+
+
+
+
+                                                        16
+                                                     2 8
+                                                         4
+                                                     0 21
+
+
+
+
+                                                                                                                                     Fig. 15. Execution cycle breakdown.
+
+
+                         even when the CODEC is occupied during VLM inference.                        workload-balanced adaptive quantization, which ensures bal-
+                             Moreover,DRAM
+                                        Fig. 14 validates
+                                                 ME Module the necessity                High-Precisionanced
+                                                                              of our AQuant
+                                                                Quantization Module                            workloads
+                                                                                                       MAC Array          across MAC
+                                                                                                                       Low-Precision theArray
+                                                                                                                                          two MACResult
+                                                                                                                                                    arrays.     Moreover,
+                                                                                                                                                        Reconstruction Engine the
+                         4,096                                                                        ME    module,  quantization      module, and   result     reconstruction
+                         architecture, showing that GPU-AQuant suffers from a 15.7%
+Execution Latency (ms)
+
+
+
+
+                         2,048
+                         1,024
+                           512
+                         performance    loss compared to GPU-Full. Two fundamental                    engine are 47.8%, 24.3%, and 7.8% of the MAC arrays,
+                           256
+                           128
+                         limitations
+                            64        contribute to this performance degradation: 1)                  respectively. Fortunately, leveraging independent hardware
+                            32
+                         The16 AQuant algorithm requires INT2 operations on deltas,                   components allows for complete concealment of the execution
+                             8
+                             4
+                         which
+                             2   current  GPUs   cannot   support.  Consequently,     INT2            time of the result reconstruction, exponent-similarity detection,
+                             1                                                                        and adaptive quantization by pipelining them with the high-
+                         values must be padded to INT4, diminishing the benefits
+                         of low-precision quantization. 2) The matrix multiplications                 and low-precision matrix multiplications.
+                         in AQuant involve INT4×INT16 multiplications, leading
+                         to mismatched bit-widths of the operands. Current GPUs                                                                                                                                     Prefilling                     Decoding
+                         cannot support this directly through highly optimized APIs;                                                                                              6400
+                                                                                                                                                                   Latency (ms)
+
+
+
+
+                                                                                                                                                                                  3200
+                         thus, a INT4×INT16 matrix multiplication must be decom-                                                                                                  1600
+                         posed into four INT4×INT4 matrix multiplications. Although                                                                                                800
+                         CUDA supports concurrent kernel execution, we have ob-                                                                                                    400
+                         served that it is difficult to effectively overlap these decom-                                                                                           200
+                                                                                                                                                                                   100
+                         posed kernels, as discussed in previous works[50].
+                            Execution Cycle Breakdown. Fig. 15 illustrates the ex-
+                         ecution cycle breakdown across hardware components and
+                         data movement between modules and DRAM. As stages are
+                         pipelined, overall latency is determined by the longest stage
+                                                                                                                                                                                         Fig. 16. Latency results of the prefilling and decoding stages.
+                         latency—the latency of MAC arrays. The results show that
+                         the execution times of the high- and low-precision MAC                                                                                      End-to-end Results. To evaluate the latency reduction
+                                                                                                                                                                                 Prefilling     Decoding                  Prefilling                                                                Decoding
+                         arrays are aligned, demonstrating the effectiveness of our                                                                                of 1024
+                                                                                                                                                                      AQuant during the prefilling and decoding 1024
+                                                                                                                                                                                                                 stages, we
+                                                                                                                                                                                        512                                                                                  512
+                                                                                                                                                                         Latency (ms)
+
+
+
+
+                                                                                                                                                                                                                                                              Latency (ms)
+
+
+
+
+                                                                                                                                                                                        256                                                                                  256
+                                                                                                                                                                                        128                                                                                  128
+                                                                                                                                                                                         64                                                                                   64
+                                                                                                                                                                                         32                                                                                   32
+                                                                                                                                                                                         16                                                                                   16
+                                                                                                                                                                                          8                                                                                    8
+                                                                                                                                                                                          4                                                                                    4
+                                                                                                                                                                                          2                                                                                    2
+                                                                                                                                                            1426                          1                                                                                    1
+                                                                                                                                                                                                    Inference       Quantization Dequantization                                     Visual Token Language Tok
+                                                                                                                                                                                                                           (a)                                                                (b)
+compare the performance of GPU-Full, GPU-Full-unscale,                                                TABLE III
+                                                                                    A REA AND POWER OF THE AQ UANT ARCHITECTURE .
+GPU-Mixed-precision,         GPU-AQuant,      GPU-VisPruner,
+AQuant+VisPruner, LLM.265, CMC, Olive, AQuant, and                                                                       Area        Power
+                                                                             AQuant               Modules
+AQuant+CMC, as shown in Fig. 16. The results confirm that                                                               (mm2 )      (mW )
+AQuant achieves a higher speedup than CMC in the decoding                                 Low-precision MAC Array
+                                                                                                                        0.476       164.8
+stage and a higher speedup than LLM.265 in the prefilling                               (4 × (32 × 32) INT2 MACs)
+                                                                              NPU         High-precision MAC Array
+stage, reflecting the specialized roles of CMC and LLM.265,                                                             0.238        82.4
+                                                                                        (1 × (32 × 32) INT4 MACs)
+which are primarily optimized for the prefilling and decoding                            Result Reconstruction Engine   0.183        9.3
+stages, respectively. In contrast, AQuant provides an end-to-                                   On-chip Buffer          0.675       197.4
+end acceleration solution, improving performance across both                                     ME Module              0.138        23.4
+                                                                            Enhanced
+                                                                                             Quantization Module        0.122        21.3
+stages. AQuant performs well in both stages because: 1) it                  CODEC
+                                                                                                On-chip Buffer          0.026        11.9
+leverages adaptive quantization to reduce the computation
+precision, exchanging more resources for acceleration under
+the same area budget, and 2) low-precision deltas reduce                   the NPU comprises four 32 × 32 INT2×INT16 MACs, and
+memory requirements during VLM inference.                                  the high-precision MAC array of the NPU comprises a 32×32
+                                                                           INT4×INT16 MACs. The hardware resources of the MAC
+                                                                           arrays are carefully set based on the threshold p discussed in
+                                   Improved by
+                                                                           Section III-B, where p is set to 25%, resulting in a 1:4 ratio
+                                 AQuant algorithm
+                                      Improved by
+                                                                           of MACs between the two arrays. The result reconstruction
+                          3.3x
+                                   Exponent detection Improved by          engine incorporates three buffers to store INT16 outputs: base
+                                                        CODEC
+                                       1.6x                                tokens, delta matrices, and reconstructed visual tokens, with
+                                                    1.4x
+                                                                           sizes of 128 × 128, 64 × 128, and 128 × 128, respectively.
+                                                                           These buffers require 16KB, 8KB, and 16KB of SRAM, with
+                                                                           bandwidths of 256B, 128B, and 256B, respectively.
+                                                                              We also evaluate the costs of the enhanced CODEC. In
+             Fig. 17. Detailed analysis of contributions.                  order to support the proposed exponent-similarity detection,
+   Detailed analysis of algorithm and architecture con-                    we enhance the functionality of the existing ME module by de-
+tributions. Fig. 17 illustrates the performance gains from                 signing a new PE, a reconfigurable PE array, a reconfigurable
+our algorithm and architectural designs. Compared to the                   comparator tree, and associated control logic. Additionally,
+baseline AQuant version (denoted as AQuant-plain), which                   we extend the capabilities of the quantization module. These
+runs the INT8 VLM models without any optimizations, the                    modifications occupy 0.26mm2 of area.
+AQuant algorithm with floating-point similarity detection and                 Energy Efficiency. The energy efficiency outcomes are
+adaptive quantization (AQuant-FP) achieves a 3.3× speedup                  depicted in Fig. 18. The AQuant architecture delivers re-
+due to reduced computations and memory accesses associated                 markable energy efficiency, surpassing GPU-Full, GPU-
+with deltas. With the assistance of the exponent-similarity                Full-unscale, GPU-Mixed-precision, GPU-AQuant, GPU-
+detection, the AQuant architecture (AQuant-Exp) achieves a                 VisPruner, LLM.265, CMC, and Olive by 7.2×, 2.2×, 2.3×,
+1.6× speedup over AQuant-FP as the exponent-based L1                       8.6×, 2.9×, 14.0×, 2.5×, and 2.1×, respectively. These
+distance calculation can save arithmetic complexity and area.              substantial savings in energy consumption come from the
+Additionally, AQuant with CODEC (AQuant-CODEC) further                     reduction in considerable computations and off-chip memory
+results in an additional 1.4× speedup over AQuant-Exp. To                  accesses related to the deltas. We observe a counterintu-
+explain the performance improvement brought by repurpos-                   itive discrepancy that our optimizations achieve an extremely
+ing the CODEC, we compare the area of the MACs with                        high energy efficiency than LLM.265, despite the latter be-
+that of the repurposed CODEC. As shown in Table III, the                   ing specifically designed for tensor compression in LLMs.
+MACs require 0.476mm2 + 0.238mm2 = 0.714mm2 , while                        This arises because LLM.265 activates nearly all hardware
+the repurposed CODEC needs 0.138mm2 + 0.122mm2 =                           components in the CODEC for data compression, result-
+0.26mm2 . This means that if we disable the CODEC and                      ing in energy consumption of 97.8/63.5 pJ/bit for compres-
+allocate the MAC’s area for exponent-similarity prediction                 sion/decompression, which is even higher than directly loading
+and adaptive quantization, we would have only 0.454mm2                     data from LPDDR4X [23].
+available for the computational resources. Compared to this
+configuration, AQuant with the repurposed CODEC achieves                   D. Design Exploration
+          0.26mm2                                                             Exploration of Exponent Distribution. To examine
+a 36% ( 0.714mm  2 = 36%) area savings. The saved area can
+
+be reallocated to increase the NPU’s MAC resources, thus                   whether visual token exponents are bounded within the range
+contributing to the 1.4× performance improvement.                          of [0, 8], we conduct two analyses. First, we classify inputs
+   Hardware Overhead and Area. Table III provides a com-                   based on visual complexity and motion intensity into slow-
+prehensive breakdown of design parameters, area, and power                 motion and fast-motion categories, and profile the exponent
+of the AQuant architecture. The low-precision MAC array of                 distribution of visual tokens under these conditions. Second,
+
+
+
+
+                                                                    1427
+                           GPU-Full    GPU-AQuant     GPU-Mixed-precision   GPU-Full-unscale    LLM.265    GPU-VisPruner             CMC               Olive       AQuant-Decoding         AQuant     AQuant+VisPruner                     AQuant+CMC
+                     10
+ Energy Efficiency
+
+
+
+
+                     8
+                     6
+                     4
+                     2
+                     0
+
+
+
+
+                                                                                    Fig. 18. Energy efficiency improvement.
+
+
+                                      Slow-Motion             Fast-Motion                Qwen2.5-VL                                                        Prefilling          Decoding                                            Prefilling                 Decoding
+                                                                                                                              1024                                                                                  1024
+                     110                                                                                                       512                                                                                   512
+
+
+
+
+                                                                                                                   Latency (ms)
+
+
+
+
+                                                                                                                                                                                                     Latency (ms)
+                     100                                                                                                       256                                                                                   256
+Proportion(%)
+
+
+
+
+                                                                                                                               128                                                                                   128
+                      90                                                                                                        64                                                                                    64
+                      80                                                                                                        32                                                                                    32
+                      70                                                                                                        16                                                                                    16
+                                                                                                                                 8                                                                                     8
+                      60                                                                       100%                              4                                                                                     4
+                      50                                                                                                         2                                                                                     2
+                                                                                                                                 1                                                                                     1
+                      40
+                      30                                                                                                                     Inference            Quantization Dequantization                                   Visual Token Language Token
+
+                           [0,1)      [0,2)   [0,3)    [0,4) [0,5) [0,6)         [0,7)     [0,8)   [0,8]                                                                (a)                                                                 (b)
+                                                         Exponent Range                                            Fig. 20. Exploration of quantization and dequantization overhead (a); Explo-
+                               Fig. 19. Exploration of the exponent distribution.                                  ration of visual token benefit (b).
+                                                                                                                                                                         Accuracy             Computational Savings
+                                                                                                                                                    71.0                                                                                        79
+
+
+
+
+                                                                                                                                                                                                                                                  Computational Savings (%)
+                                                                                                                                                    70.5     Baseline Accuracy                                                                  79
+we repeat the analysis on another VLM, Qwen2.5-VL. Fig. 19
+                                                                                                                                     Accuracy (%)
+                                                                                                                                                    70.0                                                                                        78
+presents the cumulative distribution of exponents, showing that
+                                                                                                                                                    69.5                                                                                        78
+the values consistently concentrate within [0, 8]. More than                                                                                        69.0                                                                                        77
+99.7% of exponents fall within [0, 7], while only 1.2% lie in                                                                                       68.5                                                                                        77
+the range of [7, 8]. Importantly, even in high-motion scenes,                                                                                       68.0                                                                                        76
+the exponent range does not expand beyond this bound. Fur-                                                                                                      12        14        16       18       20                   22       24
+                                                                                                                                                                                         Interval (F)
+thermore, profiling Qwen2.5-VL under different normalization                                                                                                    Fig. 21. Exploration of the interval F .
+schemes yields the same exponent range of [0, 8], suggesting
+that this property is model-independent. To ensure robustness,                                                     demonstrating that optimizing visual token computation is
+we implement a fallback mechanism: tokens with exponents                                                           critical for improving VLM inference performance.
+outside this range are treated as outliers, bypass similarity                                                         Exploration of Interval Parameter F . The goal of the
+detection, and are directly processed using higher precision.                                                      AQuant algorithm is to strike a balance between optimizing
+   Exploration of Quantization and Dequantization Over-                                                            system efficiency and maintaining high-quality outcomes by
+head. To analyze the overhead introduced by online quantiza-                                                       assigning a suitable number of tokens as candidate base
+tion and dequantization required by AQuant, we evaluate their                                                      tokens, where the interval F matters. Generally speaking, a
+average latency across all benchmarks as shown in Fig. 20(a).                                                      larger F means fewer tokens serving as the candidate base
+Quantization and dequantization both account for 5.1% of the                                                       tokens, leading to higher speedup but lower accuracy. To
+inference latency, while KV-cache dequantization during de-                                                        explore the impact of F , we vary F from 12 to 24 and see
+coding averagely accounts for only 2.3%. Moreover, inference                                                       the accuracy and computational savings of the VideoLLaVA
+and quantization/dequantization are executed on independent                                                        model on the MSVD dataset. As in Fig. 21, increasing F
+hardware units (the NPU and the quantization module in                                                             from 12 to 18 reduces the number of base tokens, leading to
+the CODEC). Therefore, their execution can be overlapped,                                                          more deltas waiting to be quantized, which increases speedup.
+effectively hiding the quantization and dequantization latency.                                                    But when we keep increasing F to 24, the accuracy drops
+As a result, these operations do not become a performance                                                          severely. Therefore, we set F = 18 to balance performance
+bottleneck.                                                                                                        and accuracy. Since F determines the number of base tokens,
+   Exploration of Visual Token Benefit. Since AQuant                                                               F = 18 corresponds to 7.4% INT8 base tokens.
+primarily targets visual token computation, we analyze the                                                            Analysis of F Robustness. To evaluate the sensitivity of
+average execution time breakdown of VLM inference across                                                           F , we apply a fixed configuration F = 18 to previously clas-
+all benchmarks in Fig. 20(b), separating visual token and                                                          sified inputs, including both slow- and fast-motion scenes. As
+language token execution time. The results show that visual                                                        illustrated in Fig. 22(a), AQuant incurs only 0.83% accuracy
+token computation averagely accounts for 95.8% of total la-                                                        loss even for fast-motion videos. We further explore adaptive
+tency, dominating the execution time. By reducing this portion                                                     tuning of F by setting F = F − 4 for fast-motion inputs and
+by 85.7%, AQuant delivers substantial end-to-end speedup,                                                          F = F + 4 for slow-motion inputs. As shown in Fig. 22(b),
+
+
+
+
+                                                                                                            1428
+                                                       (a)                                                                                                                           (b)
+
+                         Accuracy-Fast       Accuracy-Slow     Latency-Fast   Latency-Slow                                                           Accuracy-Fast   Accuracy-Slow     Latency-Fast   Latency-Slow
+               100                Baseline             AQuant-Pruning             AQuant                                                  100
+                                                                                             3200                                                                                                                    3200
+
+
+
+
+                                                                                                                                                                                                                            Execution Latency (ms)
+                                                                                                    Execution Latency (ms)
+                   90
+
+
+
+
+                                                                                                                               Accuracy (%)
+Accuracy (%)
+
+
+
+
+                 8080                                                                                                                         80
+                   70                                                                        1600                                                                                                                    1600
+          Accuracy (%)
+
+
+
+
+                 6060                                                                                                                         60
+                   50
+                                                                                             800                                                                                                                     800
+                 4040                                                                                                                         40
+                   30
+                 2020                                                                        400                                              20                                                                     400
+                   10
+                    0
+
+
+
+
+                                                       (a)                                                                                                                     (b)
+                                                             Fig. 22. FPS and accuracy results on slow-motion and fast-motion videos.
+
+
+                                    Baseline-Accuracy                  AQuant-Accuracy                                                           Attracted by the benefits of mixed-precision quantization
+                 78.0                                                                                                                         for both accuracy and performance, numerous accelerators
+                 77.0
+                 76.0                                                                                                                         have been proposed. BitFusion [35] and DRQ [38] enable
+  Accuracy (%)
+
+
+
+
+                 75.0                                                                                                                         support for different bit-width through a combination of low-
+                 74.0
+                 73.0
+                                                                                                                                              precision PEs at the bit-level and value-level, respectively.
+                 72.0                                                                                                                         ANT [12] takes a more aggressive approach, necessitating
+                 71.0                                                                                                                         substantial architectural modifications. On the other hand,
+                 70.0
+                                                                                                                                              OliVe [11] is an outlier-aware quantization accelerator design,
+                                                                                                                                              which incorporates value pruning to address outliers. Despite
+                                                                                                                                              their considerable success, existing quantization accelerators
+                                                    L1-distance Bucket
+                                                                                                                                              have been constrained to designs within the NPU and have yet
+                           Fig. 23. Exploration of the input characteristics.
+                                                                                                                                              to consider opportunities that may arise from integrating other
+                                                                                                                                              hardware components of SoC devices, making them struggle
+although this adaptive strategy reduces latency for slow-motion                                                                               for peak performance in VLMs. In contrast, our proposed
+inputs, it yields only a marginal accuracy improvement of                                                                                     method, AQuant, leverages data similarities with the assistance
+0.02% compared to the fixed-F configuration. Therefore, we                                                                                    of the video CODEC to quantize VLMs effectively.
+tune F on a single representative benchmark (VideoLLaVA-
+MSVD) and reuse it across all benchmarks without per-video                                                                                    B. Input-Importance-Aware Accelerator
+tuning.                                                                                                                                          To achieve high execution performance, researchers have
+   Effectiveness of AQuant on input characteristics. To                                                                                       explored input-importance-aware acceleration methods. Deep-
+evaluate AQuant under different input characteristics, we study                                                                               Reuse [29] and MERCURY [17] exploit input vector similar-
+the correlation between token similarity and accuracy. We use                                                                                 ities to reuse previously computed results, enhancing convo-
+the inter-frame L1 distance as the similarity metric, bucket                                                                                  lutional neural network (CNN) performance. DeepReuse uses
+test samples accordingly, and measure the accuracy for each                                                                                   Locality Sensitive Hashing (LSH) to assess similarity, while
+bucket. We set p = 25% and F = 18 in the experiment. Fig. 23                                                                                  MERCURY employs Random Projection with Quantization
+shows that even when the L1 distance falls within [350, 400),                                                                                 (RPQ) to estimate the similarity of high-dimensional data.
+AQuant incurs only 0.92% accuracy loss, indicating that                                                                                       Euphrates [52], an algorithm-hardware co-design solution,
+AQuant remains effective even under highly dynamic scenes.                                                                                    accelerates video object detection and tracking by leveraging
+                                                                                                                                              motion vectors from the image signal processor (ISP) to
+                                         VI. R ELATED W ORK
+                                                                                                                                              reconstruct bounding boxes of non-key frames, skipping the
+   This section shows related works on quantization acceler-                                                                                  complete CNN processing for those frames. However, these
+ators and input similarity-aware accelerators, which are the                                                                                  methods are primarily limited to CNN models. In contrast,
+focus of our work.                                                                                                                            AQuant offers a more generalized approach that can be applied
+                                                                                                                                              to a wide range of models as long as they process vision
+A. Quantization Accelerator
+                                                                                                                                              (image/video) data.
+   In pursuit of ultra-high execution performance with accu-
+racy trade-offs, researchers have focused on low-bit quantiza-                                                                                                        VII. C ONCLUSION
+tion. Quantization methods can be broadly classified into fixed-                                                                                 This paper introduces AQuant, an algorithm-architecture co-
+length and mixed-precision. Fixed-length quantization requires                                                                                design framework poised to facilitate efficient VLM inference.
+minimal architectural changes, substituting high-precision PEs                                                                                The key idea of AQuant is to intelligently utilize the video
+with low-precision ones. Extremely low-bit quantization, like                                                                                 CODEC for effectively quantizing deltas with low costs. Ex-
+binary quantization [1], is implemented using simple XNOR                                                                                     tensive experiments show that AQuant can deliver satisfactory
+operations [6], but may suffer from accuracy loss.                                                                                            performance gain with trivial accuracy loss.
+
+
+
+
+                                                                                                                             1429
+                              R EFERENCES                                            [18] Y. Jang, Y. Song, Y. Yu, Y. Kim, and G. Kim, “Tgif-qa: Toward spatio-
+                                                                                          temporal reasoning in visual question answering,” in Proceedings of the
+                                                                                          IEEE conference on computer vision and pattern recognition, 2017, pp.
+ [1] H. Bai, W. Zhang, L. Hou, L. Shang, J. Jin, X. Jiang, Q. Liu, M. Lyu,
+                                                                                          2758–2766.
+     and I. King, “Binarybert: Pushing the limit of bert quantization,” arXiv
+     preprint arXiv:2012.15701, 2020.                                                [19] W. Kim, C. Choi, W. Lee, and W. Rhee, “An image grid can be worth a
+                                                                                          video: Zero-shot video question answering using a vlm,” IEEE Access,
+ [2] S. Bai, K. Chen, X. Liu, J. Wang, W. Ge, S. Song, K. Dang, P. Wang,
+                                                                                          2024.
+     S. Wang, J. Tang, H. Zhong, Y. Zhu, M. Yang, Z. Li, J. Wan, P. Wang,
+     W. Ding, Z. Fu, Y. Xu, J. Ye, X. Zhang, T. Xie, Z. Cheng, H. Zhang,             [20] Y. Kim, W. Yang, and O. Mutlu, “Ramulator: A fast and extensible
+     Z. Yang, H. Xu, and J. Lin, “Qwen2.5-vl technical report,” 2025.                     dram simulator,” IEEE Computer architecture letters, vol. 15, no. 1, pp.
+     [Online]. Available: https://arxiv.org/abs/2502.13923                                45–49, 2015.
+ [3] R. Balasubramonian, A. B. Kahng, N. Muralimanohar, A. Shafiee,                  [21] J. Lee, W. Lee, and J. Sim, “Tender: Accelerating large language
+     and V. Srinivas, “Cacti 7: New tools for interconnect exploration in                 models via tensor decomposition and runtime requantization,” in 2024
+     innovative off-chip memories,” ACM Transactions on Architecture and                  ACM/IEEE 51st Annual International Symposium on Computer Archi-
+     Code Optimization (TACO), vol. 14, no. 2, pp. 1–25, 2017.                            tecture (ISCA). IEEE, 2024, pp. 1048–1062.
+ [4] D. Chen and W. B. Dolan, “Collecting highly parallel data for paraphrase        [22] B. Li, Y. Zhang, D. Guo, R. Zhang, F. Li, H. Zhang, K. Zhang, P. Zhang,
+     evaluation,” in Proceedings of the 49th annual meeting of the association            Y. Li, Z. Liu et al., “Llava-onevision: Easy visual task transfer,” arXiv
+     for computational linguistics: human language technologies, 2011, pp.                preprint arXiv:2408.03326, 2024.
+     190–200.                                                                        [23] S. Li, Z. Yang, D. Reddy, A. Srivastava, and B. Jacob, “Dramsim3:
+ [5] X. Chen, X. Wang, L. Beyer, A. Kolesnikov, J. Wu, P. Voigtlaender,                   A cycle-accurate, thermal-capable dram simulator,” IEEE Computer
+     B. Mustafa, S. Goodman, I. Alabdulmohsin, P. Padlewski et al., “Pali-                Architecture Letters, vol. 19, no. 2, pp. 106–109, 2020.
+     3 vision language models: Smaller, faster, stronger,” arXiv preprint            [24] Y. Li, Y. Du, K. Zhou, J. Wang, W. X. Zhao, and J.-R. Wen, “Evaluating
+     arXiv:2310.09199, 2023.                                                              object hallucination in large vision-language models,” arXiv preprint
+ [6] F. Conti, P. D. Schiavone, and L. Benini, “Xnor neural engine: A                     arXiv:2305.10355, 2023.
+     hardware accelerator ip for 21.6-fj/op binary neural network inference,”        [25] B. Lin, Y. Ye, B. Zhu, J. Cui, M. Ning, P. Jin, and L. Yuan, “Video-llava:
+     IEEE Transactions on Computer-Aided Design of Integrated Circuits                    Learning united visual representation by alignment before projection,”
+     and Systems, vol. 37, no. 11, pp. 2940–2951, 2018.                                   in Proceedings of the 2024 Conference on Empirical Methods in Natural
+ [7] L.-F. Ding, W.-Y. Chen, P.-K. Tsung, T.-D. Chuang, P.-H. Hsiao, Y.-                  Language Processing, 2024, pp. 5971–5984.
+     H. Chen, H.-K. Chiu, S.-Y. Chien, and L.-G. Chen, “A 212 mpixels/s              [26] H. Liu, C. Li, Q. Wu, and Y. J. Lee, “Visual instruction tuning,”
+     4096×2160p multiview video encoder chip for 3d/quad full hdtv appli-                 Advances in neural information processing systems, vol. 36, pp. 34 892–
+     cations,” IEEE Journal of solid-state circuits, vol. 45, no. 1, pp. 46–58,           34 916, 2023.
+     2009.                                                                           [27] Y. Liu, H. Duan, Y. Zhang, B. Li, S. Zhang, W. Zhao, Y. Yuan, J. Wang,
+ [8] Y. Fan and et al., “H.265/hevc encoder ip core v2.0,” [Online]. Available:           C. He, Z. Liu et al., “Mmbench: Is your multi-modal model an all-around
+     http://openasic.org/topic/71/h265-video-encoder-rtl-ip-core-version-2-0.             player?” in European conference on computer vision. Springer, 2024,
+ [9] C. Fu, Y. Dai, Y. Luo, L. Li, S. Ren, R. Zhang, Z. Wang, C. Zhou,                    pp. 216–233.
+     Y. Shen, M. Zhang et al., “Video-mme: The first-ever comprehensive              [28] P. Lu, S. Mishra, T. Xia, L. Qiu, K.-W. Chang, S.-C. Zhu, O. Tafjord,
+     evaluation benchmark of multi-modal llms in video analysis,” in Pro-                 P. Clark, and A. Kalyan, “Learn to explain: Multimodal reasoning via
+     ceedings of the IEEE/CVF conference on computer vision and pattern                   thought chains for science question answering,” Advances in Neural
+     recognition, 2025, pp. 24 108–24 118.                                                Information Processing Systems, vol. 35, pp. 2507–2521, 2022.
+[10] Y. Goyal, T. Khot, D. Summers-Stay, D. Batra, and D. Parikh, “Making            [29] L. Ning and X. Shen, “Deep reuse: Streamline cnn inference on the
+     the v in vqa matter: Elevating the role of image understanding in                    fly via coarse-grained computation reuse,” in Proceedings of the ACM
+     visual question answering,” in Proceedings of the IEEE conference on                 International Conference on Supercomputing, 2019, pp. 438–448.
+     computer vision and pattern recognition, 2017, pp. 6904–6913.                   [30] NVIDIA, “Nvidia xavier system-on-chip,” in HotChips 30, 2018.
+[11] C. Guo, J. Tang, W. Hu, J. Leng, C. Zhang, F. Yang, Y. Liu, M. Guo,             [31] A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan,
+     and Y. Zhu, “Olive: Accelerating large language models via hardware-                 T. Killeen, Z. Lin, N. Gimelshein, L. Antiga et al., “Pytorch: An
+     friendly outlier-victim pair quantization,” in Proceedings of the 50th               imperative style, high-performance deep learning library,” Advances in
+     Annual International Symposium on Computer Architecture, 2023, pp.                   neural information processing systems, vol. 32, 2019.
+     1–15.                                                                           [32] A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal,
+[12] C. Guo, C. Zhang, J. Leng, Z. Liu, F. Yang, Y. Liu, M. Guo, and                      G. Sastry, A. Askell, P. Mishkin, J. Clark et al., “Learning transferable
+     Y. Zhu, “Ant: Exploiting adaptive numerical data type for low-bit deep               visual models from natural language supervision,” in International
+     neural network quantization,” in 2022 55th IEEE/ACM International                    conference on machine learning. PmLR, 2021, pp. 8748–8763.
+     Symposium on Microarchitecture (MICRO). IEEE, 2022, pp. 1414–                   [33] M. Rathor, “Aloha-fp2i: Efficient algorithms and hardware for multi-
+     1433.                                                                                mode rounding of floating point to integer,” ACM Transactions on
+[13] D. Gurari, Q. Li, A. J. Stangl, A. Guo, C. Lin, K. Grauman, J. Luo,                  Embedded Computing Systems, vol. 24, no. 1, pp. 1–26, 2024.
+     and J. P. Bigham, “Vizwiz grand challenge: Answering visual questions           [34] A. Samajdar, Y. Zhu, P. Whatmough, M. Mattina, and T. Kr-
+     from blind people,” in Proceedings of the IEEE conference on computer                ishna, “Scale-sim: Systolic cnn accelerator simulator,” arXiv preprint
+     vision and pattern recognition, 2018, pp. 3608–3617.                                 arXiv:1811.02883, 2018.
+[14] I. Hartsock and G. Rasool, “Vision-language models for medical report           [35] H. Sharma, J. Park, N. Suda, L. Lai, B. Chau, J. K. Kim, V. Chandra,
+     generation and visual question answering: A review,” Frontiers in                    and H. Esmaeilzadeh, “Bit fusion: Bit-level dynamically composable
+     artificial intelligence, vol. 7, p. 1430984, 2024.                                   architecture for accelerating deep neural network,” in 2018 ACM/IEEE
+[15] W. Hu, H. Zhang, C. Guo, Y. Feng, R. Guan, Z. Hua, Z. Liu, Y. Guan,                  45th Annual International Symposium on Computer Architecture (ISCA).
+     M. Guo, and J. Leng, “M-ant: Efficient low-bit group quantization                    IEEE, 2018, pp. 764–775.
+     for llms via mathematically adaptive numerical type,” in 2025 IEEE              [36] C. Sima, K. Renz, K. Chitta, L. Chen, H. Zhang, C. Xie, J. Beißwenger,
+     International Symposium on High Performance Computer Architecture                    P. Luo, A. Geiger, and H. Li, “Drivelm: Driving with graph visual ques-
+     (HPCA). IEEE, 2025, pp. 1112–1126.                                                   tion answering,” in European conference on computer vision. Springer,
+[16] D. A. Hudson and C. D. Manning, “Gqa: A new dataset for real-world                   2024, pp. 256–274.
+     visual reasoning and compositional question answering,” in Proceedings          [37] A. Singh, V. Natarajan, M. Shah, Y. Jiang, X. Chen, D. Batra, D. Parikh,
+     of the IEEE/CVF conference on computer vision and pattern recognition,               and M. Rohrbach, “Towards vqa models that can read,” in Proceedings
+     2019, pp. 6700–6709.                                                                 of the IEEE/CVF conference on computer vision and pattern recognition,
+[17] V. Janfaza, K. Weston, M. Razavi, S. Mandal, F. Mahmud, A. Hilty,                    2019, pp. 8317–8326.
+     and A. Muzahid, “Mercury: Accelerating dnn training by exploiting               [38] Z. Song, B. Fu, F. Wu, Z. Jiang, L. Jiang, N. Jing, and X. Liang,
+     input similarity,” in 2023 IEEE International Symposium on High-                     “Drq: dynamic region-based quantization for deep neural network ac-
+     Performance Computer Architecture (HPCA). IEEE, 2023, pp. 638–                       celeration,” in 2020 ACM/IEEE 47th Annual International Symposium
+     650.                                                                                 on Computer Architecture (ISCA). IEEE, 2020, pp. 1010–1021.
+
+
+
+
+                                                                                  1430
+[39] Z. Song, C. Qi, F. Liu, N. Jing, and X. Liang, “Cmc: Video transformer
+     acceleration via codec assisted matrix condensing,” in Proceedings of
+     the 29th ACM International Conference on Architectural Support for
+     Programming Languages and Operating Systems, Volume 2, 2024, pp.
+     201–215.
+[40] H. Touvron, T. Lavril, G. Izacard, X. Martinet, M.-A. Lachaux,
+     T. Lacroix, B. Rozière, N. Goyal, E. Hambro, F. Azhar et al.,
+     “Llama: Open and efficient foundation language models,” arXiv preprint
+     arXiv:2302.13971, 2023.
+[41] H. Wang, Z. Zhang, and S. Han, “Spatten: Efficient sparse attention
+     architecture with cascade token and head pruning,” in 2021 IEEE
+     International Symposium on High-Performance Computer Architecture
+     (HPCA). IEEE, 2021, pp. 97–110.
+[42] R. Xiao, S. Kim, M.-I. Georgescu, Z. Akata, and S. Alaniz, “Flair: Vlm
+     with fine-grained language-informed image representations,” in Proceed-
+     ings of the Computer Vision and Pattern Recognition Conference, 2025,
+     pp. 24 884–24 894.
+[43] C. Xu, Y. Wu, X. Yang, B. Chen, M. Lentz, D. Zhuo, and L. W. Wills,
+     “Llm. 265: Video codecs are secretly tensor codecs,” in Proceedings of
+     the 58th IEEE/ACM International Symposium on Microarchitecture®,
+     2025, pp. 445–460.
+[44] J. Xu, T. Mei, T. Yao, and Y. Rui, “Msr-vtt: A large video description
+     dataset for bridging video and language,” in Proceedings of the IEEE
+     conference on computer vision and pattern recognition, 2016, pp. 5288–
+     5296.
+[45] L. Xu, Y. Zhao, D. Zhou, Z. Lin, S. K. Ng, and J. Feng, “Pllava:
+     Parameter-free llava extension from images to videos for video dense
+     captioning,” arXiv preprint arXiv:2404.16994, 2024.
+[46] X. Yang, Y. Wu, M. Yang, H. Chen, and X. Geng, “Exploring diverse
+     in-context configurations for image captioning,” Advances in Neural
+     Information Processing Systems, vol. 36, pp. 40 924–40 943, 2023.
+[47] W. Yu, Z. Yang, L. Li, J. Wang, K. Lin, Z. Liu, X. Wang, and
+     L. Wang, “Mm-vet: Evaluating large multimodal models for integrated
+     capabilities,” arXiv preprint arXiv:2308.02490, 2023.
+[48] Z. Yu, D. Xu, J. Yu, T. Yu, Z. Zhao, Y. Zhuang, and D. Tao, “Activitynet-
+     qa: A dataset for understanding complex web videos via question
+     answering,” in Proceedings of the AAAI Conference on Artificial In-
+     telligence, vol. 33, no. 01, 2019, pp. 9127–9134.
+[49] Q. Zhang, A. Cheng, M. Lu, R. Zhang, Z. Zhuo, J. Cao, S. Guo, Q. She,
+     and S. Zhang, “Beyond text-visual attention: Exploiting visual cues
+     for effective token pruning in vlms,” in Proceedings of the IEEE/CVF
+     International Conference on Computer Vision, 2025, pp. 20 857–20 867.
+[50] H. Zhao, W. Cui, Q. Chen, J. Zhao, J. Leng, and M. Guo, “Exploiting
+     intra-sm parallelism in gpus via persistent and elastic blocks,” in 2021
+     IEEE 39th International Conference on Computer Design (ICCD).
+     IEEE, 2021, pp. 290–298.
+[51] D. Zhou, S. Wang, H. Sun, J. Zhou, J. Zhu, Y. Zhao, J. Zhou, S. Zhang,
+     S. Kimura, T. Yoshimura et al., “An 8k h. 265/hevc video decoder
+     chip with a new system pipeline design,” IEEE Journal of Solid-State
+     Circuits, vol. 52, no. 1, pp. 113–126, 2016.
+[52] Y. Zhu, A. Samajdar, M. Mattina, and P. Whatmough, “Euphrates:
+     Algorithm-soc co-design for low-power mobile continuous vision,”
+     arXiv preprint arXiv:1803.11232, 2018.
+
+
+
+
+                                                                                 1431
+

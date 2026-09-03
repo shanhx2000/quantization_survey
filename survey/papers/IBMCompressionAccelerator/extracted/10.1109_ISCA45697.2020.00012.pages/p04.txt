@@ -1,0 +1,70 @@
+same cycle. However, CAMs are area and power hungry and                                                0             0                       1
+                                                                                    CONTINUE REGS          0             0                       0
+have timing challenges at our target 2–2.5 GHz frequency.                                                            1                                COUNT
+                                                                                    HISTORY FIFO
+A pseudo-CAM on the other hand, is SRAM based: multiple                                N I _ E R E H           N E H T       S I _ E N A J
+banks of SRAM arrays function as a hash table for storing                       T                                                                    T      LZ0
+search items. A pseudo-CAM is area efﬁcient because we                          H                                                                    H
+                                                                                E                                                                    E      LZ1
+estimated that SRAMs store about 14 to 16 times as many                         R                                                                    RPRIORITY
+                                                                                E                                                                    EENCODER
+bits per unit area than latches in the 14nm CMOS process.                       _                                                                    _      LZ2
+But pseudo-CAM are imprecise and lossy: a limited number                        I                                                                    I      LZ3
+                                                                                S                          0             0                       1   S
+of SRAM locations may contain a search item. SRAM port                                                 0             0                       1
+count, hash and bank collisions gate throughput and accuracy.
+                                                                              Fig. 6. Near history CAM and the 4-way parallel LZ encoder illustrating 6,
+   We recognized that increasing the sliding window size has                  3, and 4-byte matches. The 3-byte match is a continuation from the previous
+a diminishing return on the compression ratio as shown in                     cycle. The 4-byte match may continue into the next cycle.
+Fig.5. Highest compression ratio change occurs in the near-
+history (near the origin in Fig.5) and levels off in the far-                    The COU N T register accumulates the length of the longest
+history. Reasons are two-fold: duplicate strings are often found              match continuing from one cycle to the next. When a string
+close to each other and Deﬂate uses extra bits for encoding                   match terminates, the Priority Encoder calculates the LZ
+far pointers [7].                                                             distance using the column offset and the LZ string length using
+   Insights in Fig.5 led to the novel ”hybrid” compressor in                  the row offset plus COU N T .
+Fig.4 combining an area hungry true CAM for the near-                            The Priority Encoder (Fig.6) outputs up to 4 LZ symbols
+history (≤ 512 bytes) with an area efﬁcient pseudo-CAM for                    per cycle which was sized to sustain 8-byte per cycle input
+the far-history (513-32KB). The design budgets the silicon                    data rate on lightly compressible data with a mix of short LZ
+area between two different style of CAM according to the                      references and LZ literals, e.g. English text.
+compression ratio beneﬁt derived from the two ranges. Area                       Figure 6 contains a mock example in which the 8 byte
+and timing constraints didn’t permit building a larger than 512               input data matches 3 different strings with match sizes of 6,
+byte near-history CAM.                                                        3, and 4 bytes. The 3-match is adjacent to the previous cycle’s
+                                                                              boundary. Since C = 1, the 3-match is continuation of a string
+B. The Near-History CAM                                                       match from the previous cycle. Since the 4-match is adjacent
+                                                                              to the next cycle, its encoding may be deferred by setting
+   The CAM was implemented with random logic based on a                       C ← 1 and COU N T ← 4.
+design used in an IBM storage controller [16]–[18], shown in                     A CAM may produce hundreds of matches but not all
+Fig.6. Note that this CAM is specialized for data compression                 will be encoded since some overlap each other as shown
+reporting partial matches of a search key at any byte alignment               in Fig.6. The Priority Encoder chooses a subset of matches
+unlike the traditional CAMs such as those used in network                     producing the smallest possible output, yielding the highest
+switches [19]. Input is latched to the M = 8 byte column                      compression ratio. Matches are prioritized according to their
+of latches on the left edge. Previous cycle’s input bytes shift               length and taking the COU N T register and C register values
+into the row of N = 512 byte history latches at the top, in                   into account.
+FIFO order. M × N byte comparators compare the input to
+the history and their match status are reported to the Priority               C. The Far-History CAM
+Encoder on the right edge (fan-in of thousands of wires are                      The Far-history pseudo-CAM is constructed with SRAMs.
+omitted in Fig.6). A column of adjacent matches indicates a                   In essence it is an 8-way set-associative cache with 8 R/W
+match between the input and the stored bytes (illustrated by                  ports as detailed in this section. Area efﬁciency is the primary
+the circles). Each comparator receives a match count from                     concern in this design. The 32KB sliding window is stored
+the comparator above it in the same column. It increments                     in 1-port SRAMs called the ”History-FIFO” in Fig.7, written
+by the count by 1 and passes down to the comparator below.                    sequentially from the input stream in FIFO order. Virtual 2-
+Therefore, each comparator knows how many bytes matched                       read ports are implemented with multiple banks of SRAM.
+above it (0 to 7 bytes) and the maximum match length is                       The problem solved here is ﬁnding the longest match (3 to
+known in each column and row offset.                                          258 bytes) of the input data in the History FIFO at a rate of
+   A string match longer than 8 bytes spanning multiple cycles                8-byte/cycle.
+is tracked by the the 1-bit ”continue” register C at the top,                    Long strings are matched through their substrings, called
+with one register allocated per column. C = 1 indicates that                  ”tokens” (tokens have a ﬁxed size for ease of hardware imple-
+there was a match in the same column in the previous cycle.                   mentation). The 8-byte input is decomposed into overlapping
+Therefore, a long match spanning the two cycles is present and                K-byte search tokens (K = 5 is the ﬁrmware default.) A token
+the logic has deferred its encoding to this cycle. Likewise, in               can span two cycles of input. Each token is hashed to an 11-bit
+the current cycle the logic sets C ← 1 when a match ends                      index of the 2048-entry hash table (Fig.7). A hash table entry
+at the bottom row. It indicates that the match may potentially                contains 8 addresses which are the candidate History-FIFO
+continue in the next cycle.                                                   locations of the search token. Items in the hash table entry are
+
+
+
+
+                                                                          4
+
+      Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:05:40 UTC from IEEE Xplore. Restrictions apply.
+

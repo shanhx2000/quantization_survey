@@ -1,0 +1,69 @@
+                 II. M OKEY Q UANTIZATION                                             1600
+
+   It has been repeatedly shown that the values flowing through                       1400
+state-of-the-art attention-based NLP models form bell-shaped                          1200
+distributions per layer [9], [38], [39].                                              1000
+
+
+
+
+                                                                          Frequency
+   Mokey’s quantization exploits these naturally occurring dis-                       800
+tributions that all weights and most activations exhibit. In                          600
+contrast to past quantization methods that quantize each tensor
+                                                                                      400
+separately, Mokey uses a “Golden Dictionary” approach which
+proceeds as follows:                                                                  200
+
+Step 1: Golden Dictionary Generation: Mokey first generates                             0
+                                                                                             4   2         0        2        4
+and quantizes randomly generated, bell-shaped distributions                                           Value range
+with a mean of zero and a standard deviation of one. This               Fig. 2: Generating Golden Dictionary from a Random Gaus-
+step is performed once and is independent of the model under            sian Distribution Using Agglomerative Clustering.
+consideration. The resulting dictionary of centroids becomes
+Mokey’s “Golden Dictionary”. In this work, this dictionary
+contains 16b fixed-point values.                                        computation directly on indexes and does not need to convert
+Step 2: Per Tensor (Activation and Weights) Dictionary                  input activations into their 16b centroids.
+Generation: Mokey performs a profiling run of the model                    The rest of this section explains the dictionary generation
+collecting samples of the activation tensors. It uses the activa-       process and the exponential function approximation used to
+tion tensor samples and the statically known weight tensors to          replace the original floating-point multiply-accumulate oper-
+scale and shift the Golden Dictionary to best fit each tensor.          ations with narrow fixed-point operations comprising mostly
+These linear transformations utilize the target tensor’s mean           additions of dictionary indexes.
+and standard deviation. Mokey produces two dictionary sets per
+layer, one per input tensor — depending on the layer the input          B. Generating the Golden Dictionary (GD)
+is a (weight, activation) or an (activation, activation) tensor            The core of Mokey’s dictionary generation method is Ag-
+pair. Per tensor, Mokey splits the value range into two subsets:        glomerative Clustering (AC), a bottom-up approach which
+1) the Gaussian subset (G) contains the majority of values              initially considers each value as a separate cluster and that
+(more than 98% for weights and 95% for activations) which               proceeds to iteratively merge the closest clusters to reduce
+covers values near the mean. 2) The Outliers (OT) which are             overall cluster count to a desired target value. In contrast
+the rest of the values that are scattered in a much wider range.        to K-means, the method of choice in several prior works,
+Mokey’s profiling-based approach for activation works well;             Agglomerative Clustering is not affected by the initial cluster
+while individual activation values vary with the input, their           selection and results in higher accuracy in the quantized model.
+overall distribution per layer remains relatively unaffected. To        However, applying AC even when done offline given that
+validate this approach profiling runs use a single randomly             weight or activation tensors can contain nearly a million
+selected batch containing 8 input samples (however, runs with           values is impractical since AC requires O(n2 ) memory and
+even fewer input samples proved enough). Efficacy measure-              O(n3 ) runtime. Mokey overcomes this challenge by exploit-
+ment runs use a non-overlapping set of input samples from               ing the morphological similarity of the value distributions
+the validation set of each target task. While prior quantization        across tensors to apply AC using a “Golden Dictionary”
+methods use an iterative per tensor approach [9], [31], [40],           which it then scales to best fit each individual tensor. In
+Mokey’s quantization method, does so only during the Golden             essence, this approach applies AC run on a representative
+Dictionary generation. Per tensor dictionary generation is non-         distribution to estimate AC’s clustering for the per tensor
+iterative, resulting in a much faster overall process.                  distributions. The process is simple: first, generate a random
+Step 3: Pre-Encoding of Weights: Mokey then encodes all                 Gaussian distribution with 50,000 samples with a mean of
+weight tensors as indexes to their dictionaries (done offline).         zero (m = 0) and a standard deviation of one (s = 1).
+   At this point, the model is ready for inference.                     Then apply AC method on this distribution to produce the
+                                                                        quantization dictionary. To create the Golden Dictionary, we
+A. Inference: Runtime Encoding/Decoding of Activations                  repeat this process and compute an average over quantization
+   During runtime Mokey produces 16b fixed-point output                 dictionaries. Figure 2 shows the histogram for an example
+activations. These are converted to short indexes to the re-            generated distribution and the resulting Golden Dictionary. In
+spective dictionaries prior to storing to memory. Since the             this work, Golden Dictionary is generated once and is reused
+dictionaries have few entries, this is a lightweight process that       across all models studied.
+requires only a few runtime comparisons. Recall that in the
+original model, each output activation typically entails several        C. Generating Per Tensor Dictionaries
+hundreds of multiply-accumulate operations. As Section II-D                Mokey fits the Golden Dictionary (GD) to each tensor by
+will explain, the Mokey accelerator performs most of the                first determining the mean (m) and the standard deviation (s)
+
+
+
+                                                                    3
+

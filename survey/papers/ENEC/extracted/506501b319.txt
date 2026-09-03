@@ -1,0 +1,2057 @@
+                      2026 ACM/IEEE 53rd Annual International Symposium on Computer Architecture (ISCA)
+
+
+
+
+    ENEC: A Lossless AI Model Compression Method
+       Enabling Fast Inference on Ascend NPUs
+         Jinwu Yang∗† , Jiaan Wu† , Zedong Liu∗† , Xinyang Ma∗† , Hairui Zhao∗† , Yida Gu∗† , Yuanhong Huang∗† ,
+            Xingchen Liu∗† , Wenjing Huang∗† , Zheng Wei∗ , Jing Xing∗ , Yili Ma∗ , Qingyi Zhang‡ , Baoyi An‡ ,
+              Zhongzhe Hu‡ , Shaoteng Liu‡ , Xia Zhu‡ , Jiaxun Lu‡ , Guangming Tan∗† , and Dingwen Tao∗†
+                           ∗ Institute of Computing Technology, Chinese Academy of Sciences, Beijing, China
+                                         † University of Chinese Academy of Sciences, Beijing, China
+                                        ‡ Huawei Technologies Co., Ltd., Shenzhen, Guangdong, China
+
+
+
+
+      Abstract—The rapid scaling of Large Language Models
+   presents significant challenges for their deployment and infer-
+   ence, particularly on resource-constrained specialized AI hard-
+   ware accelerators such as Huawei’s Ascend NPUs, where weight
+   transfer has become a critical performance bottleneck. While
+                                                                                    4.1×
+   lossless compression can preserve model accuracy and reduce
+   data volume, existing lossless compression algorithms exhibit                           3.3×
+   extremely low throughput when ported to the Ascend NPUs.
+   In this paper, we propose ENEC, a novel lossless compression
+   method specifically customized for AI model weights and
+   optimized for Ascend Neural Processing Units. ENEC adopts
+   a block-based fixed-length encoding scheme and incorporates a           Fig. 1: Time breakdown of Qwen3-32B Inference on NPU 910B2
+   series of optimizations: bit-width quantization with hierarchical       (left) and throughput of ANS across multiple platforms (right).
+   halving bit-packing, vectorized branch-free integer transforma-
+   tion, and dependency-decoupled intra-segment scan. Experi-              platform, equipped with CloudMatrix-Infer [66], demonstrate
+   mental results demonstrate that ENEC outperforms existing               impressive scalability on large-scale AI workloads.
+   state-of-the-art NPU compressors in both compression ratio
+   and throughput. Compared to leading GPU solutions, ENEC                    Despite the hardware advances, the rapid growth in model
+   achieves a 3.43× higher throughput than DietGPU and a 1.12×             size poses severe challenges for deployment and inference
+   better compression ratio than nvCOMP. By reducing weight                efficiency [42], [59], [63], especially in resource-constrained
+   transmission overhead, ENEC significantly improves end-to-end
+   inference performance, achieving up to a 6.3× speedup. On               environments. For instance, the Llama-3.1-405B model [17]
+   Ascend NPUs, ENEC is the first open-source lossless compres-            contains 405 billion parameters and requires approximately
+   sion algorithm for model weights that achieves performance              910 GB of memory for full inference in BFloat16 preci-
+   comparable to state-of-the-art GPU compressors, offering an             sion [12], [15], [17], [29], [50], exceeding the total HBM
+   effective solution for deploying large-scale AI models.                 capacity of even high-end NPU servers equipped with 8 NPU
+      Index Terms—Lossless Compression, Large Language Mod-
+   els, Ascend NPU, Model Weights.                                         910B2s (each with 64 GB HBM). Consequently, deploying
+                                                                           such massive models requires distributing model weights
+                                                                           across CPUs and NPUs. The frequent CPU-NPU data trans-
+                           I. I NTRODUCTION
+                                                                           fers for accessing remote weights during computation have
+      Large Language Models (LLMs) have demonstrated                       thus become a critical performance bottleneck [28], [30],
+   remarkable performance across diverse application do-                   [37]. As Figure 1(a) illustrates, memory access constitutes
+   mains [1], [2], [17], driving significant demand for effi-              the dominant factor in inference latency for the Qwen3-32B
+   cient training and inference. In response, a range of spe-              model, accounting for 78% to 85% of the total execution time
+   cialized AI accelerators has been developed, including the              in both the prefill and decode stages [50]. This severe I/O
+   Cerebras CS2 [8], SambaNova SN30 [49], and the Groq                     bottleneck effectively marginalizes computation, drastically
+   GroqChip [22]. Among these, Huawei’s Ascend Neural Pro-                 underutilizing the hardware. Consequently, this naive deploy-
+   cessing Units (NPUs) stand out due to their high compu-                 ment strategy results in latencies that are 4.1× and 3.3× higher
+   tational throughput, strong energy efficiency, and favorable            than our optimized ENEC approach for the prefill and decode
+   cost–performance characteristics compared to conventional               stages, respectively. Such overhead not only intensifies the
+   GPUs. Notably, systems such as Huawei’s CloudMatrix384                  performance bottleneck but also escalates operational costs
+                                                                           and hinders accessibility, ultimately limiting the practical
+     Dingwen Tao is the corresponding author (taodingwen@ict.ac.cn).       deployment of state-of-the-art (SOTA) LLMs.
+
+
+979-8-3315-5065-3/26/$31.00 ©2026 IEEE                                 1319
+DOI 10.1109/ISCA66397.2026.00100
+   To address the challenges associated with model scaling,                                                               AI CUBE (AIC)
+numerous weight compression techniques have been pro-                                                                                                FixPipe
+
+posed, including quantization [20], [41], [55], pruning [4],                       PCIe                   L1
+                                                                                                                                  L0 A
+                                                                                                  MTE2              MTE1/2                   Cube     L0 C
+                                                                                                         cache
+[19], and low-rank decomposition [51], [58]. These meth-                                                                          L0 B
+                                                                          Global
+ods substantially reduce memory footprint and computa-                                      L2
+                                                                          Memory                  MTE3                                               Scalar
+                                                                                          cache
+                                                                          (HBM)
+tional overhead, enabling faster inference under resource
+                                                                                                                 Vector                     Scalar
+constraints. However, they are inherently lossy and often alter
+                                                                                   PCIe
+the model’s output distribution, potentially compromising ac-                                     MTE2
+                                                                                                                           Unified Buffer
+                                                                                                  MTE3
+curacy and reliability. In contrast, lossless compression tech-
+                                                                                                                          AI Vector (AIV)
+niques—such as entropy coding based on Asymmetric Nu-
+meral Systems (ANS) [18], [40], [47], [52], [56]—preserve                     Fig. 2: DaVinci architecture (decoupled AIC and AIV).
+full model fidelity by ensuring exact reconstruction of the              arithmetic computations to optimize the statistical character-
+original weights. Notable examples include general-purpose               istics of model weights; and an intra-segment dependency
+algorithms like Zstandard (Zstd) [10] and nvCOMP [45],                   decoupled scan for efficient prefix sum. ENEC attains a
+as well as specialized encoders tailored for model weights,              compression throughput ranging from 263 to 523 GB/s and a
+such as ZipNN [24], DFloat11 [62], and Huff-LLM [60], all                decompression throughput of 188 to 336 GB/s, outperforming
+of which have demonstrated strong performance on conven-                 state-of-the-art NPU compressors by up to 2.47× and 2.11×
+tional CPU or GPU platforms.                                             while maintaining high compression ratio. This breakthrough
+   Lossless compression for LLMs is particularly needed                  substantially reduces data transmission overhead, enabling up
+for Ascend NPUs because these accelerators—specifically                  to a 6.3× speedup in end-to-end inference.
+engineered for AI models—are typically highly capable in                    Our contributions are summarized as follows:
+terms of computational resources, such as matrix and tensor                  • We obtain several key observations through in-depth
+cores, while their HBM capacity and NPU–CPU bandwidth                          analyses of various AI model weights, which informed
+remain limited. Thus, effective lossless compression on NPUs                   our basic design and optimizations.
+can help bridge this gap. However, an open-source loss-                      • We design an lossless encoding method for Ascend
+less compressor for model weight compression on NPUs is                        NPUs that overcomes architectural constraints, based
+notably absent. To investigate this opportunity, we ported                     on our comprehensive analysis of lossless compression
+an ANS compressor—an algorithm known for combining                             incompatibility and an extension of the LC framework.
+the speed of Huffman coding [25]–[27], [43], [48], [57]                      • We propose a set of optimizations to achieve both
+with compression efficiency approaching that of arithmetic                     high compression ratio and high throughput on As-
+coding [34]—from conventional CPU and GPU environments                         cend NPUs, including bit-width quantization with
+to the NPU. Unfortunately, our implementation achieved                         hierarchical halving bit-packing, vectorized branch-
+exceptionally poor throughput, as shown in Figure 1(b). This                   free integer transformation, and intra-segment depen-
+performance limitation is particularly critical in inference                   dency–decoupled scan.
+scenarios, where compressed weights must be decompressed                     • Evaluated on Ascend 910B2 with 10 real-world AI
+in real time, making the decompression phase itself a severe                   models, ENEC outperforms SOTA NPU compressors in
+system bottleneck. Moreover, the issue is not unique to ANS;                   compression ratio and throughput. Compared to GPU
+similar throughput degradation was observed when porting                       compressors, ENEC achieves 3.43× higher throughput
+other lossless algorithms such as LZ77 [65]. We conclude that                  than DietGPU and a 1.12× better ratio than nvCOMP,
+existing lossless compressors are fundamentally incompatible                   yielding up to a 6.3× end-to-end inference speedup.
+with Ascend architecture. The SIMD-based vectorized design
+                                                                            To the best of our knowledge, ENEC1 is the first open-
+lacks conditional branching, scatter/gather capabilities, and
+                                                                         source compressor for AI model on Ascend NPUs that
+efficient variable-length memory handling—severely limiting
+                                                                         achieves performance comparable to SOTA GPU compres-
+parallelization and throughput of traditional compression
+                                                                         sors while maintaining the model weight compression ratio.
+algorithms, as further analyzed in Section IV-A.
+   This paper proposes Efficient NPU-Enhanced Compression                                           II. BACKGROUND
+(ENEC), a novel hardware-software co-designed algorithm                  A. Ascend NPUs
+for model weights. Designed to harness the full capabilities               The Ascend NPUs are specialized accelerator chips built
+of Ascend NPUs, ENEC uses a block-based, fixed-length                    on the DaVinci architecture [39] for deep learning workloads.
+approach with NPU-specific optimizations like bit-width                    Compute Architecture and Core Specialization. The
+quantization with hierarchical halving bit-packing that boosts           Ascend NPUs consist primarily of memory units and com-
+compression speed without sacrificing the compression ratio;             puting units. The main computing components are AI Cores.
+a table-based mapping strategy combined with a branch-
+                                                                           1 Our code is available at https://github.com/hpdps-group/ENEC.
+free integer transform, which replaces memory accesses with
+
+
+
+
+                                                                  1320
+One AI core typically integrates one AI Cube (AIC) unit              on typical data types, their performance often degrades
+and two AI Vector (AIV) units. For instance, the Ascend              significantly on model weight data. Recently, several methods
+910B2 NPU incorporates 24 such AI Cores, providing a                 (e.g., ZipNN [24] and its extension [23], DFloat11 [62],
+total of 24 AIC units and 48 AIV units. The AIC is                   Huff-LLM [60]) have identified that the high randomness
+optimized for high-performance matrix operations, offering           of floating-point mantissas interferes with the compressibil-
+exceptional throughput for dense linear algebra, albeit with         ity of exponents, leading to suboptimal results. Moreover,
+limited operational flexibility. In contrast, the AIV supports       DietGPU [31], the ANS-based [18], [40], [47], [52], [56]
+large-scale vectorized operations, including data gathering,         compressor on GPU, has introduced a dedicated float codec
+reduction, and other collective operations.                          specifically designed for model floating-point data. To ad-
+   Memory Hierarchy and Data Path. On the memory                     dress this, they propose separating the exponent and mantissa
+side, the Ascend NPUs feature a high-bandwidth memory                components before compression. While this approach im-
+(HBM) and an L2 cache shared across all AI Cores. For AIV            proves compression ratios, the exponent compression still re-
+operations, input data must first be loaded into a local buffer      lies on variable-length coding, which is poorly suited for effi-
+known as the Unified Buffer (UB), typically on the order of          cient implementation on Ascend NPUs due to irregular mem-
+kilobytes. The AI Cube unit employs multiple levels of on-           ory access and control flow, thereby limiting their practical
+chip buffers such as L1, L0A, L0B, L0C, and FP buffers,              deployment efficiency on Ascend NPUs. Recently, Huawei
+as illustrated in Figure 2. Data movement between different          has developed a compression algorithm named HANS [3];
+memory hierarchies is managed by Memory Transfer Engines             however, its compression ratio and throughput performance
+(MTEs), which not only handle data transfers but can also            still remain limited and it is also closed-source.
+perform in-flight data format and type conversions.
+   Programming Model and Execution Pipeline. Huawei                  C. LC Framework to Search Optimal Compression Algorithm
+introduced AscendC, a C++ programming model for Neural                  To achieve efficient compression on Ascend NPUs,
+Networks (CANN) [14], to enable high-performance operator            lightweight operations are essential. For this purpose, we
+development on Ascend NPUs. AscendC employs a multi-                 have enhanced the emerging and significant open-source data
+pipeline abstraction to enable fine-grained hardware control,        compression tool—the LC framework [7] and utilized it to
+allowing developers to fully exploit hardware’s potential. It        search for lightweight component combinations that deliver
+simplifies programming through key abstractions like tensors         either the optimal compression ratio or the highest through-
+and queues. A tensor encapsulates data that will be operated         put. This framework provides a wide range of common
+on by the AIC/AIV units, while queues handle synchroniza-            compression components and preprocessing methods, among
+tion: after an operation completes, the result is enqueued           which the Reducer is the sole component used for shortening
+(EnQue), and dependent operations dequeue (DeQue) it.                data sequences, employing techniques such as HCLOG, RLE,
+More details can be found in the user documentation [14].            RRE, and RZE to leverage various types of data redundancy.
+                                                                        Among these techniques, HCLOG employs a grouped bit-
+B. Lossless Floating-Point Compressors                               packing strategy: it divides a 16 KB data block into a fixed
+   General-purpose Lossless Floating-point Compressors.              number of 32 sub-chunks, calculates the minimum leading
+Lossless compressors for floating-point data enable com-             zero count in each sub-chunk as metadata, and stores only
+pression without information loss, making it valuable for            the valid bits. However, a single outlier can force the entire
+applications like image [16], time series data [36], [38], and       sub-chunk to adopt a higher bitwidth, thereby reducing the
+scientific data [5], [9], [33]. The core techniques of lossless      compression ratio. To address this issue, we have extended
+compression primarily fall into two categories: one leverages        the LC framework with a series of HCLOG compressors that
+the identification of spatial redundancy patterns, while the         support varying numbers of sub-chunks.
+other exploits the varying frequencies of different symbols.
+The first category is characterized by LZ-based compression                III. DATA A NALYSIS OF AI M ODEL W EIGHTS
+methods (e.g., LZW [53], LZ78 [64], LZ77 [65]) and related              Model weights are typically stored in one of three floating-
+optimizations [61], which operate by sequentially scanning           point formats: FP32, FP16, or BF16. Recently, BF16 has
+the data stream and replacing repeated substrings with shorter       gained popularity for large models due to its wider expo-
+references. The second category is represented by entropy            nent range, which offers training stability [32], [35], [54].
+coding techniques such as Huffman coding [25]–[27], [43],            Although lower-precision integer formats such as INT8 [13]
+[48], [57] and arithmetic coding [34], which assign shorter          and FP8 [44] have been explored for model compression,
+bit representations to more frequently occurring symbols,            they are not the primary focus of this study for several
+thereby reducing the overall bit length.                             reasons. First, INT8 and FP8 offer lower precision than BF16,
+   Dedicated Lossless Floating-point Compressors for                 risking accuracy. Second, INT8 and FP8 formats typically
+AI Model. Despite the high compression efficiency and                require quantization, which constitutes a separate lossy com-
+throughput of general-purpose compressors like Zstd [10]             pression step and offers limited additional compressibility
+
+
+
+
+                                                                  1321
+beyond the quantization itself. Third, while the Ascend
+NPU’s Cube units provide hardware support for INT8, the
+AIV API—the core framework of our implementation—lacks
+the necessary programming interfaces and instruction sets for
+the bit-manipulation and transformation tasks required by
+our method. Moreover, FP8 is entirely unsupported by the
+hardware, further precluding its use. Since models in other
+floating-point formats exhibit similar statistical properties,
+our analyses focus on BF16 as a representative case.                                  Fig. 3: Linear relationship between exponent values and frequency
+                                                                                      rankings in model weights. The red circle indicates outliers.
+TABLE I: LC search results. “Others” represents the set of all
+non-HCLOG algorithmic variants within the LC framework.                               distribution of weight exponent values and observed a distinct
+                                         Models
+                                                                                      negative linear relationship between the exponent values
+ LC-Alg
+          deepseek-llm-7b-base [12]   Qwen3-8b [50]   Llama-3.1-8B-Instruct [17]      and their frequency ranking. As shown in Figure 3, this
+ HCLOG            98.23%                 98.30%                99.36%                 relationship can be effectively fitted by a linear function such
+ Others            1.77%                  1.70%                 0.64%                 as Y = −1.00X + 123.00, where the X-axis represents the
+                                                                                      exponent value and the Y-axis represents the correspond-
+   Observation 1: The exponent is more compressible than                              ing frequency ranking (a lower ranking indicates higher
+the sign and mantissa. BF16 format uses 1 sign bit, 8                                 frequency). This highly regular and predictable distribution
+exponent bits, and 7 mantissa bits. Analysis of DeepSeek                              characteristic serves as a critical foundation for efficient
+weights shows sign and mantissa bits have uniform distri-                             compression of model weights. It is worth noting that a small
+bution, while exponents are highly non-uniform. Entropy                               number of high exponent value points marked by the red
+calculations confirm: sign and mantissa have high entropy                             elliptical region in the figure deviate from the main linear
+(7.97 bits), making compression difficult; exponents show                             trend, representing rare outliers.
+low 2.58-bit entropy with strong compression potential. This
+insight aligns with findings from recent studies such as
+                                                                                                            1                         Lack of support        2
+ZipNN [24] and DFloat11 [62].                                                                                                         for scatter
+   Observation 2: In the LC framework, the HCLOG                                                                                      operations
+variant achieves the highest compression ratio in most
+cases. We use model weight tensors as input. Specifically,
+we partition the large-scale model parameters into multiple
+                                                                                                                                             Non-fixed       3
+smaller files to enable a more granular analysis. For each file,                                                                             length handling
+                                                                                                                                             on Ascend
+we independently invoke the improved LC framework [7]                                                                                        NPUs is more
+                                                                                                                                             time-consuming
+to search for its optimal configuration, thereby identifying a                                                                               than fixed length
+                                                                                                                                             handling
+lightweight compressor that maximizes compression ratios.
+As shown in Table I, results across various model weight                                                         4   AscendC    5 Cuda       Reduction 6
+datasets consistently show the HCLOG variant achieves the                                                                   Threads          Comparison
+                                                                                                AI        AI         Slow             Fast
+                                                                                               CUBE     VECTOR               Sync            ... ...
+highest ratio in most cases.
+   Observation 3: Exponent values are highly constrained,                                 Fig. 4: Execution challenges and constraints on Ascend NPUs.
+concentrated within a narrow continuous range. Our
+further analysis reveals that the actual range of exponent                                 IV. A RCHITECTURE A NALYSIS AND BASIC D ESIGN
+values is highly constrained, with many potential values com-
+                                                                                      A. Architecture Analysis of Lossless Compression Incompat-
+pletely absent from the weights. Comprehensive examination
+                                                                                      ibility on Ascend NPUs
+demonstrates that these exponent values are concentrated
+within a narrow continuous range.                                                        As Figure 4 shows, the fundamental incompatibility be-
+   Observation 4: The bit widths of the data grouped                                  tween Ascend NPUs and lossless compression algorithms
+by the HCLOG grouping method after mapping by                                         stems from architectural mismatches at multiple levels:
+frequency sorting are obviously consistent. By applying                                 1 The current Ascend architecture, based on SIMD, does
+frequency-based mapping and using the grouping method                                      not support flexible element-wise operations such as
+from the HCLOG approach mentioned in Section II-C, we                                      conditional if branching. Furthermore, it has limited
+observe that most grouped data has a bit width ≤ m, while                                  instructions for integer arithmetic, making it particularly
+a small portion has a bit width > m.                                                       unsuitable for entropy coding.
+   Observation 5: A significant linear relationship exists                              2 The lack of instructions for converting between con-
+between the weight exponent values and their frequency                                     tiguous and non-contiguous memory layouts, such as
+rankings. We conduct an in-depth analysis of the frequency                                 scatter, severely degrades decoding performance.
+
+
+
+
+                                                                                   1322
+  3 Handling and transferring variable-length memory op-                  Algorithm 1: Basic Design of ENEC
+     erations is inefficient and time-consuming, severely im-             The right-side markers [B1-B4] represent the primary architectural
+     pacting algorithms like Huffman coding.                              bottlenecks on Ascend NPUs addressed in Section V
+  4 Compression computations are primarily vector-based                     Input : W : Raw Weights (BF16/FP16/FP32), Tf req : Frequency Table
+     element-wise operations and cannot directly utilize                    Output: Stream: Compressed Binary Output
+                                                                      1 Compression (Processing 8,192 elements per block):
+     the Ascend’s Cube unit designed for matrix opera-                  // Component Separation
+     tions. Therefore, we construct a collaborative inference         2 {E, S, M } ← Split(W )
+     pipeline where compression is handled by the AIV and             3 E ′ ← Tf req [E]                                      // [B1] Gather Lookup
+                                                                      4 (Limit: High latency in non-contiguous memory access, 35% overhead)
+     model operations are executed by the AIC.                          // Group-based bit-width calculation
+  5 AscendC lacks fast inter-thread synchronization compa-            5 Divide E ′ into groups of length L
+                                                                      6 for each group G do
+     rable to CUDA, as Ascend NPUs treat each AI Core                 7        bit-width ← ⌈log2 (max(G))⌉ // [B2] Reduction Max
+     as a single, heavyweight thread. The architecture relies         8 end
+                                                                      9 (Limit: Serial dependency in vector units, 40% overhead)
+     on a pipelined dataflow model, optimizing task-queue-              // Bit-packing
+     driven overlaps between data movement and computa-              10 while bits remaining in E ′ do
+                                                                               // Buffer Accumulation
+     tion within a thread, rather than managing fine-grained         11        Fill 8,192 lanes in 32KB buf f er
+     concurrency across massive threads.                             12        if lane status ≥ 16 bits then
+                                                                     13                Output lower 16 bits and bit mask to Stream
+  6 It is challenging to implement lossless compression              14                lanes ← lanes » 16
+     algorithms that require extensive non-arithmetic opera-         15        end
+                                                                     16 end
+     tions (such as comparisons and reductions), including           17 Decompression:
+     Run-Length Encoding (RLE), LZ4, LZ77, and other                    // Offset calculation and bit-unpacking
+                                                                     18 M ask ← Convert bit mask to {0, 1} integers
+     similar dictionary-based methods.                               19 Of f sets ← PrefixSum(M ask)                              // [B3] Prefix Sum
+   These architectural mismatches explain the fundamental            20 (Limit: Cross-lane data dependency within 32B segments, 30% overhead)
+                                                                     21 Lower 16 bits ← Get from Stream using Of f sets
+incompatibility between existing lossless compression algo-          22 E ′ ← buf f er + Lower 16 bits
+rithms and Ascend NPUs. The lack of conditional branch-              23 E ← Tf−1     req [E ]
+                                                                                               ′
+                                                                                                                                  // [B4] Gather Lookup
+                                                                     24 (Limit: Inefficient vector unit utilization in gather, 45% overhead)
+ing, scatter/gather instructions, and efficient variable-length      25 W ← Combine(E, S, M )
+memory operations renders traditional entropy coding and             26 return W
+dictionary-based methods impractical on this platform. More-
+over, the absence of lightweight inter-thread synchronization            achieve more compact encoding (Line 3). Within this 8,192-
+and reliance on a pipelined dataflow model within each                   element block, data is further divided into smaller groups
+AI core restrict parallelization strategies common in GPU-               of length L, and the bit width required for the maximum
+based compressors. These insights motivate our co-design ap-             value in each group is calculated (Lines 5-8). Each thread
+proach: rather than force-fitting existing algorithms, we align          utilizes a dedicated 32KB buffer (with 8,192 32-bit lanes
+compression primitives with Ascend’s vectorized, branch-free             corresponding to 8,192 elements), where each element is
+execution model and memory hierarchy constraints. Building               written into its respective lane. As the number of processed
+on this understanding, we next present ENEC—a lightweight                blocks increases, the lower 16 bits of all lanes that have
+compression algorithm crafted to navigate these architectural            accumulated full 16 bits are gathered to output and a bit mask
+limitations while preserving lossless fidelity.                          is generated, followed by a vectorized right-shift operation
+                                                                         to prepare for the next round (Lines 10-16). This iterative
+B. Basic Design of ENEC                                                  process continues until all data blocks are fully processed.
+   Building upon the architectural constraints identified in             Finally, the compressed content from each thread’s buffer is
+Section IV-A, we now present the basic design of ENEC—a                  saved into the compressed file for decoding purposes.
+lightweight compression algorithm, as shown in the pseu-                    During the decompression phase, bit-unpacking operations
+docode (Algorithm 1). While the architectural analysis re-               are first performed to reconstruct the grouped data. The
+veals fundamental incompatibilities, it also illuminates the             inverse bit-packing employs a reverse gather operation, where
+path forward: by aligning our algorithm with the Ascend’s                the necessary offsets for the reverse gather are precisely
+inherent strengths and working around its constraints, we can            computed using a prefix sum, which is derived by first
+achieve efficient lossless compression.                                  converting the bit mask into a sequence of 0 and 1 integers
+   Guided by Observations 1 and 2 from Section III, our fun-             (Lines 18-22). Subsequently, by executing a lookup in the
+damental compression algorithm proceeds as follows. During               frequency mapping table, the values are converted back
+the compression phase, each thread processes a data block                to their original exponent values (Line 23). By combining
+of 8,192 elements at a time. The exponents are separated                 these restored exponents with the directly stored sign and
+from the floating-point data (while signs and mantissas are              mantissa bits, the original floating-point data can be perfectly
+stored directly), and frequency statistics are collected (Line           reconstructed (Line 25).
+2). The sorted frequency indices serve as mapping values to                 Key Bottlenecks of Basic Design. However, the basic
+
+
+
+
+                                                                  1323
+              Original data (BF16/FP16/FP32)            Sign            Mantissa             Exponent               Bit Mask                        Compressed Exponent        Block Size: 16384 elements             Block Num: N        b,n,m: Integer transform parameters                   L: Group size
+
+
+                 16Bits                1                   16Bits                        3                           16Bits                                      4                 Low m Bits                         High n-m Bits                     5
+                  16384                                                                                                                                                                                                                             Hierarchical                                     Thread 0
+                                  Exponent                                             Integer                                                                Bit-Width
+                                                  127     126     ...      123                             -1       0              ...          3                           111     000     ...    011          111       000   ...       000       Halving Bit-
+                                  Extraction                                       Transformation                                                            Quantization
+                                                                                                                                                                                                                                                      Packing
+                                                  126     125     ...      124                              0       1              ...          2                           000     001     ...    010          000       000   ...       000                                                        Thread 1
+  N
+
+                                                  127     126     ...      118                             -1       0              ...          8                           111     000     ...    000          111       000   ...       001
+                                                                                                                                                                                                                                                                                                     Thread 47
+                                                                                                                                     Grouping
+                                                                         2                                                                                                                                                                                                                      AIV number : 48
+                                                                   Parameter                                                  16
+                                                                   Determine                                                                                    Keep the lower m          Keep the higher n-m bits
+ Mantissa + Sign                                                                                             -1         0            ...            2           bits
+ Direct Storage                                                                                                                                                                                          16                                                 1   0   1                                1   0   0
+                                                                                                      1
+                                                                                                      0         0       1            ...            1                                             -1      ...         2
+                                                                                                      2
+                                                                                                      4                                                                                                                                         1   0   0   1   0   1
+   Main process                                                                                                                                                              Select groups        -1      ...         3
+                                                                                                                1       2            ...            8                        with bit width
+                                              Exponent                                                                                                                                                                                                                                  0   0    1   1   1   0
+   Data flow                                                              b      126
+                                                                                                                                                                             greater than
+                                              Frequency                                                                                    16                                m                    1       ...         8
+                                                                          n          6                                                                  Compare with                                                                  0    0    1   1   1   0   1   0   0   1   0   1
+   Internal                                                                                          Calculate                                          threshold m
+                                                                                                                                           2
+   process                                                                m          3
+                                                                                                     the max                                                            10001...1                      Direct Storage                                                                            0   0   1   1
+                                                                          L        16                bitwidth of
+   Related
+                                                                                                     each group                            4
+                                                                                                                                                                            Bit Mask                                                                    1   0   1   0   0   1   0   1                    Storage
+   operations                123 124 125 126 127
+
+
+
+                                                               Fig. 5: Overview of optimized ENEC compression design on Ascend NPUs.
+
+                                                                                                                                                                        During compression, the process begins by extracting
+File Header Uncompressed Part                     Mask Part                          Compressed Exponent
+                                                                                                                                                                     exponent( 1 ) and calculating the exponent frequency to de-
+                                                                                               E0          EN       ···           Thread 0                           termine optimal parameters( 2 ). After applying the branch-
+                                                                              Prefix
+   Header           Mt S       Mt S               M        M
+                                                                                                                            ···
+
+
+
+
+                                        ···                      ···
+                                                                               Sum
+                                                                                              EN-1        E2N-1     · · · Thread N-1
+                                                                                                                                                                     free integer transformation( 3 ) in Section V-C, the data
+  32 Bytes         Block 0    Block 1           Block 0 Block 1
+                                                                                                                                                                     is grouped and the bit-width of each group’s maximum
+                                                                                                                                                                     value is determined. This bit-width is compared against a
+                    S     Sign    Mt       Mantissa        M      Mask           E       Compressed Exponent
+                                                                                                                                                                     threshold to generate and store a compact bit mask and then
+Fig. 6: Compressed stream layout. The bit mask is used to distin-                                                                                                    it distinguishes elements based on this bit mask( 4 ). Finally
+guish anomalous groups within each data block. Prefix sums provide                                                                                                   using hierarchical halving bit-packing( 5 ) in Section V-B to
+direct starting positions for each thread’s compressed data.                                                                                                         generate compressed file (Figure 6).
+design does not deliver optimal performance. Performance                                                                                                                During decompression, the bit mask is first read and
+analysis of the compression kernel reveals that gather ta-                                                                                                           converted to integer values, followed by computing prefix
+ble lookups account for 35% of the time (Line 3), while                                                                                                              sums using the intra-segment dependency decoupled scan
+reduction max operations consume 40% (Line 7). Similarly,                                                                                                            (Section V-D) to obtain offset for the reverse gather operation
+analysis of the decompression kernel shows that prefix sum                                                                                                           on the compressed data stream. Subsequently, an inverse
+operations take 30% of the time (Line 19), with gather                                                                                                               vectorized, branch-free integer transformation is performed
+table lookups occupying 45% (Line 23). Collectively, these                                                                                                           to restore the exponent data. Finally, the original data is
+limitations result in low throughput, preventing the system                                                                                                          reconstructed by reading the stored sign and mantissa bits.
+from achieving high-performance efficiency. Therefore, in                                                                                                            B. Bit-Width Quantization with Hierarchical Halving Bit-
+Section V, we comprehensively optimize the compression                                                                                                               Packing
+and decompression processes of the basic design based on
+                                                                                                                                                                        In the basic design, the variable bit-width packing re-
+Observations 3, 4 and 5 from Section III.
+                                                                                                                                                                     quires inefficient reduction max and multiplication/division
+               V. O PTIMIZATIONS OF ENEC                                                                                                                             operations on Ascend NPUs. To address this, based on the
+   Drawing on the observations from Section III and hard-                                                                                                            observation 3 and 4 in Section III, we adopt the lossless
+ware characteristics from Section IV, this section details                                                                                                           bit-width quantization with hierarchical halving bit-packing
+the optimizations on the basic ENEC from Section IV-B                                                                                                                techniques. The data block is organized using a group-
+in their order of implementation, directly corresponding to                                                                                                          interleaved scheme, where each group comprises L elements.
+the ablation studies presented in Section VI. Specifically,                                                                                                          The number of bits required to pack a group is determined
+we first present the optimized ENEC algorithm in Section                                                                                                             by calculating the bit width of the largest element within
+V-A. Subsequently, from Section V-B to V-E, we delve into                                                                                                            that group. We propose a two-level bit-width quantization
+the specific optimization methods and fine-grained tuning                                                                                                            strategy: if the required bit width is less than or equal to
+mechanisms employed to maximize performance.                                                                                                                         a threshold m, all elements within the group are stored
+                                                                                                                                                                     uniformly using m bits; otherwise, all elements are stored
+A. Overview of optimized ENEC                                                                                                                                        using n bits, where n represents the minimum number of
+  Our optimized ENEC approach, as illustrated in Figure 5,                                                                                                           bits required to represent different occurring exponents. This
+processes model weights by dividing them into fixed-length                                                                                                           approach enables substituting the computationally expensive
+data blocks that are processed in parallel by multiple threads                                                                                                       reduction max operation with efficient bitwise OR operation.
+(with the number of threads determined by the number of                                                                                                                 To achieve both extreme compression and high perfor-
+AIV cores) in a cyclic manner.                                                                                                                                       mance for tensor blocks under strict hardware alignment
+
+
+
+
+                                                                                                                                                            1324
+  Algorithm 2: Hierarchical Halving Bit-Packing with Byte                                          Min                                           Max
+                                                                               𝑥                                   …               …
+  Normalization (Vectorized)
+                                                                                        Positive number (Sign-Magnitude)          Negative number (2's Complement)
+   Input : data[0..N − 1]: Array of N 16-bit data values (N = 2k );
+           a: Bit-width of each input value (0 < a ≤ 8)                      𝑏−𝑥                         …     2    1       0          -1   -2   …
+   Output: byte_stream: Compressed byte-aligned output stream                           b-min                                                          b-max
+
+   // Initialization of packing parameters
+                                                                                                                            b                             𝟐𝒏 − 𝟏
+ 1 total_length ← 0
+ 2 width ← a
+                                                                             Maping      0           …                                       …
+ 3 length ← N
+ 4 normalized_bytes ← empty vector                                           Values                                        𝟐𝒏−𝟏 (b-x) < 0 Truncation Mapping
+                                                                                       (b-x) ≥ 0 Normal Mapping
+ 5 while width > 0 do
+         // Hierarchical halving: doubling width by merging pairs                  Fig. 7: Vectorized branch-free integer transformation.
+ 6       while length > 1 and width < 8 do
+ 7            length ← length/2                                          to the nearest multiple of 2 (Lines 23-26). The normalized
+ 8            for i ← 0 to length − 1 do
+ 9                  data[i] ← data[i] | (data[i + length] « width)       bytes are consolidated in a final folding pass to form the
+10            end                                                        output stream (Lines 28-32). The bit-unpacking process is
+11            width ← width × 2
+12       end                                                             precisely the inverse of the bit-packing process.
+         // Extract aligned bytes from the packed 16-bit lanes              Consequently, as illustrated in Figure 5, the least signif-
+13       for j ← 0 to length − 1 do
+              // Mask out the lower 8 bits and update residual data      icant m bits are truncated and compressed via hierarchi-
+14            temp_bytes[j] ← (data[j] « 8) » 8                          cal halving bit-packing. For groups needing more than m
+15            data[j] ← data[j] » 8
+16       end                                                             bits, the higher (n − m) bits are collected into a 32 KB
+17       Append temp_bytes to normalized_bytes                           buffer. Once full, these bits are compressed by hierarchical
+18       width ← width − 8
+19       total_length ← total_length + length                            halving bit-packing, and the buffer is then cleared. During
+20 end                                                                   decompression, an inverse Gather operation redistributes
+   // Padding to ensure even length for 16-bit aligned output
+21 if total_length%2 ̸= 0 then                                           the decompressed higher (n − m) bits to their original po-
+22       Append 0 to normalized_bytes                                    sitions. The original values are reconstructed by performing
+23       total_length ← total_length + 1
+24 end                                                                   vectorized Or operation with the decompressed lower m bits.
+   // Final stream construction via vectorized concatenation
+25 for i ← 0 to total_length/2 − 1 do                                    C. Vectorized Branch-Free Integer Transformation
+26       output_data ← normalized_bytes[i] |
+           (normalized_bytes[i + total_length/2] « 8)                       In the basic design, the exponent mapping relies on the
+27       Append output_data to byte_stream
+28 end                                                                   slow gather API, based on the observation 5 in Section
+29 return byte_stream                                                    III, we adopt the linear mapping function f (x) = b − x
+                                                                         as the core transformation scheme to optimize this process.
+constraints, we introduce an iterative bit-packing algorithm.
+                                                                         As shown in Figure 7, b is a linear mapping parameter
+The core of this method, as shown in the pseudocode
+                                                                         determined by the data distribution characteristics. When the
+(Algorithm 2), lies in lane folding and byte normalization.
+                                                                         input value is greater than the parameter b, the mapping result
+The algorithm begins with a block of N elements (where N
+                                                                         is negative. This approach cleverly utilizes the properties of
+is a power of two), each of 16-bit width but retaining only the
+                                                                         two’s complement representation to handle negative values.
+least significant a bits. It iterates until the effective bit width
+                                                                         Due to the use of bit-width quantization and the need to
+of each element is reduced to 8 bits. In each iteration, the
+                                                                         ensure correct decoding, an additional bit is required in the
+block is treated as a sequence of logical lanes. The folding
+                                                                         higher bit position to determine whether the value is negative:
+step logically left-shifts each element in the lower half by
+                                                                         for positive values, the (n + 1)-th bit must be 0, and the
+a bits and performs an element-wise Or operation with the
+                                                                         mapping range is [0, 2n − 1]; for negative values, the (n + 1)-
+corresponding element in the upper half (Lines 9-11). This
+                                                                         th bit must be 1, and the mapping range is [2n , 2n+1 − 1].
+merges two a-bit payloads into a single physical storage
+                                                                         This approach enables the replacement of irregular memory
+location, resulting in a new block of N/2 elements, each
+                                                                         access operations with efficient computation.
+with an effective width of 2a bits (Line 12).
+                                                                            The implementation of this mapping primarily consists
+   When the folding operation causes the effective bit width             of three stages. First, a vector addition unit subtracts the
+to exceed the 8-bit byte boundary, byte normalization is                 preset parameter b from all input elements simultaneously,
+triggered. As the folding is iterative, this effective bit width         shifting the center of the data distribution close to zero.
+grows with each iteration, potentially surpassing 8 bits mul-            Then, a vector multiplication unit inverts the intermediate
+tiple times. The data is then split into (i) the lower 8 bits,           results to achieve the mathematical transformation b − x. For
+forming a storable byte, and (ii) the remaining bits, which              example, with b = 123, an input x = 125 is transformed
+are treated as overflow. All overflow segments are collected             to 123 − 125 = −2, while an input x = 122 becomes
+into a new sub-block and processed recursively by the same               123 − 122 = 1. This combined operation ensures that high-
+algorithm (Lines 14-21). Then, by appending zero bytes to                frequency values in the input data are mapped to smaller
+the end of the byte stream, the total length is aligned upward           output values. Finally, we use shift operations to implement
+
+
+
+
+                                                                      1325
+        12
+
+
+
+
+                                 TR: Transpose                ET: Extract BC: Broadcast                                                                     inter-row ones. A parallel prefix sum is then performed on
+                                 M                            N                                                 M                 Last Column               each of the N columns using vectorized additions in log2 (M )
+                     0 1 0 1 1 0         0 0         0   1 1 0 0   1 0 1                                0 1 1   2 3 3 3   3
+
+
+
+
+                                                                                       summation
+ Column
+
+
+
+
+                                                                                        Row-wise
+                     1 0 0 1 0 1 1 0
+
+ Operations
+                     1 1 0 0 1 0 0 1
+                     0 0 1 0 0 1 1 0
+                                               TR
+                                                     1
+                                                     0
+                                                     1
+                                                         0 1 0 1
+                                                         0 0 1 0
+                                                         1 0 0 1
+                                                                   1 1 1
+                                                                   0 1 1
+                                                                   0 0 1
+                                                                                                   TR
+                                                                                                        1 1 1   2 2 3 4
+                                                                                                        1 2 2 2 3 3 3
+                                                                                                        0 0 1 1 1 2 3
+                                                                                                                          4
+                                                                                                                          4
+                                                                                                                          3
+                                                                                                                                                            steps. The matrix is transposed back to its original N × M
+                                                                                                                                   Each Row
+ Locked by           0 1 0 1 0 0 0
+                     1 1 0 0 1 1 0
+                                           1
+                                           0
+                                                     1
+                                                     0
+                                                         0 1 0 0
+                                                         1 0 1 0
+                                                                   1 1 0
+                                                                   1 0 0
+                                                                                                        0 1 1 2 2 2 2
+                                                                                                        1 2 2 2 3 4 4
+                                                                                                                          3
+                                                                                                                          4           Max                   orientation, resulting in an intermediate matrix R where each
+ Alignment           0 1 1 0 1 0 0 1                 0   1 0 1 0   0 0 1                                0 1 2 2 3 3 3     4        Prefix Sum
+                     1 1 1 1 0 0 1 0                                                                    1 2 3 4 4 4 5     5
+
+
+                   Local Tensor
+                                                     0   0 1 0 1   0 1 0
+                                                                                                                                                            row contains its correct local prefix sum.
+                                                    doubling intervals: 1 2 4                           Row Prefix Sum Matrix (R)
+
+                                                                                                                                  Copy
+                                                                                                                                                               Stage 2: Inter-Row Propagation and Final Update.
+                                                                        0    add top                            R’
+                                                                                                                                                            The intermediate matrix R contains row-local sums but
+             0 0                 0 0
+             3 3                 3   3                   0                             3                                      3
+                                                                                                                                                            lacks exclusive cumulative offsets from previous rows. A
+
+
+
+
+                                                                                                                                         summation
+                                                                                                                                          Row-wise
+             7 7                 7 7                     3              3              7                                      4
+             11 11     ... ...   11 11                   7              7          11                                         4
+   R+        14 14     ... ...   14 14                   11             11         14                                         3
+                                                                                                                                                            temporary copy C of R is created. A hierarchical scan is
+             17 17               17 17                   14             14         17                                         3
+             21 21               21 21                                  17         21                                         4
+                                                         17
+                                                                                                   ET
+             25 25               25 25         BC        21
+                                                         25
+                                                                        21
+                                                                        25
+                                                                                   25
+                                                                                   30
+                                                                                                                              4
+                                                                                                                              5
+                                                                                                                                                            performed on C’s rows in log2 (N ) steps: at step k, each
+                                                                                                                                                            row C[i] adds values from row C[i − 2k ] element-wise.
+                     =
+  Final Prefix Sum Matrix                                          29       drop bottom                 doubling intervals: 1 2 4
+
+                                                                                                                                                            After completion, the last column of C holds the inclusive
+Fig. 8: Prefix sum process. This figure illustrates the step-by-step
+implementation of the prefix sum algorithm, using an 8 × 8 binary                                                                                           cumulative offsets for all rows. Subsequently, the exclusive
+local tensor M as a working example.                                                                                                                        cumulative offsets are derived from the inclusive cumulative
+modulo 2n+1 and clear higher-bit information, restricting all                                                                                               offsets by removing the bottom element and adding a zero
+output values to the predefined range [0, 2n+1 − 1]. Negative                                                                                               element at the top. This N × 1 vector is broadcast across all
+values −c are converted to 2n+1 − c to achieve a wrapping                                                                                                   columns to form an offset matrix. The final result is obtained
+effect. For instance, in the case where n = 5, the previous                                                                                                 by adding offset matrix element-wise to the saved matrix R.
+intermediate result of −2 is converted to 26 − 2 = 62, while                                                                                                E. Parameter Tuning
+the positive result of 1 remains unchanged. This approach
+                                                                                                                                                               This procedure analyzes exponent statistics to derive pa-
+ensures computational efficiency while maintaining injectiv-
+                                                                                                                                                            rameters that minimize the average compressed bit-length
+ity, fully leveraging the vectorized computing capabilities of
+                                                                                                                                                            under a specialized cost model, following systematic phases:
+Ascend NPUs and avoiding inefficient branching operations.
+                                                                                                                                                               Phase 1: Statistical Pre-Analysis. The initial phase in-
+                                                                                                                                                            volves constructing a histogram of the exponents extracted
+D. Intra-Segment Dependency Decoupled Scan                                                                                                                  from the source data to obtain a frequency distribution for
+   The prefix sum (or scan) is a fundamental parallel primi-                                                                                                each unique exponent x. This distribution allows for the cal-
+tive. However, its straightforward implementation on modern                                                                                                 culation of the probability p(x) of each value occurring and
+SIMD architectures, such as Ascend NPUs, is often hindered                                                                                                  the identification of the global minimum (l) and maximum
+by stringent hardware constraints. The target operation is to                                                                                               (h) values in the exponents.
+compute the global prefix sum of all elements in an N × M                                                                                                      Phase 2: Global Search for a Suitable Linear Mapping
+tensor (where M = 16), which is logically treated as a                                                                                                      Parameter (b) and Base Bit-Width (n). The algorithm
+flattened 1D array. The primary bottleneck lies in the Ascend                                                                                               performs an exhaustive search for a linear mapping parameter
+NPUs’ memory model, particularly the 32-byte alignment                                                                                                      b across its feasible integer domain. For each candidate b, the
+requirement for operands in AscendC. Given that the data                                                                                                    requisite base bit-width n is computed as the minimal number
+type used here is half-precision floating-point (half, 2                                                                                                    of bits required to span the data range relative to b:
+bytes), each row of M elements in the tensor exactly occupies
+32 bytes. Architectural constraints prohibit direct SIMD com-                                                                                                         n = max (⌊log2 (b − l)⌋ + 1, ⌈log2 (h − b)⌉) + 1   (1)
+putation between elements residing within the same 32-byte                                                                                                     For each (b, n) pair, all original exponents x are trans-
+memory segment. This effectively “locks” the direct intra-                                                                                                  formed via a mapping:
+row prefix sum computation (e.g., row[i] += row[i − 1]),
+as it requires operations between adjacent elements within a                                                                                                                      y = (2n − x + b)%2n                    (2)
+single hardware-indivisible block.                                                                                                                            A cost function D, defined as the probability-weighted sum
+   To decouple this forbidden intra-segment dependency,                                                                                                     of the transformed values, is evaluated:
+we propose the Intra-Segment Dependency Decoupled Scan
+(IDD-Scan), a multi-stage algorithm that transforms the                                                                                                                              D=
+                                                                                                                                                                                          X
+                                                                                                                                                                                                p(x) · y                 (3)
+computation-bound problem into a series of hardware-                                                                                                                                        x
+friendly operations. The workflow of IDD-Scan is detailed                                                                                                      The pair (b∗ , n∗ ) that results in the minimum value for D
+below and illustrated in Figure 8.                                                                                                                          is selected. Using the selected parameters (b∗ , n∗ ), the orig-
+   Stage 1: Intra-Row Scan via Matrix Transposition.                                                                                                        inal exponents are transformed via Equation 2. A statistical
+IDD-Scan first computes the prefix sum for each row by                                                                                                      analysis of the bit-widths required for the transformed values
+transforming it. The local N ×M tensor is transposed into an                                                                                                y is then performed. This yields the cumulative distribution
+M × N matrix. This distributes each original row’s elements                                                                                                 function p(m), representing the probability that a value y can
+across M new rows, converting intra-row dependencies into                                                                                                   be represented using m or fewer bits.
+
+
+
+
+                                                                                                                                                     1326
+                                         TABLE II: Compression ratio results on different datasets.
+                                                           BF16                                           FP16                         FP32
+                Arch   Compressors
+                                     Falcon   Qwen3-8B   DeepSeek   Qwen3-32B        Llama      Mistral     Diffusion    OLMo       BERT         Wav2Vec
+                CPU    ZipNN          1.51      1.50       1.51           1.50        1.51        1.19           1.18     1.20         1.20           1.21
+                       NV_Zstd        1.28      1.27       1.28           1.27        1.29        1.09           1.08     1.08         1.08           1.08
+                       NV_Deflate     1.28      1.27       1.28           1.27        1.29        1.09           1.08     1.08         1.08           1.08
+                       NV_GDeflate    1.27      1.27       1.27           1.27        1.28        1.09           1.08     1.07         1.08           1.08
+                GPU
+                       NV_ANS         1.25      1.24       1.25           1.25        1.27        1.08           1.04     1.06         1.04           1.03
+                       NV_Bitcomp     1.33      1.32       1.33           1.32        1.32        1.13           1.07     1.14         1.14           1.15
+                       Diet_ANS       1.23      1.23       1.23           1.23        1.25        1.06           1.05     1.05         1.05           1.05
+                       Diet_Float     1.48      1.47       1.48           1.47        1.48        1.17           1.16     1.19         1.19           1.19
+                       HANS           1.34      1.34       1.35           1.34        1.33        1.09           1.05     1.14         1.13           1.13
+                NPU
+                       ENEC           1.36      1.36       1.37           1.35        1.36        1.12           1.09     1.15         1.15           1.15
+
+                                                                                   TABLE III: Popular models’ weights data used in this work.
+  Phase 3: Selection of Encoding Threshold (m) and
+Group Length (L). In the final phase, the appropriate                              Type                      Models                      Size (GB)            Layer Size (MB)
+
+encoding threshold m and group length L are determined.                                                 Falcon-7B [46]                        14.40             39.38∼563.56
+                                                                                                        Qwen3-8B [50]                         16.38             8.00∼1187.00
+Both L and m are treated as parameters. Since Ascend NPUs                          BF16            deepseek-llm-7b-base [12]                  13.82             32.00∼800.00
+require data movement to be 32-byte aligned, we must set                                               Qwen3-32B [50]                         65.60            10.00∼1483.75
+                                                                                                   Llama-3.1-8B-Instruct [17]                 16.06             8.00∼1002.00
+L ≥ 16. The final parameter pair is selected through a joint
+                                                                                              CapybaraHermes-2.5-Mistral-7B [29]              14.50             8.00∼250.02
+search to minimize the expected bit length Bexp :                                  FP16
+                                                                                             stable-video-diffusion-img2vid-fp16 [6]           4.27          3.10 × 10−5 ∼96.50
+                                                                                                   OLMo-1B-hf [21]                          5.10              16.00∼393.00
+                                 1                                                 FP32                                                                          0.01∼89.42
+     (m∗ , L∗ ) = arg min Bexp =   + n + (m − n) · p(m)L            (4)                            bert-base-uncased [15]                     0.40
+                      m,L        L                                                            wav2vec2-large-xlsr-53-english [11]             1.20           4.88 × 10−4 ∼32.00
+
+   Under parameters (m, L), expected bits per element Bexp                          Compression Baselines. We compare our approach
+comprises amortized group mask overhead L1 , base bit-width                      against SOTA lossless compressors tailored for different
+n, and threshold effect (m−n)·p(m)L . For such groups, each                      hardware platforms: ZipNN [24] for CPU, DietGPU [31]
+element uses m instead of n bits, saving n − m per element,                      and nvCOMP [45] for GPU, and HANS [3] for Ascend
+giving expected saving (n−m)·p(m)L or equivalently adding                        NPUs. Since both DietGPU and nvCOMP include multiple
+(m − n) · p(m)L to baseline n. Optimal (m∗ , L∗ ) minimize                       compression algorithms, we use “Diet” to denote DietGPU
+Bexp by balancing: larger L reduces L1 but lowers p(m)L .                        and “NV” to denote nvCOMP (e.g., Diet_ANS refers to
+   Upon completion of this process, the algorithm outputs the                    the ANS algorithm in DietGPU). Our primary evaluation
+best set of selected parameters, denoted as the chosen linear                    metrics are compression ratio, compression throughput, and
+mapping parameter b∗ , the base bit-width n∗ , the encoding                      decompression throughput. ZipNN and Diet_Float employ
+threshold m∗ , and the group length L∗ .                                         tail exponent separation on model data, which serves as a
+            VI. E XPERIMENTAL E VALUATION                                        key benchmark for achieving high compression ratios. In
+                                                                                 contrast, other methods highlight the efficiency advantages
+   Platforms. All evaluations of NPU-based methods are
+                                                                                 of our ENEC.
+performed on the Ascend NPU 910B2, which contains 24
+Cube Units and 48 Vector Units (with a vector-to-cube unit                          Compression Configurations. For the ENEC method, we
+ratio of 2:1). The host machine is powered by a HiSilicon                        perform offline automatic tuning using the search algorithm
+Kunpeng-920 CPU running Ubuntu 22.04.5 LTS, with NPU                             described in Section V-E, and adopt the resulting config-
+driver version 25.0.rc1.1. Our algorithms are implemented in                     urations (as shown in Table IV) as the actual parameters
+C++17 using the AscendC framework, with toolkit version                          for online compression in subsequent models. For all other
+8.2.RC1.alpha002 and the same version for the operator                           methods, we use their default configurations. Specifically,
+kernel package. To ensure a fair comparison, CPU-based and                       for baseline methods such as nvCOMP and DietGPU, we
+GPU-based methods are evaluated on a performance-similar                         utilize their default settings, which are designed to reflect the
+NVIDIA A800 GPU platform, which is equipped with Intel                           optimal trade-off between throughput and compression ratio.
+Xeon 8358P CPUs and uses CUDA version 12.6.                                      Although we also performed parameter tuning for these base-
+   Datasets. We conduct tests on the weights of ten popular                      lines, the resulting performance showed negligible difference.
+open-source AI models, including three FP32 models, two                          ENEC runs exclusively on the AIV units, which have signif-
+FP16 models, and five BF16 models. All model weights                             icantly lower peak compute capacity than a full A800 GPU.
+are downloaded directly from the HuggingFace platform. It                        Nevertheless, its competitive performance demonstrates the
+should be noted that current mainstream large models, such                       remarkable effectiveness of architectural specialization and
+as Qwen and Llama, adopt the BF16 format; therefore, BF16                        justifies our throughput comparisons, highlighting the success
+is our primary focus, as analyzed in Section III. Detailed                       of our hardware/software co-design for this dedicated task.
+information about the datasets can be found in Table III.                           End-to-End Inference Configurations. We integrate
+
+
+
+
+                                                                          1327
+                                                                  523.9
+
+
+
+
+                                                                                             353.0
+                                         308.3
+
+
+
+
+                                                                                                                                                                        385.7
+
+
+
+
+                                                                                                                                                                                                                                                                    373.2
+                                                                                                                                                                                                                                             376.8
+                                                                                                                                                                                               359.0
+
+
+
+
+                                                                                                                                                                                                                     360.6
+                                                                                                                    316.4
+
+
+
+
+                                                                                                                                                215.6
+
+
+
+
+                                                                                                                                                                                                                    291.8
+                                                                                                                                                                                              283.8
+
+
+
+
+                                                                                                                                                                                                                    271.9
+                                                                                                                   238.3
+
+
+
+
+                                                                                                                                                                                              261.6
+
+
+
+
+                                                                                                                                                                                                                                                                  257.2
+                                                                                                                                                                      261.6
+
+
+
+
+                                                                                                                                                                                                                                           240.4
+
+
+
+
+                                                                                                                                                                                                                                                                  232.3
+                                                                                                                  195.5
+
+
+
+
+                                                                                                                                                                      227.1
+
+
+
+
+                                                                                                                                                                                                                                           212.4
+                                                               240.6
+
+
+
+
+                                                                                                                 155.1
+                                                              221.4
+
+
+
+
+                                                                                                                                                                                                                  162.6
+                                                                                                                                                                                            161.1
+                                                              205.3
+
+
+
+
+                                                                                                                                                                                                                 154.4
+
+
+
+
+                                                                                                                                                                                                                                                                156.7
+                                                                                                                                                                                           150.0
+
+
+
+
+                                                                                                                                                                                                                                          153.6
+                                                                                                                                                                    155.7
+                                                                                                                130.1
+                                                                                         133.9
+
+
+
+
+                                                                                                                                                                                                                 139.7
+
+
+
+
+                                                                                                                                                                                                                                                                137.1
+                                     110.7
+
+
+
+
+                                                                                                                                                                                           133.3
+                                                                                                                                                                    134.2
+
+
+
+
+                                                                                                                                                                                                                                         129.6
+                                                                                                               107.1
+
+
+
+
+                                                                                                                                                                                                                                                               116.2
+                                                                                        101.9
+
+
+
+
+                                                                                                                                             96.1
+
+
+
+
+                                                                                                                                                                   109.5
+
+
+
+
+                                                                                                                                                                                                                                        104.3
+                                                            117.8
+
+
+
+
+                                                                                                                                            80.1
+ Comp
+
+
+
+
+                                                                                                                                           62.8
+                                   74.2
+
+
+
+
+                                                                                                                                          53.1
+                                                                                      69.2
+                 102
+
+
+
+
+                                                           88.8
+                                  51.2
+
+
+
+
+                                                                                     54.5
+                                 42.8
+
+
+
+
+                                                                                                                                      33.5
+                                                                                    35.0
+                               25.9
+                 101
+
+
+
+
+                                                                                                                                                                                   4.2
+
+
+
+
+                                                                                                                                                                                                          4.2
+                                                                                                        3.9
+
+
+
+
+                                                                                                                                                                                  4.0
+
+
+
+
+                                                                                                                                                                                                                                                        3.8
+                                                                                                                                                           3.9
+
+
+
+
+                                                                                                                                                                                                         3.8
+                                                                                                        3.4
+
+
+
+
+                                                                                                                                                          3.7
+
+
+
+
+                                                                                                                                                                                                                                3.6
+                                                                                                                                                                                  3.5
+
+
+
+
+                                                                                                                                                                                                                               3.5
+
+
+
+
+                                                                                                                                                                                                                                                        3.4
+                                                                                                                                                                                                         3.4
+                                                     3.3
+
+
+
+
+                                                                                                                                                          3.2
+                                                                                                       2.9
+
+
+
+
+                                                                                                                                                                                                                               3.0
+
+
+
+
+                                                                                                                                                                                                                                                       2.9
+                                                     2.9
+                                                    2.5
+
+
+
+
+                                                                             1.0
+
+
+
+
+                                                                                                                                  1.0
+                                                                             1.0
+
+
+
+
+                                                                                                                                  0.9
+                 100
+                          0.7
+
+
+
+
+                                                                            0.8
+                          0.7
+
+
+
+
+                                                                                                                                 0.8
+                         0.6
+ Throughput (GB/s)
+                       0.3
+
+
+
+
+                                                                                                     0.4
+
+
+
+
+                                                                                                                            0.3
+                                                  0.3
+
+
+
+
+                                                                          0.3
+
+
+
+
+                                                                                                                                                        0.4
+
+
+
+
+                                                                                                                                                                                0.4
+
+
+
+
+                                                                                                                                                                                                       0.4
+
+
+
+
+                                                                                                                                                                                                                             0.4
+
+
+
+
+                                                                                                                                                                                                                                                     0.4
+                             BERT(FP32)                 OLMo(FP32)              Wav2Vec(FP32)              Mistral(FP16)          Diffusion(FP16)             DeepSeek(BF16)          Falcon(BF16)       Qwen3-32B(BF16)           Qwen3-8B(BF16)          Llama(BF16)
+                 100
+                             0.6
+
+
+
+
+                                                  1.2
+
+
+
+
+                                                                           0.8
+
+
+
+
+                                                                                                     1.0
+
+
+
+
+                                                                                                                             0.8
+
+
+
+
+                                                                                                                                                        1.0
+
+
+
+
+                                                                                                                                                                                1.0
+
+
+
+
+                                                                                                                                                                                                       1.0
+
+
+
+
+                                                                                                                                                                                                                             1.0
+
+
+
+
+                                                                                                                                                                                                                                                     1.0
+                                                                                                                             0.8
+                                                                          1.0
+                                                                          1.1
+                           0.8
+
+
+
+
+                                                                                                                            1.0
+                          1.0
+
+                       1.9
+
+
+
+
+                                                     3.8
+
+
+
+
+                                                                                  2.7
+
+
+
+
+                                                                                                                                    2.6
+                                                    4.6
+
+
+
+
+                                                                                                                                                                                                                                 4.9
+                                                                                                        5.3
+
+
+
+
+                                                                                                                                                            5.5
+
+
+
+
+                                                                                                                                                                                                                                                         5.7
+                                                                                                                                                                                          6.7
+
+
+
+
+                                                                                                                                                                                                                               6.7
+                                                                                                       7.1
+
+
+
+
+                                                                                                                                                          7.6
+                 101
+
+
+
+
+                                                                                                                                                                                                               8.7
+
+
+
+
+                                                                                                                                                                                                                                                       8.4
+                                                        12.2
+
+
+
+
+                                                                                                                                                                                      11.6
+
+
+
+
+                                                                                                                                                                                                            13.5
+
+
+
+
+                                                                                                                                                                                                                                     15.6
+                                                                                                                                                                17.4
+                                                                                                            17.4
+
+
+
+
+                                                                                                                                                                                                                                                            18.1
+                                                                                                                                                                                  26.7
+
+
+
+
+                                                                                                                                                                                                         28.5
+                                           23.0
+
+
+
+
+                                                                                              35.9
+
+
+
+
+                                                                                                                                               31.9
+                                        41.4
+                                        42.2
+
+
+
+
+                                                                                            53.5
+                                                                                            54.0
+                 102
+                                      57.2
+
+
+
+
+                                                                  95.2
+
+
+
+
+                                                                                          73.5
+
+
+
+
+                                                                                                                                            51.3
+                                                                                                                                            54.5
+                                                               132.3
+                                                               136.5
+
+
+
+
+                                                                                                                                                                                                                     117.7
+                                                                                                                                           69.5
+
+
+
+
+                                                                                                                                                                                               117.7
+                                    98.6
+
+
+
+
+                                                                                                                                          78.3
+ Decomp
+
+
+
+
+                                                                                                                                                                                                                                           113.6
+                                                                                                                                                                      116.7
+                                                                                       119.6
+
+
+
+
+                                                                                                                                                                                                                                           116.2
+
+
+
+
+                                                                                                                                                                                                                                                                  116.5
+                                                              169.0
+
+
+
+
+                                                                                                                 116.2
+                                                             181.3
+
+
+
+
+                                                                                                                                                                      126.6
+
+
+
+
+                                                                                                                                                                                                                                                                 127.9
+                                                                                                                                                                                                                    155.2
+                                                                                                                 127.4
+
+
+
+
+                                                                                                                                                                                              159.6
+                                                                                                                                                                                             169.4
+
+
+
+
+                                                                                                                                                                                                                                          147.5
+                                                                                                                                                                                                                   176.7
+                                                                                                                                                                     149.8
+                                                                                                                                                                    153.6
+
+
+
+
+                                                                                                                                                                                                                                         153.3
+                                                                                                                150.7
+
+
+
+
+                                                                                                                                                                                                                                                                159.6
+                                                                                                                                                                                             184.3
+                                                                                                                152.9
+
+
+
+
+                                                                                                                                                                                                                  194.5
+
+
+
+
+                                                                                                                                                                                                                                                                164.3
+                                                                                                                                                                                                                  213.8
+                                                                                                                                                                                            211.9
+
+
+
+
+                                                                                                                                                                                                                                        198.7
+                                                                                                                                                                   207.6
+                                                                                                               195.3
+
+
+
+
+                                                                                                                                      143.7
+
+
+
+
+                                                                                                                                                                                                                                                               212.2
+                                                                                                               201.4
+
+
+
+
+                                                                                                                                                                                                                                                               216.0
+                                                                                                                                                                   218.7
+
+
+
+
+                                                                                                                                                                                                                                        216.3
+                                                                                                                                                                                           257.5
+
+
+
+
+                                                                                                                                                                                                                 271.3
+                                                           336.4
+
+
+
+
+                                                                                    241.1
+                               236.0
+
+
+
+
+                                                               ZipNN       NV-Zstd           NV-Deflate            NV-Gdeflate            NV-ANS          NV-Bitcomp            Diet-ANS        Diet-Float           HANS      ENEC
+
+     Fig. 9: Throughput of compression (upper) and decompression (lower) across different datasets and methods. The Y-axis (Throughput) is
+     on a logarithmic scale to visualize performance differences spanning several orders of magnitude.
+
+ENEC into the HuggingFace Transformers inference frame-                                                                                                 this architectural choice limits element-wise encoding flexi-
+work and evaluate it on two mainstream large language                                                                                                   bility—slightly reducing compression ratios—the substantial
+models, Qwen3-32B and Falcon-40B. The evaluation metrics                                                                                                throughput gains meet high-performance data transmission
+are Time-To-First-Token (TTFT) and Time-Per-Output-Token                                                                                                demands. We argue this modest compromise is well justified
+(TPOT), measured using fixed input and output lengths.                                                                                                  by the significant practical efficiency.
+During inference, decompression is performed layer-wise.                                                                                                B. Compression and Decompression Throughput
+We overlap the next layer’s decompression with the current
+                                                                                                                                                           In this section, we evaluate and compare ENEC’s com-
+layer’s forward. The baseline uses an uncompressed inference
+                                                                                                                                                        pression and decompression throughput against other lossless
+setup with partial CPU offloading, since a single Ascend
+                                                                                                                                                        compressors. Throughput is calculated by dividing the raw
+910B2 cannot hold the full model weights.
+                                                                                                                                                        data size by the total compression or decompression time.
+A. Compression Ratio                                                                                                                                       For ZipNN and DietGPU, we measure performance using
+   The compression ratio results for all evaluated models are                                                                                           their direct APIs. For nvCOMP, we use their benchmark
+summarized in Table II. Importantly, we have meticulously                                                                                               code compiled with C++ and CUDA files, and report their
+verified that all 10 models (across FP32, FP16, and BF16                                                                                                direct presented results. For HANS and ENEC, we utilize the
+precisions) listed in Table III achieve bit-identical recon-                                                                                            msprof profiling tool within the AscendC framework to assess
+struction via our compression and decompression pipeline.                                                                                               kernel-level performance. This approach is adopted because
+   For each model’s weight data, we report the compression                                                                                              HANS only provides a Python interface, and performance
+ratio by dividing the total size of all parameters before com-                                                                                          measurements at the Python level may differ significantly
+pression by the total size after compression. Since ZipNN,                                                                                              from the actual kernel-level performance. For both GPU and
+nvCOMP, DietGPU, and ENEC perform compression in file                                                                                                   NPU platforms, reported throughput values measure device-
+form, we first save the model’s raw parameters as binary files                                                                                          side kernel execution time only, excluding PCIe transfer.
+before applying the respective file compression. For HANS,                                                                                                 Compression Throughput. As shown in Figure 9, ENEC
+which only provides a Python API for compressing tensors,                                                                                               achieves significantly higher throughput across all data types
+we load the model and then traverse each parameter tensor                                                                                               compared to existing baseline platforms on CPUs, GPUs,
+to conduct compression tests.                                                                                                                           and Ascend NPUs. Specifically, for BF16 models, ENEC
+   Table II shows ENEC’s consistently strong performance                                                                                                achieves an average throughput of 372 GB/s, which is 987×
+across datasets. ENEC generally outperforms HANS and                                                                                                    higher than ZipNN—the SOTA compressor on CPUs—and
+significantly exceeds nvCOMP’s general-purpose methods.                                                                                                 1.39× as much as nvCOMP:Bitcomp, the best-performing
+This advantage stems from our specialized exponent-mantissa                                                                                             compressor on GPUs. It also outperforms HANS, another
+separation. Unlike general compressors that process floating-                                                                                           NPU-based compressor, by a factor of 1.36. For FP32 mod-
+point values uniformly—diluting exponent frequency statis-                                                                                              els, the performance gap remains consistent, with ENEC
+tics—our targeted linear mapping enables more accurate                                                                                                  achieving throughput that is 1266× that of ZipNN, 3.08×
+modeling and higher compression ratios.                                                                                                                 that of Bitcomp, and 2.47× that of HANS. The performance
+   ENEC remains competitive against SOTA specialized com-                                                                                               for FP16 is similar to that of BF16, with ENEC achieving
+pressors. While ZipNN (CPU) and DietGPU::Float (GPU)                                                                                                    an average throughput of 263 GB/s, which is 767.33× faster
+achieve higher ratios, ENEC’s performance is notably close                                                                                              than ZipNN, 0.58× higher than Bitcomp, and 2.27× that
+on FP32 and FP16 datasets. This reflects a deliberate trade-                                                                                            of HANS. These results strongly demonstrate the effective-
+off: ENEC prioritizes maximum throughput on resource-                                                                                                   ness of our lightweight and highly vectorized optimization
+constrained Ascend NPUs via massive vectorization. While                                                                                                approach tailored for Ascend NPUs’ platforms.
+
+
+
+
+                                                                                                                                              1328
+ Fig. 10: End-to-end inference performance comparison of ENEC across different models and batch sizes. Latency metrics include Time-
+ To-First-Token (TTFT) and Time-Per-Output-Token (TPOT).
+
+   Moreover, despite FP16’s 5-bit exponent limiting compres-                  weights on the NPU and offloads only essential parts to the
+sion and adding design challenges, our ENEC still performs                    CPU. Our inference evaluation includes 10 warm-up and 50
+nearly on par with BF16, reaching up to 317 GB/s, show-                       test runs, from which we compute the average TTFT and
+casing its efficiency across data types. Furthermore, ENEC                    TPOT. As shown in Figure 10, ENEC consistently surpasses
+achieves up to 523 GB/s on FP32—nearly twice BF16’s                           both the uncompressed baseline and HANS. On Qwen3-32B,
+speed. This is because we avoid compressing the mantissa.                     ENEC reduces TTFT by up to 4.1× and TPOT by up to 3.9×
+As data width doubles from 16-bit to 32-bit, the processed                    compared to the baseline; relative to HANS, ENEC achieves
+amount remains unchanged. Thus, compression time stays                        up to 1.7× lower TTFT and 1.6× lower TPOT. On Falcon-
+similar, significantly boosting throughput.                                   40B, ENEC attains maximum reductions of 6.3× in TTFT
+   Decompression Throughput. Decompression throughput                         and 4.9× in TPOT over the baseline, and up to 1.8× and 1.7×
+is measured and presented using the same methodology                          improvements over HANS, respectively. These substantial
+as compression throughput. Results across various model                       improvements mainly result from eliminating the overhead
+datasets are also shown in Figure 9. Compared to compres-                     of weight transfers and ENEC’s superior decompression
+sion, both HANS and ENEC exhibit lower decompression                          throughput. For instance, with a batch size of 4, transferring
+throughput. This is primarily due to operations like prefix                   certain Falcon layer weights from CPU to NPU accounts for
+sum computation and reverse gather, which are not well                        nearly 80% of execution time.
+optimized on Ascend NPU architectures, increasing compu-
+tational overhead.                                                            D. Evaluation of Parameter Tuning
+   Nevertheless, ENEC maintains a comprehensive through-                         This section presents a detailed experimental analysis of
+put advantage; its decompression performance significantly                    several parameters in our compressor, supplementing the
+surpasses all other algorithms, achieving speedups of up to                   theoretical analysis in Section V-E. We investigate the impact
+4.22× over NV-Bitcomp and 2.11× over HANS, except for                         of data block size, group length (L), quantization parameters
+a 6% drop compared to Diet-Float on GPU for BF16 models.                      (n and m), and the integer transformation parameter (b).
+On FP16 and FP32 models, we still achieve an improvement
+of approximately 0.31–1.90 over Diet-Float. This gain stems
+                                                                                                     104               ADD       AND       SHIFT
+                                                                                 Throughput (GB/s)
+
+
+
+
+from our optimizations in prefix sum computation and replac-
+ing lookup-table gather with linear mapping, which reduce                                            103
+memory access latency and enhance parallel efficiency.
+                                                                                                     102
+TABLE IV: ENEC compression parameters adopted by the majority
+of tensors in the models.                                                                            101
+                                                                                                           256   512   1024     2048      4096     8192 16384
+                  BF16                       FP16 & FP32                                                                      Datablock
+  Type   Models      (b, n, m, L)   Type   Models       (b, n, m, L)
+                                                                              Fig. 11: Performance of several common operations under fixed
+  BF16   Falcon (122, 6, 3, 16)     FP16   Mistral    (7, 4, 3, 16)           input conditions across different data block sizes.
+         Qwen3-
+  BF16           (123, 6, 3, 16)    FP16   Diffusion (11, 5, 3, 16)
+           8B
+  BF16   DeepSeek(123, 6, 3, 16)    FP32   OLMo      (121, 6, 3, 16)             Data Block Size: This parameter primarily dictates system
+         Qwen3-                                                               throughput with negligible compression impact. Throughput
+  BF16           (122, 6, 3, 16)    FP32   BERT      (123, 6, 3, 16)
+          32B
+  BF16   Llama (121, 6, 3, 16)      FP32   Wav2Vec(125, 6, 3, 16)             scales with block size (Fig. 11). For performance, we choose
+                                                                              a 16,384-element block, avoiding 32,768 as its memory
+                                                                              footprint exceeds UB’s 192KB limit on Ascend NPUs.
+C. End-to-End Inference Speedup                                                  Group Length (L): Our experimental results, summarized
+  We evaluate the baseline and the ENEC-integrated infer-                     in Table IV, demonstrate that a group length of L = 16
+ence framework on two mainstream models. Because a single                     consistently yields the optimal balance between granularity
+NPU cannot host the full model, the baseline keeps most                       and compression efficiency. Notably, this value remains stable
+
+
+
+
+                                                                       1329
+across different data types (FP32, BF16, and FP16), suggest-                                            TABLE VI: Compression ratios with different input file sizes (MB).
+ing that L = 16 provides an ideal alignment with the NPU’s                                                                  Arch       Compressors     1      2       4      8         16          32      64     128    256     512
+vectorized memory access patterns.                                                                                          CPU        ZipNN          1.51   1.51    1.51   1.51       1.51     1.51       1.51   1.50   1.50    1.50
+
+   Quantization Parameters (b, n, m): These parameters                                                                                 NV_Zstd        1.28   1.28    1.28   1.28       1.28     1.28       1.28   1.27   1.27    1.28
+                                                                                                                                       NV_Deflate     1.28   1.28    1.28   1.28       1.28     1.28       1.28   1.27   1.27    1.28
+are determined via the joint search optimization algorithm                                                                             NV_GDeflate    1.27   1.27    1.27   1.27       1.27     1.27       1.27   1.27   1.27    1.27
+                                                                                                                            GPU        NV_ANS         1.20   1.20    1.20   1.20       1.20     1.23       1.25   1.26   1.26    1.26
+(Section V-E). We observe that for FP32 and BF16, the                                                                                  NV_Bitcomp     1.33   1.33    1.33   1.33       1.33     1.33       1.33   1.36   1.36    1.36
+quantization parameters n and m remain highly consistent,                                                                              Diet_ANS
+                                                                                                                                       Diet_Float
+                                                                                                                                                      1.23
+                                                                                                                                                      1.48
+                                                                                                                                                             1.23
+                                                                                                                                                             1.48
+                                                                                                                                                                     1.23
+                                                                                                                                                                     1.48
+                                                                                                                                                                            1.23
+                                                                                                                                                                            1.48
+                                                                                                                                                                                       1.23
+                                                                                                                                                                                       1.48
+                                                                                                                                                                                                1.23
+                                                                                                                                                                                                1.48
+                                                                                                                                                                                                           1.23
+                                                                                                                                                                                                           1.48
+                                                                                                                                                                                                                  1.23
+                                                                                                                                                                                                                  1.48
+                                                                                                                                                                                                                         1.23
+                                                                                                                                                                                                                         1.48
+                                                                                                                                                                                                                                 1.23
+                                                                                                                                                                                                                                 1.48
+with only minor variations in b due to data distribution                                                                               HANS           1.30   1.30    1.25   1.32       1.33     1.34       1.35   1.35   1.35    1.35
+                                                                                                                            NPU
+differences. For FP16, despite its narrower 5-bit exponent, the                                                                        ENEC           1.37   1.37    1.37   1.37       1.38     1.37       1.38   1.37   1.37    1.38
+
+optimal value for n remains 6, matching the other formats.
+                                                                                                                                       ZipNN           NV-Deflate           NV-ANS                        Diet-ANS             HANS
+                                                                                                                                       NV-Zstd         NV-GDeflate          NV-Bitcomp                    Diet-Float           ENEC
+
+
+
+
+                                                                                                                                                                                                                                   Decomp Throughput (GB/s)
+E. Parameter Robustness and Transferability
+
+
+
+
+                                                                                                   Comp Throughput (GB/s)
+   To assess ENEC robustness, we perform cross-model sen-                                                               102
+sitivity analysis applying optimal parameters from DeepSeek-
+V3 to other LLMs (e.g., Qwen-3) without re-tuning.                                                                      101
+
+TABLE V: Compression performance on other models using the                                                                   0
+                                                                                                                                   1   2    4    8 16 32 64 128 256 512            1     2     4        8 16 32 64 128 256 512
+parameters searched from DeepSeek-V3. “Optimal” is the perfor-                                                                             Input File Sizes (MB)                              Input File Sizes (MB)
+mance achieved using the parameters searched on the target model.                                       Fig. 12: Comparison of throughput performance across various
+           Models                Compression Ratio          Comp. / Decomp. Thr. (GB/s)                 methods under different input file sizes.
+       Falcon-7B [46]          1.34 (Optimal: 1.34, 0%↓)    367 / 213 (Optimal: 359 / 212)
+      Qwen3-8B [50]            1.35 (Optimal: 1.35, 0%↓)   375.2 / 220.1 (Optimal: 377 / 216)
+                                                                                                        achieves a high ratio via frequency-based statistical mapping.
+      Qwen3-32B [50]           1.34 (Optimal: 1.34, 0%↓)     351 / 209 (Optimal: 361 / 214)             V1 slightly improves on V0 by reducing per-group metadata
+  Llama-3.1-8B-Instruct [17]   1.31 (Optimal: 1.36, 5%↓)     338 / 199 (Optimal: 373 / 216)
+                                                                                                        from 4 bits to 1 bit. V2 and V3 adopt branchless integer
+                                                                                                        transform; its linear mapping approximates the frequency
+   Results in Table V show that the optimal parameters                                                  distribution, slightly reducing the ratio. For throughput, V1
+searched from DeepSeek-V3 transfer well across multiple                                                 improves compression and decompression by nearly 30%
+models. For Falcon-7B, Qwen3-8B, and Qwen3-32B, com-                                                    over V0 using bit-width quantization with hierarchical bit-
+pression remains fully lossless, and throughput even improves                                           packing, replacing multiplication/division. V2 replaces slow
+slightly, confirming ENEC stably delivers high performance                                              gather with vectorized branch-free integer transformation,
+under fixed structural parameters (group length L and bit-                                              nearly doubling throughput on vector units. V3 further op-
+packing logic n, m). For Llama-3.1-8B-Instruct, a minor                                                 timizes decoding with IDD-Scan, boosting decompression
+5% loss in compression ratio and slight throughput decrease                                             throughput by nearly 100% over V2.
+occur, but absolute performance remains relatively high.
+These fluctuations likely stem from differences in weight dis-                                                                                               VII. D ISCUSSION
+tribution across models, not algorithm design issues. Overall,                                             This section discusses ENEC’s generality and its adapt-
+the parameters searched by DeepSeek-V3 achieve zero-loss                                                ability to CPUs and GPUs, highlighting its modular design,
+migration on most models, validating their effectiveness and                                            which simplifies porting and optimization. We then derive
+robustness across different architectures.                                                              architectural implications from our software–hardware co-
+F. Ablation Study                                                                                       design, offering insights for future accelerators to better
+                                                                                                        support efficient lossless compression.
+   We perform an ablation study starting from baseline ENEC
+V0 (Section IV). V1 adds bit-width quantization with hi-                                                A. Generality of Proposed Design
+erarchical halving bit-packing (Section V-B); V2 introduces                                                Although ENEC’s low-level implementation is deeply cus-
+vectorized branch-free integer transformation (Section V-C);                                            tomized for the specific constraints of Ascend NPUs, its core
+and V3 incorporates IDD-Scan for decompression (Section                                                 design philosophy and algorithmic framework possess broad
+V-D). We evaluate all versions and block size impact on                                                 generality. The framework can be readily adapted to other
+DeepSeek [12] using ratio and throughput.                                                               accelerators, including NVIDIA GPUs.
+   Analysis of Different Input File Sizes. Using DeepSeek                                                  Cross-Architecture Portability. The core components of
+as a case study, we analyzed compression across varying                                                 ENEC—bit-width quantization, branch-free transformation,
+input sizes by partitioning parameters into different segment                                           and hierarchical halving bit-packing—are designed to max-
+sizes and compressing them independently. As shown in                                                   imize efficiency by converting complex conditional logic
+Table VI and Figure 12, ENEC consistently outperforms                                                   into regularized, vectorized bitwise operations. These design
+baselines across all sizes, maintaining a stable advantage.                                             principles are inherently portable across parallel computing
+   Analysis of Different ENEC Versions. Figure 13 com-                                                  architectures. To validate its portability, we implemented a
+pares compression ratio and throughput across versions. V0                                              baseline version (ENEC-GPU-V0) on the A800 GPU that
+
+
+
+
+                                                                                                1330
+                              Compression            Decompression           Compression Ratio                           non-contiguous access.
+                                                                                                                       • Compression-specific hardware support: We advocate for
+
+
+
+
+                                                                                                Compression Ratio
+    Throughput (GB/s)
+                        400                                      388            388
+                                                                                              1.4                        lightweight variable-length decoding near vector registers,
+                        300                                                                   1.3                        dedicated per-lane bit-extraction, and fast parallel prefix-sum
+                                                                                       219
+                        200                        180                                        1.2                        units to replace multi-stage workarounds such as IDD-Scan.
+                                   119                                 111
+                        100                              44
+                                                                                              1.1                      • Low-precision datapath specialization: Specialized datap-
+                                           34
+                          0                                                                   1.0                        aths for low-precision formats should decouple exponent and
+                                   ENEC-V0         ENEC-V1       ENEC-V2        ENEC-V3                                  mantissa processing and support hardware-level adaptive bit-
+                                                          Version
+                              Fig. 13: Performance of several ENEC versions.
+                                                                                                                         width packing.
+                                                                                                                          While some insights echo prior work, this study is the first
+TABLE VII: Performance comparison of ENEC and its implemen-                                                            to articulate them in the context of accelerator design.
+tations on other platforms using Qwen-32B.
+                        Hardware          Compressors    CR     Comp. / Decomp. Thr. (GB/s)                                               VIII. R ELATED W ORK
+                                            ZipNN        1.50            0.4 / 1.0
+                          CPU
+                                          ENEC-CPU       1.35           1.22 / 1.56                                       The most relevant works to ENEC are DietGPU [31],
+                                           NV-ANS        1.24          139.7 / 176.7                                   an efficient lossless compressor for GPUs, and HANS [3],
+                                          NV-Bitcomp     1.32          291.8 / 155.2
+                          GPU              Diet-ANS      1.23          154.4 / 194.5                                   which is designed for Ascend NPUs. DietGPU, developed
+                                           Diet-Float    1.47          271.9 / 271.3
+                                         ENEC-GPU-V0     1.34          291.3 / 269.4
+                                                                                                                       by Facebook Research, provides fast and specialized lossless
+                                         ENEC-GPU-V1     1.35          419.2 / 421.0                                   compression on NVIDIA GPUs for both machine learning
+                          NPU
+                                            HANS         1.34          162.6 / 117.7                                   and HPC workloads. It includes a GPU-optimized ANS
+                                            ENEC         1.35          360.6 / 213.8
+                                                                                                                       entropy coder to achieve high throughput and exposes two
+strictly follows the original execution flow. As shown in                                                              interfaces: a general “ANS” mode and a specialized “Float”
+Table VII, ENEC-GPU-V0 achieves a compression ratio                                                                    mode tailored for model data. The “Float” mode com-
+of 1.34× and throughput of 291.3/269.4 GB/s, which is                                                                  presses floating-point values by isolating and encoding only
+comparable to the NPU version’s 1.35× ratio and 360.6/213.8                                                            their exponents, a common strategy in weight compression.
+GB/s throughput. This demonstrates that ENEC’s fundamen-                                                               HANS [3] is an efficient closed-source lossless compressor
+tal logic is independent of hardware instruction sets and can                                                          developed by Huawei on Ascend NPUs.
+be seamlessly migrated across diverse architectures.
+   Hardware-Specific Optimizations. ENEC’s modular de-                                                                           IX. C ONCLUSION AND F UTURE W ORK
+sign enables deep hardware-tailored tuning by substituting
+computational primitives. For instance, hierarchical halving                                                              This paper presents a lossless compressor tailored for
+bit-packing can be optimized using platform-specific shuffle                                                           Ascend NPUs, specifically for model weight compression.
+or shift instructions. While the NPU version uses IDD-Scan                                                             Experiments show that ENEC achieves compression through-
+to bypass alignment constraints, the GPU version (ENEC-                                                                put of 263–523 GB/s and decompression throughput of
+GPU-V1) invokes optimized parallel prefix-sum from the                                                                 188–336 GB/s on FP32, FP16, and BF16 model weights.
+CUB library, leverages warp-level intrinsics for fast com-                                                             On 910B2 NPU, it delivers 2.47× higher compression
+munication, and utilizes vectorized memory access. These                                                               throughput and 2.11× faster decompression throughput than
+optimizations yield a 1.56× throughput improvement over the                                                            SOTA methods, while also achieving superior compres-
+baseline (ENEC-GPU-V0). Similarly, our CPU implemen-                                                                   sion ratios. It further demonstrates excellent performance
+tation employs AVX2 for BF16 transformations and BMI2                                                                  in end-to-end inference scenarios. Efficient compression
+PEXT for non-byte-aligned compression, achieving 1.56× the                                                             is achieved through hardware-informed decomposition and
+throughput of ZipNN in a single-core configuration.                                                                    data-dependent pipelining, balancing efficiency and compres-
+                                                                                                                       sion ratio via an “approximate majority + precise correction”
+B. Architectural Implications for Future Accelerators                                                                  paradigm with trade-offs centered on system bottlenecks. As
+                                                                                                                       hardware and architecture technology evolves, we plan to
+   The ENEC co-design highlights key principles for future                                                             extend support and performance optimizations to a broader
+architectures with compression acceleration:                                                                           range of low-precision and integer data formats.
+• Branch-free execution support: Architectures should na-
+  tively support branch-free execution via bit-manipulation and                                                                            ACKNOWLEDGMENTS
+  predication, aligning with prior compression studies [48].
+• Modular operator libraries: Standardized interfaces for
+                                                                                                                         This work was supported by the Innovation Funding of ICT, CAS
+                                                                                                                       (Grant No. E461050), the National Key Research and Development
+  modular operator libraries enable vendor-optimized primi-                                                            Program of China (Grant No. 2025YFB3003702), and the National
+  tives (e.g., scans, gathers) while preserving portability.                                                           Natural Science Foundation of China (Grant Nos. 62032023 and
+• Memory subsystem co-design: Memory subsystems should                                                                 T2125013). The experiments were performed on the robotic AI-
+  be co-designed with data layouts to reduce the overhead of                                                           Scientist platform of Chinese Academy of Sciences.
+
+
+
+
+                                                                                                                    1331
+                              R EFERENCES                                           [22] Groq, “GroqFlow provides an automated tool flow for compiling
+                                                                                         machine learning and linear algebra workloads into Groq programs
+                                                                                         and executing those programs on GroqChip™ processors.” https:
+ [1] M. Abdin, J. Aneja, H. Behl, S. Bubeck, R. Eldan, S. Gunasekar,
+                                                                                         //github.com/groq/groqflow, 2025.
+     M. Harrison, R. J. Hewett, M. Javaheripi, P. Kauffmann et al., “Phi-4
+     technical report,” arXiv preprint arXiv:2412.08905, 2024.                      [23] A. Heilper and D. Singer, “Lossless compression of neural network
+                                                                                         components: Weights, checkpoints, and k/v caches in low-precision
+ [2] J. Achiam, S. Adler, S. Agarwal, L. Ahmad, I. Akkaya, F. L. Aleman,
+                                                                                         formats,” arXiv preprint arXiv:2508.19263, 2025.
+     D. Almeida, J. Altenschmidt, S. Altman, S. Anadkat et al., “Gpt-4
+     technical report,” arXiv preprint arXiv:2303.08774, 2023.                      [24] M. Hershcovitch, A. Wood, L. Choshen, G. Girmonsky, R. Leibovitz,
+                                                                                         O. Ozeri, I. Ennmouri, M. Malka, P. Chin, S. Sundararaman et al.,
+ [3] H. Ascend, “Hans documentation,” https://gitee.com/ascend/op-plugi
+                                                                                         “Zipnn: Lossless compression for ai models,” in 2025 IEEE 18th
+     n/pulls/2449/files, 2025.
+                                                                                         International Conference on Cloud Computing (CLOUD).              IEEE,
+ [4] S. Ashkboos, M. L. Croci, M. G. d. Nascimento, T. Hoefler, and
+                                                                                         2025, pp. 186–198.
+     J. Hensman, “Slicegpt: Compress large language models by deleting
+     rows and columns,” arXiv preprint arXiv:2401.15024, 2024.                      [25] T. Hidayat, M. H. Zakaria, and A. N. C. Pee, “Increasing the huffman
+                                                                                         generation code algorithm to equalize compression ratio and time
+ [5] N. Azami, A. Fallin, and M. Burtscher, “Efficient lossless compression
+                                                                                         in lossless 16-bit data archiving,” Multimedia tools and applications,
+     of scientific floating-point data on cpus and gpus,” in Proceedings of
+                                                                                         vol. 82, no. 16, pp. 24 031–24 068, 2023.
+     the 30th ACM International Conference on Architectural Support for
+     Programming Languages and Operating Systems, Volume 1, 2025, pp.               [26] D. A. Huffman, “A method for the construction of minimum-
+     395–409.                                                                            redundancy codes,” Proceedings of the IRE, vol. 40, no. 9, pp. 1098–
+                                                                                         1101, 2007.
+ [6] A. Blattmann, T. Dockhorn, S. Kulal, D. Mendelevitch, M. Kilian,
+     D. Lorenz, Y. Levi, Z. English, V. Voleti, A. Letts et al., “Stable video      [27] K. V. Iyer, K. Seshadri, and K. Srinivasulu, “An advancement in
+     diffusion: Scaling latent video diffusion models to large datasets,”                huffman coding with a potential for parallel decoding,” Concurrency
+     arXiv preprint arXiv:2311.15127, 2023.                                              and Computation: Practice and Experience, vol. 37, no. 9-11, p.
+ [7] burtscher, “LC-framework,” https://github.com/burtscher/LC-framewo                  e70096, 2025.
+     rk, 2025.                                                                      [28] J. Jia, C. Xie, H. Lu, D. Wang, H. Feng, C. Zhang, B. Sun, H. Lin,
+ [8] Cerebras, “Cerebras Training and Inference Docs,” https://docs.cereb                Z. Zhang, X. Liu et al., “Sdp4bit: Toward 4-bit communication
+     ras.net/en/latest, 2024.                                                            quantization in sharded data parallelism for llm training,” Advances
+                                                                                         in Neural Information Processing Systems, vol. 37, pp. 8734–8759,
+ [9] X. Chen, J. Tian, I. Beaver, C. Freeman, Y. Yan, J. Wang, and D. Tao,
+                                                                                         2024.
+     “Fcbench: Cross-domain benchmarking of lossless compression for
+     floating-point data,” arXiv preprint arXiv:2312.10301, 2023.                   [29] A. Q. Jiang, A. Sablayrolles, A. Mensch, C. Bamford, D. S.
+                                                                                         Chaplot, D. de Las Casas, F. Bressand, G. Lengyel, G. Lample,
+[10] Y. Collet and M. Kucherawy, “Zstandard compression and the appli-
+                                                                                         L. Saulnier, L. R. Lavaud, M.-A. Lachaux, P. Stock, T. L.
+     cation/zstd media type,” Tech. Rep., 2018.
+                                                                                         Scao, T. Lavril, T. Wang, T. Lacroix, and W. E. Sayed,
+[11] A. Conneau, A. Baevski, R. Collobert, A. Mohamed, and M. Auli,
+                                                                                         “Mistral 7b,” ArXiv, vol. abs/2310.06825, 2023. [Online]. Available:
+     “Unsupervised cross-lingual representation learning for speech recog-
+                                                                                         https://api.semanticscholar.org/CorpusID:263830494
+     nition,” arXiv preprint arXiv:2006.13979, 2020.
+                                                                                    [30] Z. Jiang, H. Lin, Y. Zhong, Q. Huang, Y. Chen, Z. Zhang, Y. Peng,
+[12] DeepSeek-AI, “Deepseek llm: Scaling open-source language models
+                                                                                         X. Li, C. Xie, S. Nong et al., “{MegaScale}: Scaling large language
+     with longtermism,” arXiv preprint arXiv:2401.02954, 2024. [Online].
+                                                                                         model training to more than 10,000 {GPUs},” in 21st USENIX
+     Available: https://github.com/deepseek-ai/DeepSeek-LLM
+                                                                                         Symposium on Networked Systems Design and Implementation (NSDI
+[13] T. Dettmers, M. Lewis, Y. Belkada, and L. Zettlemoyer, “Llm.int8():                 24), 2024, pp. 745–760.
+     8-bit matrix multiplication for transformers at scale,” 2022. [Online].
+                                                                                    [31] J. Johnson, “GPU implementation of a fast generalized ANS (asym-
+     Available: https://arxiv.org/abs/2208.07339
+                                                                                         metric numeral system) entropy encoder and decoder,” https://github
+[14] H. Developers, “Document,” https://developer.huawei.com/consumer/
+                                                                                         .com/facebookresearch/dietgpu, 2025.
+     en/doc/hiai-guides/introduction-0000001051486804, 2025.
+                                                                                    [32] D. Kalamkar, D. Mudigere, N. Mellempudi, D. Das, K. Banerjee,
+[15] J. Devlin, M. Chang, K. Lee, and K. Toutanova, “BERT: pre-training
+                                                                                         S. Avancha, D. T. Vooturi, N. Jammalamadaka, J. Huang, H. Yuen
+     of deep bidirectional transformers for language understanding,” CoRR,
+                                                                                         et al., “A study of bfloat16 for deep learning training,” arXiv preprint
+     vol. abs/1810.04805, 2018. [Online]. Available: http://arxiv.org/abs/18
+                                                                                         arXiv:1905.12322, 2019.
+     10.04805
+                                                                                    [33] F. Knorr, P. Thoman, and T. Fahringer, “ndzip-gpu: efficient lossless
+[16] B. Du and Z. Ye, “A novel method of lossless compression for 2-d
+                                                                                         compression of scientific floating-point data on gpus,” in Proceedings
+     astronomical spectra images,” Experimental Astronomy, vol. 27, no. 1,
+                                                                                         of the international conference for high performance computing,
+     p. 19, 2009.
+                                                                                         networking, storage and analysis, 2021, pp. 1–14.
+[17] A. Dubey, A. Jauhri, A. Pandey, A. Kadian, A. Al-Dahle, A. Letman,
+                                                                                    [34] G. G. Langdon, “An introduction to arithmetic coding,” IBM Journal
+     A. Mathur, A. Schelten, A. Yang, A. Fan et al., “The llama 3 herd of
+                                                                                         of Research and Development, vol. 28, no. 2, pp. 135–149, 1984.
+     models,” arXiv e-prints, pp. arXiv–2407, 2024.
+[18] J. Duda, “Asymmetric numeral systems: entropy coding combining                 [35] J. Lee, J. Bae, B. Kim, S. J. Kwon, and D. Lee, “To fp8 and back
+     speed of huffman coding with compression rate of arithmetic coding,”                again: Quantifying reduced precision effects on llm training stability,”
+     arXiv preprint arXiv:1311.2540, 2013.                                               2025. [Online]. Available: https://arxiv.org/abs/2405.18710
+[19] E. Frantar and D. Alistarh, “Sparsegpt: Massive language models can            [36] R. Li, Z. Li, Y. Wu, C. Chen, and Y. Zheng, “Elf: Erasing-based lossless
+     be accurately pruned in one-shot,” in International conference on                   floating-point compression,” Proceedings of the VLDB Endowment,
+     machine learning. PMLR, 2023, pp. 10 323–10 337.                                    vol. 16, no. 7, pp. 1763–1776, 2023.
+[20] E. Frantar, S. Ashkboos, T. Hoefler, and D. Alistarh, “Gptq: Accurate          [37] S. Li, K. Lu, Z. Lai, W. Liu, K. Ge, and D. Li, “A multidimensional
+     post-training quantization for generative pre-trained transformers,”                communication scheduling method for hybrid parallel dnn training,”
+     arXiv preprint arXiv:2210.17323, 2022.                                              IEEE Transactions on Parallel and Distributed Systems, vol. 35, no. 8,
+                                                                                         pp. 1415–1428, 2024.
+[21] D. Groeneveld, I. Beltagy, P. Walsh, A. Bhagia, R. Kinney, O. Tafjord,
+     A. H. Jha, H. Ivison, I. Magnusson, Y. Wang, S. Arora, D. Atkinson,            [38] Z. Li, R. Li, X. Xu, Y. Wu, C. Chen, T. Liu, J. Shang, and Y. Zheng,
+     R. Authur, K. Chandu, A. Cohan, J. Dumas, Y. Elazar, Y. Gu, J. Hessel,              “Adaptive encoding strategies for lossless floating-point compression,”
+     T. Khot, W. Merrill, J. Morrison, N. Muennighoff, A. Naik, C. Nam,                  IEEE Internet of Things Journal, 2025.
+     M. E. Peters, V. Pyatkin, A. Ravichander, D. Schwenk, S. Shah,                 [39] H. Liao, J. Tu, J. Xia, and X. Zhou, “Davinci: A scalable architecture
+     W. Smith, E. Strubell, N. Subramani, M. Wortsman, P. Dasigi, N. Lam-                for neural network computing,” in 2019 IEEE Hot Chips 31 Symposium
+     bert, K. Richardson, L. Zettlemoyer, J. Dodge, K. Lo, L. Soldaini, N. A.            (HCS). IEEE Computer Society, 2019, pp. 1–44.
+     Smith, and H. Hajishirzi, “Olmo: Accelerating the science of language          [40] F. Lin, K. Arunruangsirilert, H. Sun, and J. Katto, “Recoil: Parallel
+     models,” Preprint, 2024.                                                            rans decoding with decoder-adaptive scalability,” in Proceedings of
+
+
+
+
+                                                                                 1332
+     the 52nd International Conference on Parallel Processing, 2023, pp.               modern gpus,” in Proceedings of the 37th International Conference on
+     31–40.                                                                            Supercomputing, 2023, pp. 348–359.
+[41] J. Lin, J. Tang, H. Tang, S. Yang, W.-M. Chen, W.-C. Wang, G. Xiao,          [62] T. Zhang, Y. Sui, S. Zhong, V. Chaudhary, X. Hu, and A. Shrivastava,
+     X. Dang, C. Gan, and S. Han, “Awq: Activation-aware weight quan-                  “70% size, 100% accuracy: Lossless llm compression for efficient gpu
+     tization for on-device llm compression and acceleration,” Proceedings             inference via dynamic-length float,” arXiv preprint arXiv:2504.11651,
+     of machine learning and systems, vol. 6, pp. 87–100, 2024.                        2025.
+[42] Z. Liu, S. Cheng, G. Tan, Y. You, and D. Tao, “Elasticmm: Efficient          [63] Z. Zhou, X. Ning, K. Hong, T. Fu, J. Xu, S. Li, Y. Lou, L. Wang,
+     multimodal llms serving with elastic multimodal parallelism,” arXiv               Z. Yuan, X. Li et al., “A survey on efficient inference for large language
+     preprint arXiv:2507.10069, 2025.                                                  models,” arXiv preprint arXiv:2404.14294, 2024.
+[43] T. Lu, Y. Zhong, Z. Sun, X. Chen, Y. Zhou, F. Wu, Y. Yang, Y. Huang,         [64] J. Ziv and A. Lempel, “Compression of individual sequences via
+     and Y. Yang, “Adt-fse: A new encoder for sz,” in Proceedings of the In-           variable-rate coding,” IEEE transactions on Information Theory,
+     ternational Conference for High Performance Computing, Networking,                vol. 24, no. 5, pp. 530–536, 2003.
+     Storage and Analysis, 2023, pp. 1–13.                                        [65] ——, “A universal algorithm for sequential data compression,” IEEE
+[44] P. Micikevicius, D. Stosic, N. Burgess, M. Cornea, P. Dubey,                      Transactions on information theory, vol. 23, no. 3, pp. 337–343, 2003.
+     R. Grisenthwaite, S. Ha, A. Heinecke, P. Judd, J. Kamalu,                    [66] P. Zuo, H. Lin, J. Deng, N. Zou, X. Yang, Y. Diao, W. Gao, K. Xu,
+     N. Mellempudi, S. Oberman, M. Shoeybi, M. Siu, and H. Wu,                         Z. Chen, S. Lu et al., “Serving large language models on huawei
+     “Fp8 formats for deep learning,” 2022. [Online]. Available:                       cloudmatrix384,” arXiv preprint arXiv:2506.12708, 2025.
+     https://arxiv.org/abs/2209.05433
+[45] NVIDIA, “Nvidia nvcomp developer,” https://developer.nvidia.com/n
+     vcomp, 2025.
+[46] G. Penedo, Q. Malartic, D. Hesslow, R. Cojocaru, A. Cappelli,
+     H. Alobeidli, B. Pannier, E. Almazrouei, and J. Launay, “The
+     RefinedWeb dataset for Falcon LLM: outperforming curated corpora
+     with web data, and web data only,” arXiv preprint arXiv:2306.01116,
+     2023. [Online]. Available: https://arxiv.org/abs/2306.01116
+[47] J. Pieprzyk, J. Duda, M. Pawłowski, S. Camtepe, A. Mahboubi, and
+     P. Morawiecki, “The compression optimality of asymmetric numeral
+     systems,” Entropy, vol. 25, no. 4, p. 672, 2023.
+[48] M. Shah, X. Yu, S. Di, M. Becchi, and F. Cappello, “Lightweight
+     huffman coding for efficient gpu compression,” in Proceedings of the
+     37th International Conference on Supercomputing, 2023, pp. 99–110.
+[49] S. Systems, “SambaNova :: SambaNova Documentation,” https://docs
+     .sambanova.ai/home/latest/index.html, 2024.
+[50] Q. Team, “Qwen3 technical report,” 2025. [Online]. Available:
+     https://arxiv.org/abs/2505.09388
+[51] X. Wang, Y. Zheng, Z. Wan, and M. Zhang, “Svd-llm: Truncation-
+     aware singular value decomposition for large language model com-
+     pression,” arXiv preprint arXiv:2403.07378, 2024.
+[52] A. Weißenberger and B. Schmidt, “Massively parallel ans decoding on
+     gpus,” in Proceedings of the 48th International Conference on Parallel
+     Processing, 2019, pp. 1–10.
+[53] T. A. Welch, “A technique for high-performance data compression,”
+     Computer, vol. 17, no. 06, pp. 8–19, 1984.
+[54] H. Xi, H. Cai, L. Zhu, Y. Lu, K. Keutzer, J. Chen, and S. Han, “Coat:
+     Compressing optimizer states and activation for memory-efficient fp8
+     training,” 2025. [Online]. Available: https://arxiv.org/abs/2410.19313
+[55] G. Xiao, J. Lin, M. Seznec, H. Wu, J. Demouth, and S. Han,
+     “Smoothquant: Accurate and efficient post-training quantization for
+     large language models,” in International conference on machine learn-
+     ing. PMLR, 2023, pp. 38 087–38 099.
+[56] H. Yamamoto and K.-i. Iwata, “Asymptotic optimality of the asym-
+     metric encoding-decoding scheme,” in 2024 International Symposium
+     on Information Theory and Its Applications (ISITA). IEEE, 2024, pp.
+     354–359.
+[57] N. Yamamoto, K. Nakano, Y. Ito, D. Takafuji, A. Kasagi, and
+     T. Tabaru, “Huffman coding with gap arrays for gpu acceleration,”
+     in Proceedings of the 49th International Conference on Parallel
+     Processing, 2020, pp. 1–11.
+[58] Z. Yuan, Y. Shang, Y. Song, Q. Wu, Y. Yan, and G. Sun, “Asvd:
+     Activation-aware singular value decomposition for compressing large
+     language models,” arXiv preprint arXiv:2312.05821, 2023.
+[59] Z. Yuan, Y. Shang, Y. Zhou, Z. Dong, Z. Zhou, C. Xue, B. Wu, Z. Li,
+     Q. Gu, Y. J. Lee et al., “Llm inference unveiled: Survey and roofline
+     model insights,” arXiv preprint arXiv:2402.16363, 2024.
+[60] P. Yubeaton, T. Mahmoud, S. Naga, P. Taheri, T. Xia, A. George,
+     Y. Khalil, S. Q. Zhang, S. Joshi, C. Hegde et al., “Huff-llm: End-to-
+     end lossless compression for efficient llm inference,” arXiv preprint
+     arXiv:2502.00922, 2025.
+[61] B. Zhang, J. Tian, S. Di, X. Yu, M. Swany, D. Tao, and F. Cappello,
+     “Gpulz: Optimizing lzss lossless compression for multi-byte data on
+
+
+
+
+                                                                               1333
+                           A PPENDIX                                         Qwen3-32B
+A. Abstract                                                                  Falcon-40B
+   The source code of ENEC is available at https://github.com               FP16 Models:
+/jinwuyang/ENEC_ISCA_AE. The NPU kernel implementation
+can be found in the csrc/ directory and the Python-based data                CapybaraHermes-2.5-Mistral-7B
+processing, parameter search, and profiling scripts can be found             stable-video-diffusion-img2vid-fp16
+in the python/ directory. Since this paper includes a large number
+of experiments that in aggregate will take 24 hours to fully test           FP32 Models:
+all model compression tasks, the instructions here will focus on
+reproducing the results for Qwen3-32B. The workflow to reproduce             OLMo-1B-hf
+other models is very similar.                                                bert-base-uncased
+                                                                             wav2vec2-large-xlsr-53-english
+B. Artifact check-list (meta-information)
+  • Algorithm: ENEC ( Efficient NPU-Enhanced Compression).
+  • Program: Python 3.9, C++/Ascend C.
+                                                                            D. Installation
+  • Compilation: CMake 3.10+, GCC 7.5+ (aarch64), Ascend
+    CANN Toolkit.                                                              1) Install CANN Toolkit and Kernels: Download the follow-
+  • Transformations: Layer-wise weight splitting.                           ing files from https://www.hiascend.com/developer/download/co
+  • Binary: Compiled NPU operators (.so files) and executables.             mmunity/result?module=cann&cann=8.2.RC1.alpha002:
+  • Data set: Qwen3-32B.
+                                                                              •   Ascend-cann-toolkit_8.2.RC1.alpha002_linux-aarch64.run
+  • Run-time environment: Ubuntu22.04, CANN8.2.RC1.alph
+                                                                              •   Ascend-cann-kernels-910b_8.2.RC1.alpha002_linux-aarch64
+    a002.
+                                                                                  .run
+  • Hardware: Ascend 910B2 NPU.
+  • Run-time state: Isolated NPU execution.                                 Then run the following commands:
+  • Execution: Automated profiling via msprof.
+  • Metrics: Compression Ratio (CR), Throughput (GB/s).                      # Add executable permissions
+  • Output: CSV reports and summary files.                                   chmod +x Ascend-cann-toolkit_8.2.RC1.alpha002_linux-\
+  • Experiments:    Data preparation, parameter search, perfor-                    aarch64.run
+    mance benchmarking, and inference.                                       chmod +x Ascend-cann-kernels-910b_8.2.RC1.alpha002_linux-\
+  • How much disk space required (approximately)?: 200 GB.                         aarch64.run
+  • How much time is needed to prepare workflow (approxi-                    # Verify the installers
+    mately)?: 1 hours.                                                       ./Ascend-cann-toolkit_8.2.RC1.alpha002_linux-aarch64.run --\
+  • How much time is needed to complete experiments (ap-
+                                                                                   check
+    proximately)?: 3 hours.
+                                                                             ./Ascend-cann-kernels-910b_8.2.RC1.alpha002_linux-aarch64.\
+  • Publicly available?: Yes.
+  • Code licenses: BSD-3.
+                                                                                   run --\check
+                                                                             # Install
+C. Description                                                               ./Ascend-cann-toolkit_8.2.RC1.alpha002_linux-aarch64.run --\
+  1) How to access: The source code is available at https://gith                   install --install-path=/your/path
+ub.com/jinwuyang/ENEC_ISCA_AE. The repository is organized                   ./Ascend-cann-kernels-910b_8.2.RC1.alpha002_linux-aarch64.\
+into csrc/ (NPU kernels), python/ (test tools).                                    run --install --install-path=/your/path
+   2) Hardware dependencies: The artifact requires an Ascend                 source /your/path/ascend-toolkit/set_env.sh
+910B2 NPU platform with aarch64 architecture.
+  3) Software dependencies:                                                   2) Configure the Conda environment: Create a Python 3.9
+  •   CANN       Stack: Ascend-CANN-toolkit and Kernels                     environment and install NPU-specific PyTorch and dependencies:
+      8.2.RC1.alpha002.
+   • Python Libraries: torch 2.5.1, torch_npu 2.5.1.post3, and
+                                                                             conda create -n enec python=3.9 -y
+      standard data science stack (numpy, pandas, scipy).                    conda activate enec
+   • ATB Library: Recommended version 8.0.0.                                 pip install pandas numpy==1.24.3 transformers==4.30.0 jinja2 \
+   4) Data sets: The evaluation of ENEC encompasses a diverse                      decorator attrs psutil absl-py cloudpickle ml-dtypes scipy \
+set of model weights, categorized by their data precision formats.                 tornado pyyaml
+By default, the data_prepare.sh script only downloads Qwen3-                 wget https://download.pytorch.org/whl/cpu/torch-2.5.1-cp39-\
+32B to minimize preparation time and disk usage. However, the                      cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.\
+data_prepare.sh script provides commented options to download all                  whl
+other models listed below (e.g., DeepSeek-LLM-7B-Base, Falcon-               pip install torch-2.5.1-cp39-cp39-manylinux_2_17_aarch64.\
+7B, etc.) for users who wish to reproduce the complete set of                      manylinux2014_aarch64.whl
+experiments.                                                                 wget https://gitee.com/ascend/pytorch/releases/download/v7
+BF16 Models:
+                                                                                   .1.0.2-pytorch2.5.1/torch_npu-2.5.1.post3-cp39-cp39-\
+ DeepSeek-LLM-7B-Base                                                              manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+ Falcon-7B                                                                   pip install torch_npu-2.5.1.post3-cp39-cp39-manylinux_2_17_\
+ Qwen3-8B                                                                          aarch64.manylinux2014_aarch64.whl
+ Llama-3.1-8B-Instruct
+
+
+
+
+                                                                     1334
+  3) Verify the environment: Run a simple NPU tensor opera-                     model_name dtype compression_ratio_CR
+tion to confirm correct setup:                                                        compress_throughput_GBps
+                                                                                      decompress_throughput_GBps
+ python3 -c "import torch; import torch_npu; a = torch.randn(3,
+                                                                                Llama-3.1-8B-Instruct BF16                    1.36
+      4).npu(); print(a + a)"
+                                                                                         376.8                   219.4
+If the output is normal, the environment is normal.                             Qwen3-32B BF16                     1.35                  366.3
+   4) Build: Clone the repository and run build_csrc.sh (1 hour).                                       217.1
+                                                                                Qwen3-8B BF16                    1.36                   388.1
+ git clone https://github.com/jinwuyang/ENEC_ISCA_AE.git                                              222.7
+ chmod 777 -R ENEC_ISCA_AE                                                      deepseek-llm-7b-base BF16                    1.37
+ cd ENEC_ISCA_AE                                                                        391.2                   223.1
+ bash build_csrc.sh                                                             falcon-40b BF16                  1.37                   369.1
+                                                                                                      217.2
+E. Experiment workflow                                                          falcon-7b BF16                  1.36                   364.6
+                                                                                                     215.8
+  1) Data Preparation: Execute data_prepare.sh to download
+                                                                                CapybaraHermes-2.5-Mistral-7B FP16                     1.12
+and split the model weights. By default, the script only downloads
+and processes Qwen3-32B (1 hour). To test other models (e.g.,                                      317.0                    195.5
+DeepSeek-LLM-7B, Falcon-40B), simply uncomment the corre-                       stable-video-diffusion-img2vid FP16                  1.09
+sponding lines in data_prepare.sh.                                                               223.4                     148.0
+                                                                                OLMo-1B-hf FP32                     1.15                     538.6
+ bash data_prepare.sh                                                                                    348.7
+                                                                                bert-base-uncased FP32                   1.15
+   2) Performance Testing: Run compressor_test.sh to measure                          329.1                    252.8
+the compression ratio and throughput. This script automates pa-
+                                                                                wav2vec2-large-xlsr-53-english FP32                   1.15
+rameter searching, compression/decompression profiling, and global
+analysis. At the end of the execution, it also outputs the end-to-end                            372.1                     254.6
+inference results (2 hours).
+                                                                                  3) End-to-End Inference Latency: Figure 10 in the paper
+ source /your/path/ascend-toolkit/set_env.sh                                   shows the end-to-end inference latency and speedup over the base-
+ bash compressor_test.sh                                                       line (uncompressed with CPU offloading) for both Qwen3-32B and
+                                                                               Falcon-40B under different batch sizes. For brevity, we only present
+                                                                               the results for Qwen3-32B with batch size = 1. The expected results
+F. Evaluation and expected results                                             are presented as follows:
+   1) Optimal parameter search results: The following results                   [Inference: Qwen3-32B]
+show the expected outputs for the Qwen3-32B model:
+                                                                                  Configuration: size=61.02 GB, throughput=217.05 GB/s
+                BF16 Model Compression Results                                    baseline TTFT: 2.36064 s
+ ========================================                                         baseline TPOT: 1.1951 s
+ File Processed:          hyperparams_results.csv                                 ENEC TTFT: 0.556342 s (Speedup: 4.24x)
+ Total Elements:          32,761,446,400                                          ENEC TPOT: 0.361142 s (Speedup: 3.31x)
+ -------------------------------------------------                                Result saved to: Latency_Qwen3-32B_BF16.csv
+ Original BF16 Size:           62487.50 MB
+ ENEC Compressed Size: 46265.99 MB
+ Compression Ratio (CR):               1.35x
+ Model Avg Bit-width:              11.8465 bits/element
+ Exponent Avg Bit-width: 3.8465 bits/element
+ Formula Avg CR*:                       1.35 x
+
+The optimal parameter search results are organized within
+the param_search_enec/ directory. Each model subfolder (e.g.,
+BF16/Qwen3-32B) provides:
+   • hyperparams_results.csv: An exhaustive list of optimal pa-
+      rameters for every model tensor.
+   • param_combinations_stats.txt: A comprehensive statistical
+      report of the search results.
+   2) Compression Ratio and Throughput: The file sum-
+mary_enec.csv summarizes the compression ratio, compression
+throughput, and decompression throughput of ENEC on 11 models,
+corresponding to Table II and Figure 9 in the paper. The expected
+results for these 11 models are presented as follows:
+ --- Summary Data Preview ---
+
+
+
+
+                                                                        1335
+

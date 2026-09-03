@@ -1,0 +1,71 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                      Kim, Hong, et al.
+
+
+Table 1: Hardware specification of NVIDIA A100 GPU and                 hardware in RTL using SystemVerilog and verify its functionality
+Oaken equipped with either HBM or LPDDR memory.                        with Synopsys VCS functional verification solution. The RTL is
+                                                                       synthesized using Synopsys Design Compiler for a target clock
+                            NVIDIA A100 Oaken-HBM Oaken-LPDDR          frequency of 1 GHz on TSMC 28nm technology.
+  Peak FP16 TFLOPS              312         270        270
+                                                                       Baselines. For accuracy evaluation, we use Tender [35], Atom [86],
+  Operating frequency         1.4 GHz     1.0 GHz    1.0 GHz
+                                                                       QServe [41], KIVI [43], and KVQuant [22] as baselines. For perfor-
+     Memory type                HBM         HBM      LPDDR
+                                                                       mance evaluation, we first use vLLM [32] as the FP16-operating
+   Memory capacity             80 GB       80 GB     256 GB
+  Memory bandwidth            2.0 TB/s    2.0 TB/s   1.1 TB/s
+                                                                       GPU baseline, as it represents the state-of-the-art LLM serving
+                                                                       system and delivers superior performance compared to other alter-
+                                                                       natives. We also use most of the baselines for accuracy evaluation,
+                                                                       excluding Atom, which lacks open-source code availability. KIVI,
+6 Evaluation                                                           QServe, and KVQuant serve as additional GPU baselines, running
+6.1 Methodology                                                        on A100 GPUs. Tender [35] is an LLM inference accelerator employ-
+                                                                       ing quantization, which offers an open-source simulator. For a fair
+Models and datasets. For evaluation, we use Llama2-7B, 13B,
+                                                                       comparison, we align Tender’s memory specifications and compute
+and 70B [66], OPT-6.7B, 13B, and 30B [84], Mistral-7B [25] and
+                                                                       capabilities with those of the A100 GPU. All quantization-based
+Mixtral-8x7B [26] models. Llama2, Mistral, and Mixtral models im-
+                                                                       baselines employ 4-bit KV cache-only quantization. While QServe
+plement grouped-query attention [3], while Mistral and Mixtral
+                                                                       and Tender offer weight and activation quantization, we disable
+models also incorporate a sliding window [6]. Additionally, Mixtral
+                                                                       these features for fair comparison with the other baselines.
+model further integrates mixture-of-experts (MoE) layers [62]. To
+evaluate model accuracy, we utilize Wikitext2, PIQA, Winogrande,       Thresholds. Throughout the evaluation, we set the outer, middle,
+and Hellaswag datasets, which are widely evaluated in prior stud-      and inner group ratio to 4%, 90%, and 6%, respectively. This global
+ies [22, 31, 33, 35, 41, 86, 87]. Wikitext2 [46] dataset consists of   configuration applies to all models and datasets for the following
+tokens extracted from Wikipedia articles, while PIQA [7], Wino-        two reasons. First, as discussed in Section 4.1, KV cache distribution
+grande [58], and Hellaswag [81] constitute questions and answers.      is independent of the input dataset. Second, although the optimal
+We report zero-shot accuracy (%) for PIQA, Winogrande, and Hel-        group ratio varies slightly across LLMs, its impact on inference
+laswag datasets and perplexity for Wikitext2 dataset. Note that        performance and accuracy is marginal. Section 6.2 explores the
+for perplexity, lower values indicate better performance. For real-    threshold search space and group count, justifying this choice.
+world benchmarking, we use two open-source production traces           Offline profiling. Oaken’s offline profiling is performed by collect-
+from Azure LLM inference services, Conversation [47, 54] and Burst-    ing topK values, which represent four boundaries of the quantiza-
+GPT [68]. We follow the methodology established in prior work          tion groups, during inference and averaging the gathered values. As
+to simulate inference serving scenarios [20]. Requests are sampled     mentioned, we use the same group ratio and the Wikitext2 dataset
+from the trace over a time period, and batches are synthesized with    for all LLMs. However, since the KV cache distribution varies by
+varying input and output sequence lengths. We repeat this process      model, requiring different group thresholds and individual profil-
+across multiple batches, measuring the average performance.            ing. Despite this, Oaken’s offline profiling requires only about a
+Accelerator platforms. For the end-to-end performance evalua-          hundred inferences and takes approximately ten minutes, even for
+tion, we developed a hardware simulator for the Oaken accelerator      the Llama2-70B model. Since this process is required only once
+by extending the existing hardware simulator of LPU [21, 53]. LPU      before serving LLM inference online, the overhead is negligible.
+was initially optimized for low-latency inference without batching
+support, while the follow-up work scaled it to accommodate larger
+batches [48]. We extend the LPU architecture to integrate Oaken        6.2    Experimental Results
+by incorporating quantization/dequantization engines and memory        Throughput. Figure 11 presents the end-to-end throughput com-
+management units into the LPU’s DMA units. For GPU baselines,          parison results among GPU baselines (vLLM, KVQuant, KIVI, and
+we use NVIDIA A100 GPUs equipped with 80 GB HBM [49]. We use           QServe) and ASIC accelerators (Tender and Oaken). The results
+a single GPU for Llama2-7B, 13B, and Mistral-7B models, as it could    are omitted when the baseline system lacks support for the corre-
+accommodate all the model parameters. For larger models including      sponding models. For a batch size of 256, Oaken-LPDDR achieves
+OPT-30B, Mixtral-8x7B, and Llama2-70B models, we use two GPUs,         an average throughput improvement of 1.79× over vLLM and 1.58×
+employing pipeline parallelism to keep computation capability and      over QServe. This improvement is attributed to the reduced ex-
+memory bandwidth consistent, while scaling capacity to 160 GB.         ecution time of the attention operations, which accounts for the
+Hardware specifications and implementation. Table 1 summa-             majority of inference time. Oaken alleviates bandwidth and capacity
+rizes the specifications of the NVIDIA A100 GPU and the Oaken          bottlenecks by minimizing memory access to the KV cache.
+accelerator used in our evaluations. Oaken-LPDDR is equipped with         GPU baselines perform well for small batches and models, but as
+an LPDDR memory module matching the specifications used in             the batch size grows, they cannot accommodate the entire batch due
+prior works [53, 83]. Oaken-HBM is configured with HBM memory          to capacity constraints, leading to performance saturation. Tender,
+identical to that of the A100 GPU. The HBM memory offers higher        which uses the same HBM memory as A100 GPUs, also does not
+bandwidth but has a smaller capacity compared to LPDDR mem-            scale for large batches. Oaken-HBM outperforms other baselines
+ory, making a trade-off between them. We implement the Oaken           and Oaken-LPDDR for small models and batch sizes. However, it
+

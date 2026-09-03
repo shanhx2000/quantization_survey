@@ -1,0 +1,2902 @@
+arXiv:2505.10909v1 [cs.AR] 16 May 2025
+
+Phi: Leveraging Pattern-based Hierarchical Sparsity for
+High-Efficiency Spiking Neural Networks
+Chiyue Wei∗
+
+Bowen Duan∗
+
+Cong Guo†
+
+Duke University
+Durham, USA
+chiyue.wei@duke.edu
+
+Duke University
+Durham, USA
+bowen.duan@duke.edu
+
+Duke University
+Durham, USA
+cong.guo@duke.edu
+
+Jingyang Zhang
+
+Qingyue Song
+
+Hai Li
+
+Duke University
+Durham, USA
+zhjy227@gmail.com
+
+Duke University
+Durham, USA
+qingyue.song@duke.edu
+
+Duke University
+Durham, USA
+hai.li@duke.edu
+
+Yiran Chen
+Duke University
+Durham, USA
+yiran.chen@duke.edu
+
+Abstract
+
+CCS Concepts
+
+Spiking Neural Networks (SNNs) are gaining attention for their
+energy efficiency and biological plausibility, utilizing 0-1 activation
+sparsity through spike-driven computation. While existing SNN
+accelerators exploit this sparsity to skip zero computations, they
+often overlook the unique distribution patterns inherent in binary
+activations. In this work, we observe that particular patterns exist
+in spike activations, which we can utilize to reduce the substantial
+computation of SNN models. Based on these findings, we propose
+a novel pattern-based hierarchical sparsity framework, termed
+Phi, to optimize computation.
+Phi introduces a two-level sparsity hierarchy: Level 1 exhibits
+vector-wise sparsity by representing activations with pre-defined
+patterns, allowing for offline pre-computation with weights and
+significantly reducing most runtime computation. Level 2 features
+element-wise sparsity by complementing the Level 1 matrix, using
+a highly sparse matrix to further reduce computation while maintaining accuracy. We present an algorithm-hardware co-design
+approach. Algorithmically, we employ a k-means-based pattern
+selection method to identify representative patterns and introduce
+a pattern-aware fine-tuning technique to enhance Level 2 sparsity.
+Architecturally, we design Phi, a dedicated hardware architecture
+that efficiently processes the two levels of Phi sparsity on the fly. Extensive experiments demonstrate that Phi achieves a 3.45× speedup
+and a 4.93× improvement in energy efficiency compared to stateof-the-art SNN accelerators, showcasing the effectiveness of our
+framework in optimizing SNN computation.
+
+• Hardware → Emerging architectures; • Computer systems
+organization → Neural networks; • Computing methodologies → Neural networks.
+
+∗ Both authors contributed equally to this work.
+† Cong Guo is the corresponding author of this paper.
+
+This work is licensed under a Creative Commons Attribution 4.0 International License.
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+© 2025 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-1261-6/2025/06
+https://doi.org/10.1145/3695053.3731035
+
+Keywords
+Spiking Neural Networks, Accelerator, Hierarchical Sparsity
+ACM Reference Format:
+Chiyue Wei, Bowen Duan, Cong Guo, Jingyang Zhang, Qingyue Song,
+Hai Li, and Yiran Chen. 2025. Phi: Leveraging Pattern-based Hierarchical
+Sparsity for High-Efficiency Spiking Neural Networks. In Proceedings of
+the 52nd Annual International Symposium on Computer Architecture (ISCA
+’25), June 21–25, 2025, Tokyo, Japan. ACM, New York, NY, USA, 14 pages.
+https://doi.org/10.1145/3695053.3731035
+
+1
+
+Introduction
+
+With the advancement of artificial intelligence, Spiking Neural
+Networks (SNNs) [5, 15, 41, 55, 64, 66], have emerged as a promising solution for various applications, including pattern recognition [64, 66] and natural language processing [5, 41, 62], etc. SNNs
+employ spiking neurons inspired by biological brain networks,
+where neurons react to binary coded spike activations (0 or 1)
+from previous layers and emit spikes to subsequent layers. This
+spike-based information propagation mechanism introduces bit
+sparsity in SNNs, potentially leading to significant energy efficiency improvements by ignoring the computation corresponding
+to zero-bit and only performing calculations corresponding to onebit spikes [35, 39, 44].
+Extensive studies [16, 24, 34, 65] have analyzed the value distribution of Deep Neural Networks (DNNs) activations [33, 47],
+uncovering useful patterns and developing optimization techniques
+to enhance efficiency. For instance, JPEG-ACT [12] observed that
+activations in Convolutional Neural Network (CNN) models resemble input images, enabling the use of JPEG [57] compression
+to achieve higher compression ratios. Inspired by these advancements in DNN, we observe that spike activations in SNNs exhibit
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+(a) Normal Distribution
+
+(d)
+
+Chiyue Wei, Bowen Duan, Cong Guo, Jingyang Zhang, Qingyue Song, Hai Li, and Yiran Chen
+
+(b) DNN FP32 Activation (c) SNN 0-1 Activation
+
+(e)
+=1
+
+=0
+
+Activation Matrix
+
+= +1
+
+= -1 Predefined Pattern
+
+Level 1
+
+Calibration
+
+Dynamic Outlier
+
+Level 2
+
+6.25%
+＝
+
+~50% Density
+Bit Sparsity
+
+Phi φ
+(Ours)
+
+Oﬄine
+Computing
+
+Vector
+Sparsity
+
+＋
+
+Online
+Computing
+
+Element
+Sparsity
+
+Figure 1: Activation visualization for (a) normal distribution,
+(b) ViT DNN model, and (c) Spikformer SNN model, and comparison between (d) bit sparsity and (e) ours Phi sparsity.
+
+distinct regularities that are often overlooked in prior SNN architectures [31, 35, 39, 42, 44]. To demonstrate this, we use t-SNE [56],
+a dimensionality reduction technique, to project high-dimensional
+activations into a lower-dimensional space, comparing the distributions of normal data, DNN activations, and SNN spike activations,
+as shown in Fig. 1. Normal distributions appear random and lack
+structure, while DNN activations are sensitive to specific regions,
+as previously shown [16, 24, 34, 65]. In contrast, SNN activations
+reveal unique structural patterns, presenting new opportunities for
+architectural and computational optimizations.
+Surprisingly, we observe that SNN activations exhibit a much
+more distinct and regular distribution compared to DNN activations,
+as illustrated in Fig. 1 (c). We hypothesize that this phenomenon
+arises from the binary nature of SNN activations, consisting solely
+of 0s and 1s, which enforces a more structured distribution. Upon
+closer examination, we identify specific patterns within the SNN
+activations that can be grouped into well-defined clusters, further
+highlighting the unique characteristics of SNNs. Naturally, we can
+utilize this property to optimize the computation of SNNs.
+In this study, we propose a pattern-based hierarchical sparsity framework, termed Phi Sparsity, to significantly reduce computations in SNNs. As illustrated in Fig. 1 (e), Phi introduces a
+two-level sparsity hierarchy: vector sparsity (Level 1) and element sparsity (Level 2). For Level 1, we propose a calibration
+method to generate several pre-defined activation patterns from
+SNN activations. Each row vector in the Level 1 matrix is a pattern. Since these patterns are formed by activation tensors, their
+corresponding results can be pre-computed with weights offline, significantly reducing runtime computation for activations matching
+these patterns. Thanks to the regular distribution and binary nature
+of SNN activations, we select only 128 16-bit patterns, enabling a
+
+substantial reduction in computational cost, saving 93.64% of operations over the original SNN. However, with only 128 patterns,
+it is not feasible to cover all activations, necessitating additional
+mechanisms to address outliers.
+Level 2 targets dynamic activation outliers that are not captured
+by vector sparsity. Unlike traditional bit sparsity, which only includes 1, our proposed element sparsity incorporates {1, −1} for
+bidirectional correction. This bidirectional element sparsity effectively aligns outlier activations with the pre-defined patterns, enabling Level 1 vector sparsity to operate more efficiently. By flexibly
+distributing {1, −1} elements, the summation of activations from
+Level 1 and Level 2 precisely matches the original activation matrix.
+The element sparsity (96.80%) is significantly higher than the bit
+sparsity (83.63%), which ensures less computation.
+Designing Phi sparsity and its dedicated architecture poses several challenges. From the algorithmic perspective, identifying an
+optimal combination of patterns is critical, as pattern selection significantly impacts the number of outliers and the Level 2 sparsity.
+From the architectural perspective, while patterns are determined
+offline, the two levels of Phi sparsity must be generated dynamically at runtime because activation is dynamic. Furthermore, Level
+1 sparsity introduces additional memory overhead, while Level 2
+sparsity results in load imbalance on parallel architectures due to
+its unstructured sparsity mode.
+To address these challenges, we propose a k-means-based pattern
+selection method to identify the optimal pattern combination, minimizing online computation. Additionally, we introduce a patternaware fine-tuning method that increases the similarity between
+activations and patterns, thereby enhancing Level 2 sparsity and
+reducing outliers. On the architecture side, we present Phi, a dedicated hardware design that efficiently generates and processes
+Phi sparsity on the fly. Phi incorporates specialized components
+to handle both sparsity hierarchies effectively, ensuring balanced
+memory usage and computational load.
+We propose an algorithm-hardware co-design, the Phi architecture, which fully exploits the advantages of hierarchical sparsity,
+achieving significant performance gains. Extensive experiments
+demonstrate that Phi achieves a 3.45× speedup and a 4.93× improvement in energy efficiency compared to the state-of-the-art
+(SOTA) SNN accelerator [42]. Our contributions are summarized
+as follows:
+
+(1) We propose a novel hierarchical sparsity framework, Phi,
+incorporating vector-wise and element-wise sparsity to significantly reduce computation in SNNs.
+(2) We develop a k-means-based pattern selection and patternaware fine-tuning algorithm to optimize sparsity efficiency
+while minimizing outliers.
+(3) We design Phi, a hardware architecture that dynamically
+generates and processes two levels of Phi sparsity, addressing
+challenges like memory overhead and load imbalance.
+(4) Extensive experiments demonstrate that Phi achieves 3.45×
+and 4.93× runtime performance and energy efficiency improvements compared to SOTA SNN accelerator [42].
+
+Phi: Leveraging Pattern-based Hierarchical Sparsity for High-Efficiency Spiking Neural Networks
+
+2 Background and Motivation
+2.1 SNNs Background
+SNN basics. Spiking Neural Networks (SNNs)[15, 55], inspired by
+biological neural processes, offer higher energy efficiency compared
+to traditional Deep Neural Networks (DNNs) [50, 54].
+The key distinction lies in SNNs’ temporal processing paradigm [67], where information is encoded through single-bit spikes
+across multiple time steps, rather than multi-bit activations used
+in DNNs. In SNNs, spiking neurons replace traditional activation
+functions, processing the linear combination of inputs and weights
+at each time step to update their Membrane Potential (MP) [29]
+and determine whether to generate a spike. Among various neuron
+models [6, 14, 29, 45, 63], this work focuses on the most widely
+adopted Leaky-Integrate-and-Fire (LIF) model [14, 45].
+SNN efficiency. The computational efficiency of SNNs primarily stems from their binary spike representation (1 for spike, 0
+for non-spike), termed bit sparsity. In this SNN matrix multiplication, zero-valued elements do not contribute to the output, while
+one-valued elements correspond to simple accumulations of the
+corresponding weights. Existing SNN accelerators [35, 39, 42, 44]
+exploit this sparsity by skipping computations for zero elements
+and performing only accumulation (AC) operations instead of full
+multiply-and-accumulate (MAC) operations, thereby achieving significant energy savings.
+
+2.2
+
+SNN accelerators
+
+Most existing SNN accelerators focus on efficiently utilizing the bit
+sparsity of SNNs. SpinalFlow [44] skips the zero elements in the
+SNN activation by sorting them chronologically by timesteps and
+then handling them sequentially. SATO [39] integrates input spikes
+in parallel at each time step and utilizes a binary adder-search tree to
+generate output spikes without accumulating membrane potentials.
+PTB [35] also processes bit sparsity in parallel employing a systolic
+array-based architecture, although it still handles many inactive
+time steps. Stellar [42] relies on Few Spikes neuron [53] to improve
+the sparsity of activations, along with dedicated dataflow to exploit
+the sparsity. Prosperity [60] proposes product sparsity to improve
+the bit sparsity by reusing previous inner product results.
+While previous works have focused on optimizing bit sparsity
+processing through either sequential or parallel approaches, they
+overlook the inherent patterns within sparse activations. Our Phi
+identifies and leverages these structured patterns, opening new
+avenues for enhancing SNN computational efficiency.
+
+2.3
+
+Motivation
+
+Uncovering Inherent Patterns in SNN Activations. Existing
+Spiking Neural Network (SNN) architectures [31, 35, 39, 42, 44] often overlook the inherent regularity within these activations, a phenomenon well-established in Deep Neural Networks (DNNs) [5, 15,
+41, 55, 64, 66], where activations consistently carry meaningful information rather than random noise. Motivated by this observation,
+we investigated the structural characteristics of SNN activations.
+We use t-SNE to analyze their distribution and relationships.
+As illustrated in Fig. 1 (a), (b), and (c), we visualize single-layer
+activations from both DNN and SNN implementations of a Vision
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+Transformer (ViT) [11] model alongside normally distributed noise
+as a baseline. Each circle represents an activation row. The results
+reveal that DNN activations exhibit certain patterns distinct from
+random noise. Surprisingly, SNN activations demonstrate even
+stronger regularity, forming distinct clusters. This clustering phenomenon may emerge from the binary nature of SNN activations,
+which imposes more structured distributions compared to activations in DNNs.
+Leveraging Patterns for Computational Efficiency. In Fig. 1 (c),
+several obvious clusters are observed, indicating that activations
+within the same cluster share similarities. To capture these similarities more efficiently with a smaller width, we divide the 0-1
+activation matrix into partitions. We define the combination of 0s
+and 1s within a row as a Pattern. Fig. 1 (c) illustrates numerous
+activation rows have identical or similar patterns. This inherent
+structure in SNN activations presents a compelling opportunity for
+computational optimization.
+While activation values are generated dynamically during inference, making it impossible to predict the specific positions of zeros
+and ones, the statistical distribution reveals that certain activation
+patterns consistently emerge, albeit at varying positions. By identifying these patterns beforehand, we can pre-compute their matrix
+multiplication results with the weight matrix during the offline
+stage. During online inference, when an activation row matches a
+pre-identified pattern, we can directly retrieve the pre-computed
+results, thereby eliminating the need for real-time computation.
+Based on these observations, we propose Pattern-based Hierarchical Sparsity (Phi), a novel approach specifically tailored for
+SNN activation patterns.
+
+2.4
+
+Challenges
+
+Our proposed Phi architecture offers a significant opportunity for
+computation reduction by leveraging hierarchical sparsity. However, exploiting this opportunity presents several challenges in both
+algorithms and hardware design.
+2.4.1 Algorithmic Challenges. Detecting and selecting a limited
+number of patterns that match the most activation rows is essential.
+The key challenges in finding optimal patterns are:
+Uncertainty of Activations. Activations are highly variable
+and are generated by different inputs at runtime. However, we need
+to pre-define and identify the patterns offline, during a calibration
+stage, since activations are unknown beforehand. This requirement
+imposes high demands on the algorithm’s effectiveness and its
+ability to generalize from offline calibration to online applications.
+Complexity of Patterns. Activation rows exhibit thousands of
+combinations, corresponding to 2𝐿 possible patterns for a pattern
+length of 𝐿. Therefore, the number of pre-defined patterns is critical
+to the efficiency
+of our design. The search space for patterns is
+
+𝐿
+𝑂 2𝑞 , where 𝐿 denotes the pattern length and 𝑞 denotes the
+number of patterns we want to select. This complexity renders
+finding a globally optimal combination of patterns an NP-hard
+problem. Balancing the memory and computational overhead of
+storing and calibrating patterns with the model’s efficiency is a
+significant challenge.
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+Chiyue Wei, Bowen Duan, Cong Guo, Jingyang Zhang, Qingyue Song, Hai Li, and Yiran Chen
+
+(a) Phi Calibration
+Oﬄine Calibration
+Spike Activation
+1
+
+1
+1
+
+1
+
+1
+
+1
+
+0
+
+1
+
+1
+2
+
+1
+
+1
+
+0
+
+3
+
+1. Node conversion
+
+1
+
+2 1
+3
+
+1
+
+1
+
+0.1
+
++
+
+1
+
+K-Means Centroids Weights
+(Patterns)
+0.3 -0.2 0.7
+
+1
+
+0.4 -0.5
+
+-0.6 0.9
+
+1
+
+0.1
+
+Pattern Weight
+Products
+(PWPs)
+
+=
+
+-0.5 1.3 -0.4
+1.2 -0.1 0.4
+
+0.8 -0.3 0.2
+
+2. K-Means
+
+3. Oﬄine Computation
+
+(b) Phi Sparsity
+Pattern ID
+
+Level 1
+Online
+Spike Activation
+0
+
+1
+
+1
+
+1
+
+1
+
+1
+
+2
+
+1
+
+1
+
+3
+
+Partial Output
+
+1
+
+1
+
+1
+
+2
+
+1.2
+
+-0.1
+
+1
+
+1
+
+1
+
+2
+
+-0.5
+
+1.3
+
+-0.4
+
+1.2
+
+-0.1
+
+0.4
+
+1
+
+1.2
+
+-0.1
+
+0.4
+
+-0.5
+
+1.3
+
+-0.4
+
+0.0
+
+0.0
+
+0.0
+
+1
+
+1
+
+1
+
+0
+
+Vector Sparsity
+1
+1
+
++
+
+Weights
+
+Level 2
+
++1
++1
+
+0.3
+
+-0.2
+
+0.7
+
+0.0
+
+0.0
+
+0.0
+
+0.1
+
+0.4
+
+-0.5
+
+-0.8
+
+0.3
+
+-0.2
+
+-0.6
+
+0.9
+
+0.1
+
+0.3
+
+-0.2
+
+0.7
+
+0.8
+
+-0.3
+
+0.2
+
+0.8
+
+-0.3
+
+0.2
+
++
+
+-1
+
+0.4
+
+=
+
+Element Sparsity
+
+Figure 2: Phi Sparsity.
+2.4.2 Hardware Challenges. Dynamic Activation Patterns. Although patterns can be pre-determined, activations are dynamically
+generated during inference. This dynamic nature poses fundamental challenges for hardware in the efficient implementation of Phi.
+Therefore, activation identification and processing must be performed at runtime with high throughput without impeding computational processing.
+Structured Sparsity. Our Phi architecture is built upon sparse
+computation. Level 1 vector-wise sparsity is pre-defined, and its
+results are pre-computed before computation, introducing significant memory access challenges for transferring these results to the
+on-chip computing array. The substantial volume of pre-computed
+results exceeds the on-chip buffer capacity, necessitating frequent
+off-chip DRAM accesses and thereby increasing memory bandwidth
+demands.
+Unstructured Sparsity. At Level 2 element-wise sparsity, the
+exceptionally high sparsity ratio introduces numerous zero elements accompanied by irregular distributions of nonzero values.
+This extreme sparsity negatively impacts computational array utilization and can cause significant workload imbalance in parallel
+SNN processing architectures.
+To address these challenges, we present Phi, an innovative algorithmhardware co-design approach that leverages the existence of activation patterns to achieve ultra-high efficiency in SNN processing.
+
+3 Pattern-based Hierarchical Sparsity
+3.1 Phi Sparsity definition
+We introduce Phi sparsity, a hierarchical approach that leverages
+patterns in activation to optimize computation. As illustrated in
+Fig. 2, Phi sparsity decomposes the activation matrix into two levels
+of sparse matrices: Level 1 comprises pre-defined patterns that
+are computed offline, yielding structured vector-wise sparsity. In
+
+contrast, Level 2 captures elements not included in Level 1 and features unstructured element-wise sparsity, which requires runtime
+processing.
+A cornerstone of Phi sparsity is the identification of patterns
+based on the similarity of activation rows. In particular, the similarity between rows is inversely correlated with their length: Longer
+rows exhibit exponentially more possible configurations, reducing
+the likelihood of finding patterns that occur frequently. To address
+this, we divide the activation matrix along the 𝐾 dimension into
+smaller partitions of size 𝑘, identifying patterns within each partition independently.
+Our method maximizes the utilization of offline computation
+to enhance Level 2 sparsity and minimize online computational
+overhead. The process begins with a Phi calibration stage, detailed
+in Sec. 3.2, where we define a set of patterns. These patterns will
+be multiplied with the weight matrix offline to get Pattern-Weight
+Products (PWPs).
+Using this pattern set, we construct two levels of sparse matrices
+for each activation tile. For each activation row, we identify the
+best-matching pattern from the set and assign it as the Level 1
+sparse row. In straightforward cases, where a row is identical to
+a pattern (e.g., row 0 matches pattern 1), the pre-computed PWP
+is directly used as the output row, achieving 100% Level 2 sparsity
+with no additional computation.
+For cases where a pattern is similar but not identical to an activation row, we employ a bidirectional correction scheme in Level 2
+sparsity to handle discrepancies. This scheme addresses two scenarios:
+1. One to zero mismatch: When a bit position in the activation
+is 1 but 0 in the pattern (e.g., Fig. 2(b), row 2 = 1110, pattern 1 =
+0110), we set a 1 at the corresponding position in the Level 2 matrix
+as a correction term (e.g., 1000);
+2. Zero to one mismatch: When a bit position in the activation
+is 0 but 1 in the pattern (e.g., row 1 = 1100, pattern 2 = 1101), we set
+a -1 at the corresponding position to ensure correctness (e.g.000-1).
+The Level 2 sparsity is defined as the ratio of matching bits
+to total bits. For instance, row 1 (1100) matching with pattern 2
+(1101) has a sparsity of 75% due to 3/4 matching bits. Through the
+bidirectional correction scheme, we can assign any pattern to an
+activation row, though the achievable Level 2 sparsity varies. To
+optimize performance, we assign the pattern that yields the highest
+Level 2 sparsity. If this sparsity is lower than the row’s original bit
+sparsity (e.g., row 3 in Fig. 2(b) has an original bit sparsity of 75% but
+the highest achievable Level 2 sparsity of 50%), the row’s original
+bit sparsity is retained and used in the Level 2 sparse matrix, and
+no pattern is assigned in Level 1 sparse matrix.
+This assignment strategy produces two complementary sparse
+matrices:
+1. The Level 1 matrix exhibits vector-wise sparsity, where each
+row is either a pre-defined pattern or all zeros (indicating no pattern
+assignment). This structure enables efficient processing. We can
+transform each row in the Level 1 matrix into the index of the
+pattern (0 indicates no pattern assigned), and then leverage the
+pattern index to retrieve the pre-computed PWPs as the output,
+significantly reducing online computation.
+
+Phi: Leveraging Pattern-based Hierarchical Sparsity for High-Efficiency Spiking Neural Networks
+
+2. The Level 2 matrix features {1,-1} element-wise sparsity. It
+maximizes the utility of patterns by incorporating irregularly distributed correction elements to ensure computational correctness
+while skipping a substantial amount of redundant computation.
+The Level 2 matrix achieves significantly higher sparsity compared
+to traditional bit sparsity, allowing for the elimination of substantial redundant computations and greatly enhancing computational
+efficiency.
+Because the activation matrix is tiled (i.e. partitioned) along the 𝐾
+dimension, a tile-wise reduction is performed to aggregate outputs
+along this dimension. The outputs of Level 1 and Level 2 serve as
+partial results and are summed to produce the final output.
+
+Algorithm 1: K-means-based Pattern Clustering
+Input: Binary dataset D = {𝑥 1, 𝑥 2, . . . , 𝑥𝑛 }, number of
+clusters 𝑞
+Output: 𝑞 representative binary centers
+1 Initialize 𝑞 centers randomly from D;
+2 Filter out one-hot vectors and all-zero vectors from D;
+3 for each iteration do
+4
+Assign each 𝑥𝑖 ∈ D to the nearest center using
+Hamming distance;
+5
+Update each center as the mean of assigned vectors;
+6
+Round updated centers to binary values {0, 1};
+7
+
+3.2
+
+Phi Sparsity Calibration Stage
+
+The calibration stage serves as the cornerstone of Phi sparsity by
+calibrating the optimal set of patterns. Pattern selection is crucial
+as it determines the effectiveness of pattern assignment to activations, whether identical or similar. The similarity between assigned
+patterns and activations directly impacts Level 2 sparsity. In the calibration stage, we address the challenges of dynamic activation via
+our distribution analysis and reduce the computational complexity
+of the calibration stage to linear complexity.
+Activation analysis. To address the challenges brought by the
+activation diversity, we investigate the relationship between offline
+training data and unknown test data distributions. While individual
+activation matrices may show considerable differences, our analysis
+reveals that the distribution of activation rows within a partition
+remains remarkably consistent between training and test datasets,
+as demonstrated in Fig. 9a. We empirically determine that a small
+subset of the training data suffices to represent the distribution of
+the test data. This finding enables us to perform pattern calibration
+on a static calibration dataset and effectively apply it during runtime.
+Since activation patterns vary across models, datasets, and layers,
+we select independent patterns for each model, dataset, layer, and
+partition to capture unique local distributions.
+Efficient Pattern detection. Finding the theoretically optimal
+set of patterns that maximizes Level 2 sparsity for a given activation matrix is an NP-hard problem. However, our investigation of
+activation distributions reveals heuristics that significantly simplify
+this process while maintaining high effectiveness. Based on the
+clustering behavior observed in Fig. 1 (c), we identified that the center point of each cluster could naturally serve as the ideal pattern.
+This approach offers two key advantages:
+1. Every activation row belonging to a cluster can be assigned the
+pattern representing this cluster naturally. Since there are lots of
+activation rows in each cluster, a majority of rows can be assigned
+a pattern;
+2. By selecting each center point of the cluster as a pattern, we
+minimize the cumulative distance between the pattern and the
+activation rows belonging to the pattern, thereby maximizing Level
+2 sparsity.
+Calibration workflow. Building on the aforementioned analysis, we develop a novel k-means-based clustering algorithm specifically tailored for binary activation patterns, as shown in Fig. 2 (a).
+We perform independent k-means clustering for each partition to
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+return Final 𝑞 binary centers;
+
+capture unique local distributions. We first filter out two types of activation rows in the partition since it is meaningless to cluster them
+and get a pattern for them. 1. All zero rows: all zeros require no
+computation at all; 2. One-hot row: the Level 2 sparsity of one-hot
+row cannot be higher than the original bit sparsity unless assigned
+an identical pattern. A one-hot pattern is meaningless since the
+PWP corresponding to a one-hot pattern is equivalent to a row in
+the weight matrix. After the filtering, each row in an activation tile
+is treated as a k-dimensional binary vector ∈ {0, 1}𝑘 . To align with
+our goal of maximizing Level 2 sparsity, we employ the Hamming
+distance [30] as our distance metric:
+𝐻 (𝐶, 𝐷) =
+
+𝑘
+∑︁
+
+|𝐶 [𝑖] − 𝐷 [𝑖]|, 𝐶, 𝐷 ∈ {0, 1}𝑘
+
+𝑖=0
+
+The Hamming distance between the cluster center point and data
+point, representing the number of differing bits between the pattern
+binary vector and activation row, is directly related to the Level 2
+sparsity of the row. Our algorithm design naturally optimizes Level
+2 sparsity through k-means iterations. After calculating the center
+point of the cluster through means, we round the center vectors
+to 0 or 1 to maintain the binary representation. Our complete kmeans-based clustering algorithm is presented in Alg. 1.
+The output centers for each tile (partition) are straightly used
+as a pattern set and each pattern is assigned a pattern index. The
+patterns in a set form a 𝑞 × 𝑘 matrix and is multiplied with the
+weight tile to get the PWPs for usage during runtime. By applying
+our Phi sparsity calibration with a tile size of 𝑘 = 16 and 𝑞 = 128
+patterns per tile, we achieve an average density of 3.05% in the Level
+2 sparse matrix. It achieves a significant 5.4× reduction compared
+to the original activation matrix, which had a density of 16.37%.
+
+3.3
+
+Pattern-aware Fine-tuning
+
+Our Phi sparsity, combined with the novel calibration algorithm,
+provides a lossless method for optimizing computational efficiency.
+While this approach already delivers significant gains due to high
+sparsity, we aim to push the boundaries further by incorporating a
+lossy method.
+A straightforward approach is to prune the Level 2 sparse matrix
+by directly setting certain 1s or −1s to 0. However, this naive approach often results in substantial computational inaccuracies, as
+the weights associated with the pruned values can be large, causing
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+Chiyue Wei, Bowen Duan, Cong Guo, Jingyang Zhang, Qingyue Song, Hai Li, and Yiran Chen
+
+significant deviations in the resulting inner products. To mitigate
+this issue and ensure minimal degradation in model accuracy, we
+propose a novel Pattern-aware Fine-tuning (PAFT) technique to
+enhance Level 2 sparsity.
+The core idea of PAFT is to fine-tune a trained SNN model with
+an additional regularization term. This regularization term encourages the spike activations to align more closely with the calibrated
+patterns. Specifically, in addition to targeting high accuracy as
+usual, the training objective also integrates a penalty that aims to
+reduce the Hamming distance between the spike activations and the
+assigned patterns. By progressively aligning activations with the
+patterns through backpropagation, PAFT improves computational
+efficiency with minimum compromise of model accuracy.
+PAFT is applied after the Phi calibration stage of an SNN model.
+To compute the regularization term, we follow the pattern assignment rules outlined in Sec. 3.1. Each row in every partition of the
+activation matrix is assigned a pattern, and the Hamming distance
+between the assigned pattern and the corresponding activation is
+calculated. The regularization term is then defined as the sum of
+these Hamming distances, which directly correlates to the number
+of nonzeros in the Level 2 sparse matrix.
+Since our goal is to optimize computation by enhancing Level 2
+sparsity, the regularization term is weighted by the 𝑁 -dimension
+of the matrix multiplication at each layer. This weighting ensures
+the regularization term is directly proportional to the computational cost associated with Level 2 sparsity. The formula for the
+regularization term is as follows:
+
+𝑅=
+
+∑︁
+𝑙 ∈Layers
+
+𝑁𝑙
+
+𝑀 𝐾/𝑘
+∑︁
+∑︁
+
+𝐻 (Act[𝑖, 𝑗 : 𝑗 + 𝑘], Pattern)
+
+𝑖=0 𝑗=0
+
+The final loss function incorporates this regularization term with
+a balancing hyperparameter 𝜆:
+Loss = Lossoriginal + 𝜆 · 𝑅
+This regularization term complements the original loss (e.g.,
+cross-entropy), enabling a trade-off between computational efficiency and model accuracy by tuning 𝜆.
+Our proposed PAFT is general and can be seamlessly integrated
+into any SNN model with backpropagation training. Moreover,
+PAFT is lightweight and efficient, instead of retraining the model
+from scratch, it requires only a few epochs (e.g., 5) of fine-tuning
+to achieve 1.26× of runtime improvements during inference.
+
+3.4
+
+Phi Framework Overall Workflow
+
+Our Phi framework takes a pre-trained SNN model and the training
+dataset as input. Phi calibration is performed on a small subset of
+the training dataset to derive patterns specific to the model and
+dataset. Next, PAFT is applied to the pre-trained model to further
+align activations with the calibrated patterns.
+The calibrated patterns and model weights are then fed into
+the Phi architecture, which generates and processes two levels of
+sparsity. Notably, PAFT is an optional step that can be skipped if
+accuracy is a priority. We provide two versions of Phi: one with
+PAFT for improved efficiency and one without PAFT for accuracysensitive applications.
+
+Spike Activation
+Preprocessor
+
+L1 Pattern Index
+Buﬀer
+
+L1 Processor
+
+Pattern 0
+
+Prefetcher
+
+…
+
+Pattern 1
+
+Pattern Weight
+Product Buﬀer
+
+Pattern Matcher
+
+Compressor
+& Packer
+
+Adder Tree
+
++
+
+Spiking
+Neuron
+
+L1
+Partial
+Sum
+Buﬀer
+
+LIF
+LIF
+
+8 Channels x32
+
++
+L2 Pack Buﬀer
+
+L2 Processor
+Reconfig.
+Adder Tree
+
+…
+Weight Buﬀer
+
++
+
+L2
+Partial
+Sum
+Buﬀer
+
+8 Channels x32
+
+Controller
+
+…
+x32
+LIF
+LIF
+
+DRAM
+
+Figure 3: Phi architecture overview.
+
+4 Phi Architecture Design
+4.1 Overview
+We present Phi, a novel architecture dedicated to our proposed Phi
+sparsity, which efficiently addresses the challenges in exploiting
+Phi sparsity.
+Our Phi architecture dynamically generates Phi sparsity information and efficiently processes two distinct levels of sparsity. The
+overview of the Phi architecture is shown in Fig. 3. The architecture comprises four main components: the Preprocessor, the L1
+Processor, the L2 Processor, and a Spiking Neuron Array. The Preprocessor, L1 and L2 processors are optimized for specific aspects
+of sparse processing.
+Tiling Strategy. We adopt tiling strategy [7, 9, 13], a fundamental technique in DNN accelerators that partitions computations
+to maximize data reuse in on-chip buffers while minimizing expensive off-chip memory accesses. We perform tiling across all
+three dimensions (M, N, K) of the matrix multiplication operation,
+with a carefully designed execution schedule that prioritizes Kdimension traversal. This K-first ordering enables early reduction
+operations, which is particularly advantageous for the Phi architecture. The tiling strategy enables each computational round to
+produce an output tile that flows directly to the Spiking Neuron
+Array. The resulting spike activations are immediately forwarded
+to the Preprocessor to process activation for the subsequent layer,
+enabling a highly efficient overlap of three key operations: matrix
+multiplication, spiking neuron computations, and preprocessing.
+This pipelined execution effectively eliminates preprocessing overhead, as these operations are seamlessly integrated into the main
+computational flow rather than occurring as separate, sequential
+steps.
+Preprocessor. The Preprocessor transforms spike activations
+into our two-level Phi sparsity representation and optimizes the
+representation of Level 2 sparsity for efficient processing. It employs
+a pattern matcher that compares predefined patterns with each
+activation row. For each row, the pattern in Level 1 is determined by
+identifying the best-matching stored pattern, which simultaneously
+generates the corresponding Level 2 sparsity information. To help
+address the challenges of unstructured sparsity of Level 2, including
+workload imbalance and irregular memory access patterns, the
+compressor and packer modules consolidate multiple rows of the
+Level 2 sparse matrix in an optimized scheduling order.
+
+Phi: Leveraging Pattern-based Hierarchical Sparsity for High-Efficiency Spiking Neural Networks
+
+The Preprocessor has three main parts: Matcher, Compressor, and
+Packer.
+4.2.1 Phi Pattern Matcher. The pattern matcher, a crucial component of the Preprocessor shown in Fig. 4 (a), implements the Phi
+sparsity mechanism defined in Sec. 3.1. The Matcher processes preloaded offline-calibrated L1 patterns for the current tile to generate
+optimal two levels of sparse representations.
+The pattern matching process consists of steps ① through ③. In
+step ①, a spike row from the current activation tile is broadcast to
+all Matcher units. During step ②, each Matcher unit computes the
+difference between its stored pattern and the input spike activation
+to generate a candidate L2 sparse row. For instance, as shown in
+Fig. 4 (a) Matcher 1, the operation 1011−1110 = 0, -1, 0, 1 produces a
+candidate sparse map. Popcount operations [2] are then performed
+on the difference to count nonzero elements in the candidate sparse
+map and on the original activation to establish a baseline case
+(representing no pattern assignment). In step ③, the system aggregates Popcount results from all matcher units to identify the
+minimum count, which corresponds to the highest achievable Level
+2 sparsity. This determines both the best-matching pattern and its
+corresponding Level 2 sparse row.
+To optimize hardware efficiency while maintaining functionality,
+we implement the matcher units in a 1-D systolic array architecture.
+This design choice offers several key advantages. It maintains a
+throughput of one row per cycle while reducing hardware overhead
+compared to parallel implementations. Although the systolic design
+introduces additional latency, this overhead is effectively hidden
+by overlapping the operation with L1 and L2 processing.
+The pattern-matching process produces two key outputs. First,
+the matched pattern index is directly forwarded to the Level 1
+pattern index buffer for subsequent processing. Second, the generated Level 2 sparse row and its nonzero count undergo further
+preprocessing stages.
+
+4 Compress
+2
+
+3
+
+Col ID 2
+Value
+
+Matcher n
+
+1 0 1 1
+
+Pattern 1
+
+Pattern 2
+
+1 1 1 0
+
+1 0 0 1
+
+Diﬀerence
+
+Diﬀerence
+
+0 -1 0 1
+
+0 0 1 0
+
+0 -1 1 0
+
+Popcount
+
+Popcount
+
+Popcount
+
+2
+
+1
+
+2
+
+Pattern n
+
+…
+
+1 1 0 1
+Diﬀerence
+
+Minimum
+
+3 Select
+
+0 0 1 0
+1
+
+Matcher 2
+
+1 0 1 1
+
+3
+
+(b)
+Compressor
+
+0
+
+Matcher 1
+
+1 0 1 1
+
+L2 Sparse Map
+
+Nnz Patt. ID
+
+0 0 1 0
+
+1
+
+1
+
+2
+
+(a) Pattern Matcher
+
+Row5
+Window 0
+
+Conflict Detector 0
+Space Check
+
+1
+
++1
+
+Conflict Detect
+
+Row4 00
+Row5 01
+
+6
+
+10
+11
+
+<?
+Conflict Detector 1
+Space Check
+
+1
+
+Conflict Detect
+
+4
+<?
+
+Conflict!
+
+5 Detect
+
+Row1
+Row2
+
+00
+01
+10
+11
+
+p: partial sum w: weight
+
+p w p w
+Index 0 1 1 2
+Value 1 1 1 1
+Space
+2
+Free space: 6
+Label
+
+Window 1
+p: partial sum w: weight
+
+p w p w
+Index 0 1 1 3
+Value 1 -1 1 -1
+Space
+2
+2
+Free space: 4
+Label
+
++
+
+Preprocessor
+
+1 0 1 1
+1 1 1 0
+1 0 1 0
+1 1 0 0 1
+0 0 0 0 Read
+2 Match
+0 1 0 0
+Popcount
+1 0 1 1
+
++
+
+4.2
+
+Spike Activation
+0
+1
+2
+3
+4
+5
+
+Controller
+
+L1 Processor. The L1 Processor exploits structured vector
+sparsity in Level 1 through efficient pre-computed Pattern-Wise
+Products (PWP). It primarily performs PWP retrieval and accumulation based on identified patterns. For rows without matching
+patterns, the L1 processor implements an efficient skipping mechanism. To solve the challenge of massive off-chip memory access
+induced by the pre-computed PWPs, we employ a prefetcher to
+filter out the redundant memory access.
+L2 Processor. The L2 Processor handles unstructured element
+sparsity using the optimized packed data structure from the Preprocessor, enabling efficient parallel processing through structured
+memory access patterns and computation scheduling. While L1
+and L2 processors operate independently and concurrently, they
+require synchronization in each output tile. Our design carefully
+balances computational loads between processors to minimize interprocessor interference while maximizing overall throughput.
+Spiking Neuron Array. The Spiking Neuron Array processes
+the aggregated outputs from both processors, implementing the
+LIF neuron operation to generate spike activations for subsequent
+layers. This component, while straightforward, is essential for SNN
+accelerators.
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+(c) Packer
+
+Level 1
+Pattern
+Index
+Buﬀer
+
+Level 2
+Pack
+Buﬀer
+
+…
+
+6 Pack
+
+Figure 4: Preprocessor.
+4.2.2 Level 2 sparse preprocessing. The Level 2 element sparsity
+in our design reaches 96.80%, which is significantly higher than
+the original bit sparsity of 83.63%. While this increased sparsity
+creates opportunities for operation reduction, it also introduces
+architectural challenges. To address these challenges, we propose an
+innovative preprocessing mechanism specifically designed for Level
+2 sparsity. Our analysis reveals that the Level 2 sparse matrix for
+each tiled row is highly sparse, typically containing either zero or
+1-2 nonzero elements due to our pattern selection criteria. This high
+sparsity can lead to hardware underutilization when attempting to
+process nonzeros within a row in parallel. Therefore, we introduce
+a row-packing strategy that combines multiple sparse rows into
+regular-sized packs, enabling efficient utilization of the processor’s
+computation array.
+Compressor. In step ④ shown in Fig. 4 (b), the compressor
+performs two functions: (1) it filters out all-zero rows generated
+by the pattern matcher, and (2) it scans the remaining nonzero
+elements to extract their column indices, creating a compressed
+representation of the sparse map.
+Compact data structure. We employ a compact data structure for each pack. This structure serves two purposes: it provides
+regular-sized inputs to the Level 2 processor, enabling parallel processing of nonzeros for improved hardware utilization, and it efficiently handles partial sums from previous partitions. We treat
+partial sums as special units within the pack since, like nonzeros,
+they appear irregularly and require summation with weights.
+Each of our compact data structures contains 8 units, where each
+unit contains three fields: 1. A label field indicating whether the unit
+represents a nonzero element (requiring weight accumulation) or a
+partial sum from the previous partition; 2. An index field containing
+either the column index from the compressor or a partial sum index
+indicating its position among partial sums in the pack; 3. A value
+field containing either 1 or -1 for nonzeros, or 1 for partial sums
+(since they are always accumulated). Additionally, the structure
+maintains metadata including the number of units occupied per
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+2
+
+Level 2
+Pack
+Buﬀer
+
+Adder Info
+
+Load
+Weight
+
+4 Dispatch
+Dispatcher
+
+Channel0
+
+1 1 w
+
+Channel1
+
+1 1 p
+
+Channel2
+
+-1 2 w
+
+Channel3
+
+W0
+XBar
+
+W1
+…
+W15
+
+Reconfig.
+Adder Tree
+6
+
+Reduction
+7
+
+Row5
+
+Write
+Psum
+
+Label w
+Index 2
+Value -1 Psum0
+Psum1
+
+MUX
+
+Row4
+
+Row ID
+3
+
+Config
+
+Negate
+
+p
+
+…
+
+2
+
+5
+
+w
+
+1
+
+Read
+Pack
+
+1 0 p
+
+2
+
+MUX
+
+Weight
+Buﬀer
+
+Chiyue Wei, Bowen Duan, Cong Guo, Jingyang Zhang, Qingyue Song, Hai Li, and Yiran Chen
+
+Level 2 PSum
+Buﬀer
+
+Read
+PSum
+
+Figure 5: Level 2 Processor
+(a) Level 2 Sparse Pack
+Label
+Index
+Row ID
+
+Reconfigurable Adder Tree
+
+p w w p w w p w
+0 3 4 1 5 9 2 6
+1
+
+3
+
+Row1
+P0
+
+W3
+
+32
+
+2-1
+
++ + … +
+
+P1
+
+W5
+
+W9
+
+P2
+
+W6
+
+4
+PE
+
+2-1
+
+Row4
+
+Row3
+W4
+PE
+
+PE
+
+PE
+
+PE
+PE
+
+PE
+
+Figure 6: Reconfigurable Adder Tree
+row and the row indices, which are essential for the L2 processor’s
+operation.
+Packer. The packer optimizes row packing density while minimizing buffer access conflicts, as illustrated in Fig. 4 (c). It employs
+multiple windows, each holding an incomplete pack and protected
+by a conflict detector. In step ⑤, each conflict detector evaluates
+incoming compressed rows through two stages: 1. Space check:
+Verifies whether the window’s remaining capacity can accommodate the incoming compressed row; 2. Conflict detection: Examines
+potential bank access conflicts between existing partial sums in the
+pack and those of the incoming row.
+The conflict detection stage prevents bank conflicts during simultaneous read or write of the partial sum. A central controller
+aggregates the results from all conflict detectors and determines
+the optimal window for packing each incoming row. In step ⑥, the
+incoming row is packed in, with an entry indicating its partial sum.
+If no window satisfies the requirements, the most-filled pack is
+sent to the Level 2 pack buffer and freed for new data. The employment of multiple windows enables flexible pack scheduling, which
+maximizes pack utilization while preventing buffer access conflicts.
+Notice that the situation of that one row exceeding the capacity of
+a pack does not exist due to our optimized Level 2 sparsity.
+
+4.3
+
+L2 Processor
+
+Our L2 processor achieves high parallel processing efficiency with
+optimal hardware utilization, leveraging the organized, compact
+data structure within each pack. The processing flow, illustrated
+in Fig. 5, consists of seven key steps. In step ①, the system reads a
+pack from the L2 pack buffer and decomposes it for distribution to
+various components. Step ② involves reading a weight tile for the
+current partition from the weight buffer and forwarding it to the
+dispatcher. During step ③, the row indices from the pack serve as
+addresses to retrieve partial sums from the L2 partial sum buffer,
+which are then sent to the dispatcher. Thanks to our bank-conflictfree packing strategy, partial sum data can be accessed smoothly
+and efficiently.
+Step ④ focuses on data preparation in the dispatcher according to
+the labels, indices, and values from the pack. Each dispatcher channel processes one unit from the pack and feeds one input channel of
+
+the adder tree. As depicted in the right section of Fig. 5, the label determines whether to use data from the weight buffer or partial sum
+buffer, while the unit’s index selects the appropriate data from multiple partial sums or weights. The selected data undergoes negation
+if the value is -1, ensuring properly prepared data for dispatch to
+our reconfigurable adder tree. The metadata indicating the number
+of units occupied per row configures our adder tree in step ⑤. This
+configuration is crucial since parallel processing of the entire pack
+requires careful management to ensure correct data summation
+without cross-row interference. We employ a reconfigurable adder
+tree structure [46, 58], shown in Fig. 6, with 8 input channels. In
+step ⑥, this structure enables flexible summation of data belonging
+to the same output row. The configuration information controls
+data flow to accommodate varying input quantities and produce
+the desired number of outputs. For instance, Fig. 6 demonstrates
+summation of 3, 3, and 2 input channels, respectively. This design
+introduces only four additional connections compared to a conventional adder tree, resulting in minimal hardware overhead. Each
+node implements vector SIMD [23] addition for processing row
+vectors. Step ⑦ concludes the process by forwarding the adder tree
+output through a crossbar [10] to the appropriate bank in the partial
+sum buffer.
+Our L2 processor achieves high parallelism across all three dimensions (M, N, and K) of matrix multiplication under high sparsity
+conditions: M and K dimension parallelism is achieved through the
+simultaneous processing of units within a pack, handling multiple
+rows (M dimension) and different units within an activation row
+(K dimension). N dimension parallelism is realized through SIMD
+addition operations on weight and partial sum rows.
+This multi-dimensional parallel processing approach, combined
+with our efficient data organization and reconfigurable architecture,
+tackles the challenge of workload imbalance and enables highperformance Level 2 sparse matrix multiplication with optimal
+hardware utilization.
+
+4.4
+
+L1 Processor
+
+The L1 processor comprises a 16-to-8 crossbar cascaded with an
+adder tree for reduction. It reads data from three sources: the Pattern
+Index Buffer, Pattern Weight Product (PWP) Buffer, and L1 Partial
+Sum Buffer, computing results that are stored back to the L1 Partial
+Sum Buffer.
+L1 Sparsity Management. The L1 processor operates on the
+pattern indices provided by the Pattern Matcher. It reads a pattern
+index matrix from the L1 Pattern Index Buffer. The whole pattern
+index matrix records pattern assignments for each tiled row, forming a 𝑀 × 𝐾/𝑘 matrix. Our Phi sparsity design effectively selects
+pattern sets and assigns patterns to each row, resulting in a low
+sparsity pattern index matrix with only 49.34% sparsity on average. Due to this high density, we could employ a straightforward
+zero-skipping mechanism with little compromise on performance
+compared with perfect zero-skipping.
+The processor examines 16 consecutive elements along the row
+in the pattern index matrix per cycle, implementing the following
+logic: For the situation of a number of nonzeros ≤ 8: Reads corresponding PWP from respective partitions and forwards them to
+the adder tree; For > 8 nonzeros: Processes the first 8 PWP in the
+
+Phi: Leveraging Pattern-based Hierarchical Sparsity for High-Efficiency Spiking Neural Networks
+
+On-chip Buffer Size
+
+4KB Pack; 16KB Weight;
+64KB PWP, 28 KB Pattern ID, 128 KB PSum
+
+Computation Array
+
+L1 & L2: 8 channels 32 SIMD adder tree
+
+DDR4 DRAM
+
+8Gb × 8, 2133R, 4 Channels, 64GB/s
+
+Table 2: Comparison of Phi with Baselines. * indicate dependence of specific SNN algorithm.
+Freq.
+(MHz)
+
+Tech.
+(nm)
+
+Area
+(mm2 )
+
+Throughput
+(GOP/s)
+
+Energy Efficiency
+(GOP/J)
+
+Area Efficiency
+(GOP/s/mm2 )
+
+Eyeriss [9]
+
+500
+
+28
+
+1.068
+
+9.10 (1.00×)
+
+5.16 (1.00×)
+
+8.52 (1.00×)
+
+SpinalFlow* [44]
+
+500
+
+28
+
+2.09
+
+57.23 (6.29×)
+
+95.77 (18.575×)
+
+27.38 (3.22×)
+
+SATO [39]
+
+500
+
+28
+
+1.13
+
+36.01 (3.96×)
+
+53.22 (10.32×)
+
+31.86 (3.74×)
+
+PTB [35]
+
+500
+
+28
+
+-
+
+18.12 (1.99×)
+
+10.65 (2.06×)
+
+-
+
+Stellar* [42]
+
+500
+
+28
+
+0.768
+
+58.11 (6.39×)
+
+61.71 (11.96×)
+
+75.67 (8.89×)
+
+Phi
+
+500
+
+28
+
+0.662
+
+242.80 (26.70×)
+
+285.81 (55.41×)
+
+366.70 (43.06×)
+
+in a 28nm process. We use DRAMsim3 [37] to simulate the off-chip
+DRAM power. Tbl. 1 shows the setup of the Phi architecture.
+Baselines. We compare with the spiking version of Eyeriss [9]
+adapted by [44] as a dense baseline and SNN accelerators SpinalFlow [44],
+PTB [35], SATO [39], and Stellar [42] which we discussed in Sec. 2.2.
+We compare their configuration and performance on VGG-16
+with CIFAR100 in Tbl. 2. For a fair comparison, we keep the frequency and technology the same for all baselines and Phi. We define
+operations (OP) consistently across all baselines and Phi, where
+each OP corresponds to an accumulation for a ‘1’ element in the
+bit sparsity activation. We simulate Spiking Eyeriss, SpinalFlow,
+PTB, and SATO in our framework. For Stellar, we rely on the results
+reported in the paper.
+
+5.2
+
+Design Space Exploration
+
+We explore three key design choices in Phi: k-dimension tile (i.e.,
+partition) size, number of patterns, and buffer size to justify our
+settings in Tbl. 1. The experimental results are shown in Fig. 7.
+0.10
+0.05
+0.00
+4
+
+8
+
+16
+
+32
+
+64
+
+K tile size
+
+1.20
+1.00
+0.80
+0.60
+0.40
+0.20
+0.00
+4
+
+8
+
+16
+
+32
+
+64
+
+K tile size
+
+Element Density Vector Density Total Density
+
+Bit Sparsity Cycles Phi Cycles Optimal Cycles
+
+(a) Density with the k tile size.
+
+(b) Compute cycles (normalized by bits
+parsity) with k tile Size.
+
+1.1
+
+70
+60
+50
+40
+30
+20
+10
+0
+
+0.9
+0.7
+0.5
+0.3
+8
+
+16
+
+32
+
+64 128 256 512
+
+Pattern Number per Partition
+Bit Sparsity Cycles
+Optimal Cycles
+
+Phi Cycles
+Mem. Access
+
+(c) Compute cycles (normalized by bit
+sparsity) with # patterns.
+
+1.2
+1
+0.8
+0.6
+0.4
+0.2
+0
+
+5.0
+4.0
+3.0
+2.0
+1.0
+0.0
+120
+
+160
+
+240
+
+400
+
+720
+
+Buffer Size (KB)
+Norm. Dram Power
+Norm. Buffer Power
+
+Norm. Buffer Area
+
+(d) Normalized power and area with
+buffer size.
+
+Figure 7: Design space exploration
+
+Buffer
+
+Evaluation Models and Datasets. We evaluate Phi across various spiking CNNs (VGG [51], ResNet [25]) and spiking transformers (Spikformer [66], SDT [64], SpikeBERT [41], SpikingBERT [5]).
+We run these models on tasks including CIFAR10, CIFAR100 [32],
+CIFAR10-DVS [36], SST-2, SST-5 [52], and MNLI [61]. We obtain
+the models from open source repositories on GitHub in the paper,
+train and evaluate them on relevant datasets using PyTorch [28],
+and achieve an accuracy close to that reported in the paper. During
+model training, we adopt the same settings as those described in
+the paper and the corresponding open source code. For PAFT after
+training, we adjust the learning rate (lr) and 𝜆. A higher learning
+rate and 𝜆 will make the pattern in the activations more pronounced,
+but the accuracy will decrease accordingly. In practice, we search
+lr = 1 × 10 −5 ∼ 1 × 10 −3, 𝜆 = 0.01 ∼ 1 for each model to achieve
+the best performance. Then, we obtain the model’s activations and
+utilize this information in our experiments.
+Phi Implementation. We developed a simulator based on the
+methodology of a widely adopted open-source framework [19, 22,
+48, 60]. The simulator takes the activations of the model and the
+calibrated patterns as input, modeling the behavior of each component to estimate the runtime performance of Phi. We implement the
+Phi Preprocessor, the L1 and L2 Processor, and the Spiking Neuron
+Array using SystemVerilog [1]. The components are synthesized
+with Synopsys Design Compiler in a commercial 28nm process,
+which provides area and static/dynamic power estimations. We use
+CACTI 7.0 [43] to evaluate the area and power of the on-chip buffer
+
+𝑚 = 256, 𝑘 = 16, 𝑛 = 32
+
+Norm. Computation
+
+Methodology
+
+Tile Size
+
+Dram
+
+5.1
+
+Value
+
+Memory Access
+
+Evaluation
+
+In this section, we first detail our evaluation methodology. Next,
+we explore the design space to justify our configuration. We then
+evaluate Phi’s performance, energy, and area overhead when applied to SNN models. Additionally, we report the improvement of
+our PAFT technique and illustrate the effect of reducing memory
+traffic.
+
+Parameter
+
+Density
+
+5
+
+Table 1: Phi Architecture Setup.
+
+Compute
+
+current cycle, with the remaining rows processed in the subsequent
+cycle. To enable parallel PWP access across partitions, the PWP
+buffer is organized into 16 banks, with each partition’s PWP stored
+in a separate bank. A 16-to-8 crossbar connects this buffer to the
+adder tree, facilitating the sparse skipping mechanism.
+Memory Traffic Optimization. A challenge in L1 processing is
+the heavy memory traffic induced by PWPs. Employing 128 patterns
+per K-dimension tile strains the on-chip buffer capacity, making
+it difficult to store all PWPs for a layer and resulting in additional
+off-chip memory traffic. Fortunately, our analysis shows that only
+27.73% of precomputed PWPs are utilized within a L1 pattern matrix
+tile on average, which indicates redundant memory transfers for
+PWPs. Moreover, the patterns utilized by the L1 processor are
+known in advance, thanks to our K-dimension first processing
+order which generates spike activation and patterns for subsequent
+layers during current layer computation. Therefore, we implement
+a PWP prefetcher, which reads the pattern index and selectively
+loads necessary PWPs from DRAM, realizing significant off-chip
+memory reduction.
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+Norm. Speedup
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+42.2
+
+35
+30
+25
+20
+15
+10
+5
+0
+
+36.6
+
+Chiyue Wei, Bowen Duan, Cong Guo, Jingyang Zhang, Qingyue Song, Hai Li, and Yiran Chen
+
+36.2
+28.4
+
+15.32x
+
+1
+
+CIFAR10
+
+CIFAR100
+
+CIFAR10
+
+VGG16
+
+CIFAR100
+
+CIFAR10
+
+ResNet18
+
+65.4 29.2
+15
+
+55.4 26.8
+
+35.6
+
+DVS
+
+CIFAR100
+
+CIFAR10
+
+DVS
+
+Spikformer
+
+Eyeriss
+
+Norm. Energy
+
+22.6
+
+36.5
+
+PTB
+
+SST-2
+
+SDT
+
+SATO
+
+35.8 16.9
+
+31.1
+
+CIFAR100
+
+SpinalFLow
+33.1
+
+Stellar
+
+SST-2
+
+SpikeBERT
+
+Phi (w/o FT)
+
+24.8
+
+24.4
+
+SST-5
+
+SpikingBERT
+
+Geomean
+
+Phi (w FT)
+
+42.5 21.9
+
+24.4
+
+MNLI
+
+39.9 21.9
+
+23.7
+
+22.1
+
+31.6
+13.5
+
+12
+9
+6
+3
+
+1
+
+CIFAR10
+
+CIFAR100
+
+VGG16
+
+CIFAR10
+
+CIFAR100
+
+ResNet18
+
+CIFAR10
+
+DVS
+
+CIFAR100
+
+CIFAR10
+
+DVS
+
+Spikformer
+
+SDT
+
+Core
+
+Buffer
+
+CIFAR100
+
+SST-2
+
+SST-5
+
+SpikeBERT
+
+SST-2
+
+Eyeriss
+PTB
+SATO
+Spinalflow
+Stellar
+Phi (w/o FT)
+Phi (w FT)
+
+Phi (w/o FT)
+
+PTB
+
+Spinalflow
+
+Phi (w FT)
+
+SATO
+
+Stellar
+
+Eyeriss
+
+Phi (w/o FT)
+
+PTB
+
+Spinalflow
+
+Phi (w FT)
+
+SATO
+
+Stellar
+
+Eyeriss
+
+Phi (w/o FT)
+
+PTB
+
+Spinalflow
+
+Phi (w FT)
+
+SATO
+
+Stellar
+
+Eyeriss
+
+Phi (w/o FT)
+
+PTB
+
+Spinalflow
+
+Phi (w FT)
+
+SATO
+
+Stellar
+
+Eyeriss
+
+Phi (w/o FT)
+
+PTB
+
+Spinalflow
+
+Phi (w FT)
+
+SATO
+
+Stellar
+
+Eyeriss
+
+Phi (w/o FT)
+
+PTB
+
+Spinalflow
+
+Phi (w FT)
+
+SATO
+
+Stellar
+
+Eyeriss
+
+Phi (w/o FT)
+
+PTB
+
+Spinalflow
+
+Phi (w FT)
+
+SATO
+
+Stellar
+
+Eyeriss
+
+0
+
+MNLI
+
+SpikingBERT
+
+Geomean
+
+Dram
+
+Figure 8: Speedup (normalized by Spiking Eyeriss) and energy (normalized by Phi w/o PAFT) of Phi and baselines.
+5.2.1 Tile Size of K. We first analyze how K dimension tile size
+impacts two hierarchical sparsity and theoretical computation cycles on VGG16 with CIFAR100. We keep the number of patterns
+per tile at 128.
+Fig. 7 (a) shows element and vector density with tile size. Fig. 7 (b)
+shows how Phi and optimal cycles change with the tile size. Combining Fig. 7 (a) and Fig. 7 (b), we can find that the density reflects the
+amount of computation, and the total computation is the least when
+k = 16. Meanwhile, we find that k = 16 has the lowest element density, which involves the least number of irregular computations and
+memory accesses. It can reduce the overhead of the L2 Processor
+part. Finally, we find that the elemental sparsity and vector sparsity
+are the closest when k = 16, which means that we can allocate the
+same computational resources to both parts of the processor. This
+makes our hardware design more balanced and has better hardware
+utilization and performance when faced with small fluctuations in
+sparsity across different models and datasets. Therefore, we finally
+use the k = 16 for both software and hardware design.
+5.2.2 Number of Patterns. After determining the k tile size, we
+set the k = 16 and plot the computation cycles and memory accesses
+versus the number of patterns in Fig. 7 (c). As the number of patterns increases, the cycles of elements gradually converge towards
+optimal cycles. When the number of patterns is small, the reduction
+in computation is nearly linear. However, as the number of patterns
+increases, the additional memory access required grows rapidly.
+Therefore, we choose to use 128 patterns to balance computation
+and memory access.
+5.2.3 Buffer Size. Finally, since our approach results in additional
+DRAM access, we investigate the relationship between the size of
+the on-chip buffer and DRAM power. As illustrated in Fig. 7 (d),
+increasing the buffer size allows the storage and reuse of more data
+within the buffer. This reduces the amount of access to the DRAM,
+which in turn reduces power consumption. The power of DRAM
+no longer decreases because the buffer is large enough to load all
+
+data at once. However, at the same time, a larger buffer size also
+increases the area and power of the buffer. So, we finally set the
+buffer size = 240 KB to balance the power of DRAM and buffer.
+
+5.3
+
+Phi Performance and Energy
+
+Fig. 8 and Tbl. 2 demonstrate Phi’s superior efficiency compared to
+baselines in throughput, area, and power efficiency.
+5.3.1 Performance. PTB is better than Spiking Eyeriss but weaker
+than other baselines because it does not fully utilize bit sparsity, and
+there are still zero elements in each time window. SATO leverages
+bit sparsity, but has some load imbalance issues. Spinalflow demonstrates relatively better performance because it operates under the
+assumption that each neuron fires at most once during all timesteps.
+However, this assumption negatively impacts the accuracy of SNN
+models and makes Spinalflow unsuitable for other types of SNN
+models [35]. Stellar utilizes software-hardware co-design to achieve
+and utilize higher sparsity and, therefore, performs best in baselines. Phi outperforms SNN ASICs baselines, including PTB, SATO,
+SpinalFlow, and Stellar, by 12.18×, 6.57×, 6.29×, and 3.45×, respectively. This is because of our Phi sparsity that decomposes the
+activation matrix into offline computed Level 1 and highly sparse
+Level 2, along with our dedicated Phi architecture optimized for
+two levels of sparsity, respectively.
+5.3.2 Energy. The bottom plot of Fig. 8 shows the energy of Phi
+and baselines. Overall, Phi achieves an energy efficiency of 31.59×,
+13.48×, 2.77×, 2.23×, and 4.93× when compared to Spiking Eyeriss, PTB, SATO, SpinalFlow, and Stellar, respectively. Our DRAM
+energy is not significantly reduced due to additional memory accesses to reduce computation, but despite this, we still achieve a
+fairly significant energy reduction through our reduced amount of
+computation.
+5.3.3 Area and Power Breakdown. Tbl. 3 presents the area and
+power breakdown of Phi. The on-chip buffer occupies the largest
+
+Phi: Leveraging Pattern-based Hierarchical Sparsity for High-Efficiency Spiking Neural Networks
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+100%
+
+Components
+
+Area (mm2 )
+
+Power (mW)
+
+90%
+
+Preprocessor
+L1 Processor
+L2 Processor
+LIF Neuron
+Buffer
+
+0.099
+0.074
+0.027
+0.011
+0.452
+
+22.5
+68.2
+25.6
+9.4
+220.8
+
+Total
+
+0.662
+
+346.6
+
+Accuracy
+
+Table 3: Phi Area and Power Breakdown.
+
+80%
+
+70%
+
+Spikformer
+
+Test
+Train
+
+DNN
+
+SDT
+
+Bit Sparsity
+
+VGG16
+
+Phi without PAFT
+
+CIFAR100
+
+CIFAR10
+
+CIFAR100
+
+CIFAR10
+
+CIFAR100
+
+CIFAR10DVS
+
+CIFAR10
+
+CIFAR100
+
+CIFAR10DVS
+
+CIFAR10
+
+60%
+
+ResNet18
+
+Phi with PAFT
+
+Element Density
+
+Weight Traffic
+
+9.0
+
+9.0
+
+9.0
+
+SpikingBERT
+
+9.0
+
+Geomean
+
+9.0
+
+SpikeBERT
+
+VGG16
+
+Geomean
+
+SpikeBERT
+
+SpikingBERT
+
+9.0
+
+SDT
+
+9.0
+
+ResNet18
+
+4
+3.2
+2.4
+1.6
+0.8
+0
+
+Spikformer
+
+0
+SDT
+
+5.0%
+
+0.4
+
+ResNet18
+
+Figure 9: Comparison of t-SNE visualizations for VGG16 on
+CIFAR-100 without and with PAFT.
+
+0.8
+
+Spikformer
+
+(c) Test set with PAFT.
+
+1.2
+
+VGG16
+
+(a) Training set and Test (b) Test set without
+set without PAFT.
+PAFT.
+
+Activation Traffic
+
+Figure 11: PAFT accuracy results.
+1.6
+
+Norm. Dense Memory Traffic
+Norm. Phi (w/o Compress) Memory Traffic
+Norm. Phi (w Compress) Memory Traffic
+
+Norm. Dense Memory Traffic
+Norm. Phi (w/o Prefetch) Memory Traffic
+Nor. Phi (w Prefetch) Memory Traffic
+
+(a) Activation memory traffic
+(normalized by dense).
+
+(b) Weight memory traffic
+(normalized by dense).
+
+4.0%
+3.0%
+
+Figure 12: Effect of reducing memory traffic.
+
+2.0%
+
+Spikformer
+
+Phi with PAFT
+
+SDT
+
+VGG16
+
+CIFAR100
+
+CIFAR10
+
+CIFAR100
+
+CIFAR10
+
+CIFAR100
+
+CIFAR10DVS
+
+CIFAR10
+
+CIFAR100
+
+CIFAR10DVS
+
+CIFAR10
+
+1.0%
+
+ResNet18
+
+Phi without PAFT
+
+Figure 10: Element density with and without PAFT.
+area to minimize memory access. Due to converting computation
+into memory access, the buffer ranks as the highest power consumer,
+respectively. Additionally, the area and power associated with the
+L2 processor are larger than those of the L1, as unstructured sparsity
+leads to a more complex hardware design.
+
+5.4
+
+Pattern-aware Fine-tuning Analysis
+
+Fig. 8 shows that Phi with PAFT achieves 1.26× speedup and 1.1×
+energy efficiency compared to Phi, which we will analyze in the
+following part.
+5.4.1 Improvement Analysis. Fig. 9 presents t-SNE visualizations of VGG16’s first convolution layer on CIFAR100, demonstrating PAFT’s impact. Training set activations effectively encompass
+test set clusters (Fig. 9a), validating our pattern selection approach.
+The visualizations of the test set with PAFT (Fig. 9c) show fewer
+but denser clusters than activation without PAFT (Fig. 9b), indicating that the Phi with PAFT better utilizes patterns and reduces
+the hamming distances. Fig. 10 reveals decreased element density
+
+after PAFT, which significantly affects Phi performance given that
+element sparsity computation is our primary bottleneck.
+5.4.2 Accuracy Results. Fig. 11 demonstrates the accuracy of
+DNN counter part, Bit sparsity, Phi without PAFT and Phi with
+PAFT across various models and datasets. DNNs outperform SNNs
+in general tasks. SNNs, however, excel in event-driven tasks (e.g.,
+CIFAR10-DVS) due to their binary spike encoding, where DNNs
+are not applicable. The accuracy of Phi without PAFT is equal to
+that of Bit sparsity, suggesting that Phi without PAFT is lossless.
+Furthermore, there is only a minor decrease in model accuracy
+after applying PAFT, demonstrating that PAFT successfully trades
+a small accuracy loss for performance improvement.
+
+5.5
+
+Memory Traffic Reduction
+
+As mentioned in Section 5.4, we reduce memory traffic by compressing activations and pre-fetching pattern data.
+5.5.1 Compression Rate. Our compressor and packer design
+not only enables better array utilization but also less DRAM traffic. Fig. 12 (a) illustrates three types of activation traffic: dense
+activation traffic (Spiking Eyeriss), Phi activation traffic without a
+compact data structure, which requires access to both the element
+matrix and the corresponding pattern index, and Phi activation
+traffic using a compact data structure. The higher element sparsity
+provided by Phi sparsity allows the compressed format to reduce
+activation traffic by nearly half, as it does not store zero values.
+5.5.2 Prefetcher. Fig. 12 (b) shows the regular weight traffic (Spiking Eyeriss), the Phi traffic without prefetching (which requires
+access to weights and corresponding PWPs), and the Phi accesses
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+Chiyue Wei, Bowen Duan, Cong Guo, Jingyang Zhang, Qingyue Song, Hai Li, and Yiran Chen
+
+Table 4: Phi sparsity breakdown analysis
+Model
+
+Dataset
+
+Bit
+Density
+
+L1
+Density
+
+L2:+1
+Density
+
+L2:-1
+Density
+
+Theo. Sp.
+Over B.
+
+Theo. Sp.
+Over D.
+
+VGG16
+
+CIFAR10
+CIFAR100
+
+8.7%
+10.6%
+
+7.5%
+9.1%
+
+1.4%
+1.6%
+
+0.1%
+0.2%
+
+5.8×
+5.8×
+
+66.5×
+54.6×
+
+ResNet18
+
+CIFAR10
+CIFAR100
+
+7.4%
+7.0%
+
+5.8%
+5.7%
+
+1.8%
+1.6%
+
+0.2%
+0.3%
+
+3.7×
+3.7×
+
+49.6×
+52.8×
+
+SpikingBERT
+
+SST-2
+MNLI
+
+20.3%
+21.0%
+
+18.0%
+18.7%
+
+3.2%
+3.2%
+
+0.8%
+1.0%
+
+5.0×
+5.0×
+
+24.8×
+23.8×
+
+Spikformer
+
+DVS
+CIFAR100
+
+11.9%
+14.2%
+
+10.1%
+11.6%
+
+2.2%
+3.3%
+
+0.3%
+0.7%
+
+4.8×
+3.5×
+
+39.9×
+24.6×
+
+SDT
+
+DVS
+CIFAR100
+
+11.2%
+15.2%
+
+9.6%
+11.8%
+
+1.7%
+4.1%
+
+0.1%
+0.7%
+
+6.1×
+3.2×
+
+54.6×
+20.9×
+
+5%
+10%
+20%
+50%
+
+5.0%
+10.0%
+19.9%
+50.0%
+
+2.4%
+6.6%
+13.9%
+49.8%
+
+2.6%
+3.4%
+6.4%
+7.9%
+
+0.0%
+0.0%
+0.4%
+7.7%
+
+2.0×
+2.9×
+2.9×
+3.2×
+
+39.2×
+29.6×
+14.8×
+6.4×
+
+Random
+
+with prefetching. Under our configuration, the weight traffic without prefetching is nine times greater than the normal accesses. With
+prefetching, we reduced the weight accesses to about three times
+above the regular level, suggesting that some patterns are used
+frequently, while others are used rarely.
+
+5.6
+
+Phi Generalizability Analysis
+
+Phi in SNNs. To evaluate the generalizability of Phi, we apply
+its optimal configuration (partition size 𝑘 = 16, 128 patterns per
+partition) across various SNN models and datasets. As summarized
+in Tbl. 4, Phi achieves high L1 density, closely matching the original bit density, and low L2 density. This indicates that predefined
+patterns effectively represent most activations (computed offline),
+leaving minimal mismatches (L2 matrix) for online processing. Consequently, Phi achieves a theoretical 4.5× speedup over bit sparsity
+and 38× over dense.
+These findings confirm that activation patterns are inherent in
+diverse SNN models and datasets and Phi effectively identifies them.
+Phi in Random Matrices. To further explore the universal
+presence of patterns, we apply Phi sparsity to randomly distributed
+binary matrices with varying densities. The results demonstrate
+that Phi-calibrated patterns consistently lead to low L2 density
+and a 2.7× theoretical speedup over bit sparsity. This confirms
+that patterns naturally emerge in binary matrices. However, the
+theoretical speedup observed in SNN activations is higher than in
+randomly distributed matrices. This is because SNN activations
+exhibit a more structured distribution compared to purely random
+data, making patterns more distinct and allowing Phi to achieve
+better performance.
+
+6 Discussion
+6.1 Benefit and Cost of Phi Preprocessing
+Our method achieves high L2 sparsity with the support of the Phi
+Preprocessor. To justify our design, we analyze the preprocessing
+overhead and the corresponding computation savings.
+Although preprocessing, particularly pattern matching, is computationally intensive, requiring comparisons with 128 patterns
+per operation, it is performed only on activations, resulting in a
+relatively small number of operations per layer. In contrast, preprocessing significantly reduces accumulation operations in the
+
+L1 and L2 Processors, which involve both activations and weights,
+leading to substantial computational savings.
+After averaging experimental data across all SNN models, we
+find that the energy savings from reduced accumulation operations
+is 75.5× the energy cost of preprocessing. It demonstrates that Phi
+achieves a highly favorable tradeoff, where the preprocessing cost
+is justified by a substantial reduction in computational overhead
+through enhanced sparsity and fewer accumulation operations.
+
+6.2
+
+Relationship with Sparsity and
+Quantization in DNNs
+
+Sparsity. Extensive research has explored the use of sparsity [17, 18,
+21, 27, 46, 59] in DNNs to improve computational efficiency. While
+Phi draws inspiration from these approaches, it uniquely leverages
+the binary nature of SNNs to achieve greater performance gains. For
+example, CGNet [27] prunes unimportant channels via structured
+sparsity, and SIGMA [46] skips unstructured zero activations. However, both approaches target zero elements only. In contrast, Phi
+takes advantage of pattern-based sparsity to skip significant computation related to nonzeros in activations, thanks to the unique
+binary features of SNNs.
+Quantization. Recent advances in bit-slicing [3, 8, 40, 49] for
+DNN quantization [4, 19, 22, 26, 38] highlight the potential for generalizing Phi beyond SNNs. Bit-slicing decomposes multi-bit integer
+matrix into a set of binary matrices, enabling the exploitation of bitlevel sparsity. Several works leverage this sparsity: BBS [8] exploits
+both 1-bit and 0-bit sparsity using symmetry-aware pruning, while
+Transitive Array [20] reuses previous results in the binary matrix to
+reduce redundant computation and enhance bit-level sparsity. Phi,
+which deals with binary matrices, may be extended to bit-sliced
+DNNs, offering further opportunities to harness bit-level sparsity.
+
+7
+
+Conclusion
+
+This paper presents Phi, a novel hierarchical sparsity framework
+for SNNs that leverages structural patterns in SNN activations
+to generate two levels of sparsity: vector-wise and element-wise.
+Our algorithm-hardware co-design approach addresses key challenges through k-means-based pattern selection and pattern-aware
+fine-tuning, while the dedicated hardware architecture efficiently
+generates and processes both levels of sparsity on the fly. Experimental results demonstrate that the proposed system achieves a
+3.45× speedup and 4.93× improvement in energy efficiency compared to state-of-the-art SNN accelerators. Our work demonstrates
+the significant potential of pattern-based hierarchical sparsity in
+advancing the practical deployment of SNNs. Furthermore, this
+research opens new directions for investigating the inherent activation patterns in SNNs and their potential applications across other
+neural networks.
+
+Acknowledgments
+This work was supported in part by NSF-2112562, NSF-2328805, and
+ARO W911NF-23-2-0224. The authors sincerely thank the anonymous reviewers for their constructive feedback and valuable suggestions that greatly improved the quality of this work. We also
+extend our gratitude to Junyao Zhang and Jonathan Ku for their
+insightful discussions and technical support.
+
+Phi: Leveraging Pattern-based Hierarchical Sparsity for High-Efficiency Spiking Neural Networks
+
+References
+[1] 2017. IEEE Standard for SystemVerilog: Unified Hardware Design, Specification,
+and Verification Language. https://doi.org/10.1109/IEEESTD.2018.8299595
+[2] Amogh Agrawal, Akhilesh Jaiswal, Deboleena Roy, Bing Han, Gopalakrishnan
+Srinivasan, Aayush Ankit, and Kaushik Roy. 2019. Xcel-RAM: Accelerating
+Binary Neural Networks in High-Throughput SRAM Compute Arrays. IEEE
+Transactions on Circuits and Systems I: Regular Papers 66, 8 (2019), 3064–3076.
+[3] Jorge Albericio, Alberto Delmás, Patrick Judd, Sayeh Sharify, Gerard O’Leary,
+Roman Genov, and Andreas Moshovos. 2017. Bit-pragmatic deep neural network
+computing. In Proceedings of the 50th annual IEEE/ACM international symposium
+on microarchitecture. 382–394.
+[4] Saleh Ashkboos, Amirkeivan Mohtashami, Maximilian Croci, Bo Li, Pashmina
+Cameron, Martin Jaggi, Dan Alistarh, Torsten Hoefler, and James Hensman.
+2024. Quarot: Outlier-free 4-bit inference in rotated llms. Advances in Neural
+Information Processing Systems 37 (2024), 100213–100240.
+[5] Malyaban Bal and Abhronil Sengupta. 2024. Spikingbert: Distilling bert to train
+spiking language models using implicit differentiation. In Proceedings of the AAAI
+conference on artificial intelligence, Vol. 38. 10998–11006.
+[6] A. N. Burkitt. 2006. A Review of the Integrate-and-Fire Neuron Model: I. Homogeneous Synaptic Input. Biological Cybernetics 95, 1 (2006), 1–19.
+[7] Tianshi Chen, Zidong Du, Ninghui Sun, Jia Wang, Chengyong Wu, Yunji Chen,
+and Olivier Temam. 2014. Diannao: A small-footprint high-throughput accelerator for ubiquitous machine-learning. ACM SIGARCH Computer Architecture
+News 42, 1 (2014), 269–284.
+[8] Yuzong Chen, Jian Meng, Jae-sun Seo, and Mohamed S Abdelfattah. 2024. BBS: Bidirectional bit-level sparsity for deep learning acceleration. In 2024 57th IEEE/ACM
+International Symposium on Microarchitecture (MICRO). IEEE, 551–564.
+[9] Yu-Hsin Chen, Tushar Krishna, Joel S Emer, and Vivienne Sze. 2016. Eyeriss:
+An energy-efficient reconfigurable accelerator for deep convolutional neural
+networks. IEEE journal of solid-state circuits 52, 1 (2016), 127–138.
+[10] William J Dally and Brian Towles. 2001. Route packets, not wires: on-chip
+inteconnection networks. In Proceedings of the 38th annual design automation
+conference. 684–689.
+[11] Alexey Dosovitskiy. 2020. An image is worth 16x16 words: Transformers for
+image recognition at scale. arXiv preprint arXiv:2010.11929 (2020).
+[12] R David Evans, Lufei Liu, and Tor M Aamodt. 2020. Jpeg-act: accelerating deep
+learning via transform-based lossy compression. In 2020 ACM/IEEE 47th Annual
+International Symposium on Computer Architecture (ISCA). IEEE, 860–873.
+[13] Mingyu Gao, Xuan Yang, Jing Pu, Mark Horowitz, and Christos Kozyrakis. 2019.
+Tangram: Optimized coarse-grained dataflow for scalable nn accelerators. In
+Proceedings of the Twenty-Fourth International Conference on Architectural Support
+for Programming Languages and Operating Systems. 807–820.
+[14] Wulfram Gerstner, Werner M Kistler, Richard Naud, and Liam Paninski. 2014.
+Neuronal dynamics: From single neurons to networks and models of cognition.
+Cambridge University Press.
+[15] Samanwoy Ghosh-Dastidar and Hojjat Adeli. 2009. Spiking neural networks.
+International journal of neural systems 19, 04 (2009), 295–308.
+[16] Xavier Glorot and Yoshua Bengio. 2010. Understanding the difficulty of training
+deep feedforward neural networks. In Proceedings of the thirteenth international
+conference on artificial intelligence and statistics. JMLR Workshop and Conference
+Proceedings, 249–256.
+[17] Cong Guo, Feng Cheng, Zhixu Du, James Kiessling, Jonathan Ku, Shiyu Li, Ziru
+Li, Mingyuan Ma, Tergel Molom-Ochir, Benjamin Morris, et al. 2025. A Survey:
+Collaborative Hardware and Software Design in the Era of Large Language
+Models. IEEE Circuits and Systems Magazine 25, 1 (2025), 35–57.
+[18] Cong Guo, Bo Yang Hsueh, Jingwen Leng, Yuxian Qiu, Yue Guan, Zehuan Wang,
+Xiaoying Jia, Xipeng Li, Minyi Guo, and Yuhao Zhu. 2020. Accelerating sparse dnn
+models without hardware-support via tile-wise sparsity. In SC20: International
+Conference for High Performance Computing, Networking, Storage and Analysis.
+IEEE, 1–15.
+[19] Cong Guo, Jiaming Tang, Weiming Hu, Jingwen Leng, Chen Zhang, Fan Yang,
+Yunxin Liu, Minyi Guo, and Yuhao Zhu. 2023. Olive: Accelerating large language
+models via hardware-friendly outlier-victim pair quantization. In Proceedings of
+the 50th Annual International Symposium on Computer Architecture. 1–15.
+[20] Cong Guo, Chiyue Wei, Jiaming Tang, Bowen Duan, Song Han, Hai Li, and Yiran
+Chen. 2025. Transitive Array: An Efficient GEMM Accelerator with Result Reuse.
+arXiv preprint arXiv:2504.16339 (2025).
+[21] Cong Guo, Fengchen Xue, Jingwen Leng, Yuxian Qiu, Yue Guan, Weihao Cui,
+Quan Chen, and Minyi Guo. 2024. Accelerating sparse dnns based on tiled gemm.
+IEEE Trans. Comput. (2024).
+[22] Cong Guo, Chen Zhang, Jingwen Leng, Zihan Liu, Fan Yang, Yunxin Liu, Minyi
+Guo, and Yuhao Zhu. 2022. Ant: Exploiting adaptive numerical data type for
+low-bit deep neural network quantization. In 2022 55th IEEE/ACM International
+Symposium on Microarchitecture (MICRO). IEEE, 1414–1433.
+[23] M. Hassaballah, Saleh Omran, and Youssef B. Mahdy. 2008. A Review of SIMD
+Multimedia Extensions and their Usage in Scientific and Engineering Applications.
+Comput. J. 51, 6 (2008), 630–649.
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+[24] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. 2015. Delving deep
+into rectifiers: Surpassing human-level performance on imagenet classification.
+In Proceedings of the IEEE international conference on computer vision. 1026–1034.
+[25] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. 2016. Deep residual
+learning for image recognition. In Proceedings of the IEEE conference on computer
+vision and pattern recognition. 770–778.
+[26] Weiming Hu, Haoyan Zhang, Cong Guo, Yu Feng, Renyang Guan, Zhendong Hua,
+Zihan Liu, Yue Guan, Minyi Guo, and Jingwen Leng. 2025. M-ANT: Efficient Lowbit Group Quantization for LLMs via Mathematically Adaptive Numerical Type.
+In 2025 IEEE International Symposium on High Performance Computer Architecture
+(HPCA). IEEE, 1112–1126.
+[27] Weizhe Hua, Yuan Zhou, Christopher De Sa, Zhiru Zhang, and G Edward Suh.
+2019. Boosting the performance of CNN accelerators with dynamic fine-grained
+channel gating. In Proceedings of the 52nd Annual IEEE/ACM international symposium on microarchitecture. 139–150.
+[28] Sagar Imambi, Kolla Bhanu Prakash, and GR Kanagachidambaresan. 2021. PyTorch. Programming with TensorFlow: solution for edge computing applications
+(2021), 87–104.
+[29] Eugene M Izhikevich. 2003. Simple model of spiking neurons. IEEE Transactions
+on neural networks 14, 6 (2003), 1569–1572.
+[30] Herve Jégou, Matthijs Douze, and Cordelia Schmid. 2011. Product Quantization
+for Nearest Neighbor Search. IEEE Transactions on Pattern Analysis and Machine
+Intelligence 33, 1 (2011), 117–128.
+[31] Alireza Khodamoradi, Kristof Denolf, and Ryan Kastner. 2021. S2n2: A fpga
+accelerator for streaming spiking neural networks. In The 2021 ACM/SIGDA
+International Symposium on Field-Programmable Gate Arrays. 194–205.
+[32] Alex Krizhevsky, Geoffrey Hinton, et al. 2009. Learning multiple layers of features
+from tiny images. (2009).
+[33] Yann LeCun, Yoshua Bengio, and Geoffrey Hinton. 2015. Deep learning. nature
+521, 7553 (2015), 436–444.
+[34] Jaehoon Lee, Yasaman Bahri, Roman Novak, Samuel S Schoenholz, Jeffrey Pennington, and Jascha Sohl-Dickstein. 2017. Deep neural networks as gaussian
+processes. arXiv preprint arXiv:1711.00165 (2017).
+[35] Jeong-Jun Lee, Wenrui Zhang, and Peng Li. 2022. Parallel time batching: Systolicarray acceleration of sparse spiking neural computation. In 2022 IEEE International
+Symposium on High-Performance Computer Architecture (HPCA). IEEE, 317–330.
+[36] Hongmin Li, Hanchao Liu, Xiangyang Ji, Guoqi Li, and Luping Shi. 2017. Cifar10dvs: an event-stream dataset for object classification. Frontiers in neuroscience 11
+(2017), 309.
+[37] Shang Li, Zhiyuan Yang, Dhiraj Reddy, Ankur Srivastava, and Bruce Jacob. 2020.
+DRAMsim3: A cycle-accurate, thermal-capable DRAM simulator. IEEE Computer
+Architecture Letters 19, 2 (2020), 106–109.
+[38] Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen
+Wang, Guangxuan Xiao, Xingyu Dang, Chuang Gan, and Song Han. 2024. Awq:
+Activation-aware weight quantization for on-device llm compression and acceleration. Proceedings of Machine Learning and Systems 6 (2024), 87–100.
+[39] Fangxin Liu, Wenbo Zhao, Zongwu Wang, Yongbiao Chen, Tao Yang, Zhezhi He,
+Xiaokang Yang, and Li Jiang. 2022. Sato: spiking neural network acceleration via
+temporal-oriented dataflow and architecture. In Proceedings of the 59th ACM/IEEE
+Design Automation Conference. 1105–1110.
+[40] Hang Lu, Liang Chang, Chenglong Li, Zixuan Zhu, Shengjian Lu, Yanhuan Liu,
+and Mingzhe Zhang. 2021. Distilling bit-level sparsity parallelism for general
+purpose deep learning acceleration. In MICRO-54: 54th Annual IEEE/ACM International Symposium on Microarchitecture. 963–976.
+[41] Changze Lv, Tianlong Li, Jianhan Xu, Chenxi Gu, Zixuan Ling, Cenyuan Zhang,
+Xiaoqing Zheng, and Xuanjing Huang. 2023. Spikebert: A language spikformer trained with two-stage knowledge distillation from bert. arXiv preprint
+arXiv:2308.15122 (2023).
+[42] Ruixin Mao, Lin Tang, Xingyu Yuan, Ye Liu, and Jun Zhou. 2024. Stellar:
+Energy-Efficient and Low-Latency SNN Algorithm and Hardware Co-Design
+with Spatiotemporal Computation. In 2024 IEEE International Symposium on
+High-Performance Computer Architecture (HPCA). IEEE, 172–185.
+[43] Naveen Muralimanohar, Rajeev Balasubramonian, and Norman P Jouppi. 2009.
+CACTI 6.0: A tool to model large caches. HP laboratories 27 (2009), 28.
+[44] Surya Narayanan, Karl Taht, Rajeev Balasubramonian, Edouard Giacomin, and
+Pierre-Emmanuel Gaillardon. 2020. Spinalflow: An architecture and dataflow
+tailored for spiking neural networks. In 2020 ACM/IEEE 47th Annual International
+Symposium on Computer Architecture (ISCA). IEEE, 349–362.
+[45] Martin J. Pearson, A. G. Pipe, B. Mitchinson, K. Gurney, C. Melhuish, I. Gilhespy,
+and M. Nibouche. 2007. Implementing Spiking Neural Networks for Real-Time
+Signal-Processing and Control Applications: A Model-Validated FPGA Approach.
+IEEE Transactions on Neural Networks 18, 5 (2007), 1472–1487.
+[46] Eric Qin, Ananda Samajdar, Hyoukjun Kwon, Vineet Nadella, Sudarshan Srinivasan, Dipankar Das, Bharat Kaul, and Tushar Krishna. 2020. Sigma: A sparse
+and irregular gemm accelerator with flexible interconnects for dnn training. In
+2020 IEEE International Symposium on High Performance Computer Architecture
+(HPCA). IEEE, 58–70.
+
+ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+Chiyue Wei, Bowen Duan, Cong Guo, Jingyang Zhang, Qingyue Song, Hai Li, and Yiran Chen
+
+[47] David E Rumelhart, Geoffrey E Hinton, and Ronald J Williams. 1986. Learning
+representations by back-propagating errors. nature 323, 6088 (1986), 533–536.
+[48] Hardik Sharma, Jongse Park, Naveen Suda, Liangzhen Lai, Benson Chau,
+Joon Kyung Kim, Vikas Chandra, and Hadi Esmaeilzadeh. 2018. Bit fusion: Bitlevel dynamically composable architecture for accelerating deep neural network.
+In 2018 ACM/IEEE 45th Annual International Symposium on Computer Architecture
+(ISCA). IEEE, 764–775.
+[49] Man Shi, Vikram Jain, Antony Joseph, Maurice Meijer, and Marian Verhelst.
+2024. BitWave: Exploiting column-based bit-level sparsity for deep learning
+acceleration. In 2024 IEEE International Symposium on High-Performance Computer
+Architecture (HPCA). IEEE, 732–746.
+[50] Ajay Shrestha and Ausif Mahmood. 2019. Review of Deep Learning Algorithms
+and Architectures. IEEE Access 7 (2019), 53040–53065.
+[51] Karen Simonyan and Andrew Zisserman. 2014. Very deep convolutional networks
+for large-scale image recognition. arXiv preprint arXiv:1409.1556 (2014).
+[52] Richard Socher, Alex Perelygin, Jean Wu, Jason Chuang, Christopher D Manning,
+Andrew Y Ng, and Christopher Potts. 2013. Recursive deep models for semantic
+compositionality over a sentiment treebank. In Proceedings of the 2013 conference
+on empirical methods in natural language processing. 1631–1642.
+[53] Christoph Stöckl and Wolfgang Maass. 2021. Optimized spiking neurons can
+classify images with high accuracy through temporal coding with two spikes.
+Nature Machine Intelligence 3, 3 (2021), 230–238.
+[54] Vivienne Sze, Yu-Hsin Chen, Tien-Ju Yang, and Joel S. Emer. 2017. Efficient
+Processing of Deep Neural Networks: A Tutorial and Survey. Proc. IEEE 105, 12
+(2017), 2295–2329.
+[55] Amirhossein Tavanaei, Masoud Ghodrati, Saeed Reza Kheradpisheh, Timothée
+Masquelier, and Anthony Maida. 2019. Deep learning in spiking neural networks.
+Neural networks 111 (2019), 47–63.
+[56] Laurens Van der Maaten and Geoffrey Hinton. 2008. Visualizing data using t-SNE.
+Journal of machine learning research 9, 11 (2008).
+[57] Gregory K Wallace. 1991. The JPEG still picture compression standard. Commun.
+ACM 34, 4 (1991), 30–44.
+
+[58] Hanrui Wang, Zhekai Zhang, and Song Han. 2021. Spatten: Efficient sparse attention architecture with cascade token and head pruning. In 2021 IEEE International
+Symposium on High-Performance Computer Architecture (HPCA). IEEE, 97–110.
+[59] Yang Wang, Chen Zhang, Zhiqiang Xie, Cong Guo, Yunxin Liu, and Jingwen Leng.
+2021. Dual-side sparse tensor core. In 2021 ACM/IEEE 48th Annual International
+Symposium on Computer Architecture (ISCA). IEEE, 1083–1095.
+[60] Chiyue Wei, Cong Guo, Feng Cheng, Shiyu Li, Hao Frank Yang, Hai Helen Li, and
+Yiran Chen. 2025. Prosperity: Accelerating Spiking Neural Networks via Product
+Sparsity. In 2025 IEEE International Symposium on High Performance Computer
+Architecture (HPCA). IEEE, 806–820.
+[61] Adina Williams, Nikita Nangia, and Samuel R Bowman. 2017. A broad-coverage
+challenge corpus for sentence understanding through inference. arXiv preprint
+arXiv:1704.05426 (2017).
+[62] Xingrun Xing, Zheng Zhang, Ziyi Ni, Shitao Xiao, Yiming Ju, Siqi Fan, Yequan
+Wang, Jiajun Zhang, and Guoqi Li. 2024. SpikeLM: Towards General SpikeDriven Language Modeling via Elastic Bi-Spiking Mechanisms. arXiv preprint
+arXiv:2406.03287 (2024).
+[63] Yue Yang, Xumeng Zhang, Pei Chen, Lingli Cheng, Yanting Ding, Chao Li, Jie Yu,
+and Qi Liu. 2024. Fully Integrated Memristive Hodgkin-Huxley Neurons With
+Homeostatic Plasticity. IEEE Electron Device Letters 45, 11 (2024), 2225–2228.
+[64] Man Yao, Jiakui Hu, Zhaokun Zhou, Li Yuan, Yonghong Tian, Bo Xu, and Guoqi
+Li. 2024. Spike-driven transformer. Advances in neural information processing
+systems 36 (2024).
+[65] MD Zeiler. 2014. Visualizing and Understanding Convolutional Networks. In
+European conference on computer vision/arXiv, Vol. 1311.
+[66] Zhaokun Zhou, Yuesheng Zhu, Chao He, Yaowei Wang, Shuicheng Yan, Yonghong
+Tian, and Li Yuan. 2022. Spikformer: When spiking neural network meets transformer. arXiv preprint arXiv:2209.15425 (2022).
+[67] Rui-Jie Zhu, Malu Zhang, Qihang Zhao, Haoyu Deng, Yule Duan, and Liang-Jian
+Deng. 2024. TCJA-SNN: Temporal-Channel Joint Attention for Spiking Neural
+Networks. IEEE Transactions on Neural Networks and Learning Systems (2024),
+1–14.
+
+

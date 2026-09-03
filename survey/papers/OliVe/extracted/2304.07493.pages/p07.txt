@@ -1,0 +1,97 @@
+OliVe: Accelerating Large Language Models via
+Hardware-friendly Outlier-Victim Pair Quantization                                                                                                                        ISCA ’23, June 17–21, 2023, Orlando, FL, USA
+
+
+             Operation Unit                                               Buffers                                         Register                                              New OliVe Component
+
+     Inst.                                          Register File                                                                                          Value 1
+                                                                                                                                                                                      Normal
+               Scheduler                                                                                                                                                              Decoder       0
+    Cache                                                                                OVP Decoder        ……      OVP Decoder
+                                                                                                             .                                                                                             0
+                                Octet    Matrix A     Matrix B      Matrix A                                                                                                         00000000       1
+ Dispatch      Reg File                   Buffer       Buffer        Buffer                                                                                                                                1   0:7
+                                                                                         Int4        Exp4   16×    Int4        Exp4                                  == 1000
+                                                                                                            ……                                       0:3
+                                                                                                <<    +                   <<    +                                              0
+
+
+
+
+                                                                                                                                            Input
+     Tensor Core                                                                                             .                                                                        Outlier
+                                                                                                                                                                                      Decoder
+                                                                                                                                                                                                                Exp-Int
+                                                                                         Int4        Exp4          Int4        Exp4                  4:7                       1                                 Pairs
+                                                                                                                                                                     == 1000
+ FP64/32        INT32               Thread Group             Thread Group                                                                                                                                  1
+                                                                                                                                                                                                               8:15
+                                                                                        16-bit FEDP                                                                                  00000000       1
+                                                                                         8-bit 8EDP              Adder Tree
+                                                                                                                                                                                                           0
+                                                                                        4-bit 16EDP                                                                                   Normal        0
+         LD/ST                                       Write Back
+                                                                                                                                                           Value 2
+                                                                                                                                                                                      Decoder
+
+
+       GPU SM                                                        (a) GPU Tensor Core                                                                    (b) Outlier-Victim Pair Decoder
+
+              Figure 6: OliVe integration on GPU tensor cores (a), which only requires a set of lightweight OVP decoder (b).
+
+
+   In our work, we target the post-training quantization (PTQ) [57],                                               We can easily embed our proposed OliVe architecture in GPU,
+which does not require retraining and hence is best suitable for                                                which adopts the SIMD architecture. We first put the 4-bit outlier-
+large models as their trainings are expensive. However, we still                                                victim pair decoders (Fig. 6b) for each 16EDP. To support the new
+need to use one batch of data from the training set for the scale                                               OliVe data types, we add an adder and a shifter for each 16EDP.
+factor selection. Intuitively, inspired by the 3𝜎 rule, we take 3𝜎                                              Similarly, we also design the 8-bit decoder for the 8EDP units.
+as the initial scale factor. Then the algorithm will search for the
+best scale factor with the smallest MSE within a specific range of                                              4.2       Decoders
+this baseline, which shows good results in our evaluations. For
+quantization-aware training (QAT) [57], we can get a suitable scale                                             Outlier-Victim Pair Decoder. To support outlier-victim pair de-
+factor by retraining it with the straight-through estimator (STE) [5].                                          coding, we design a new decoder that can be easily embedded in
+                                                                                                                existing accelerators. As shown in Fig. 6b, the decoder reads 1 byte,
+                                                                                                                which is the smallest addressable memory unit in many architec-
+4     OLIVE ARCHITECTURE                                                                                        tures, and exactly one value pair. Then, the decoder transforms the
+This section presents how to integrate OliVe in GPU and output-                                                 outlier identifier 10002 to 0 and decodes the outlier value with the
+stationary systolic array architecture. We then present the hardware                                            outlier decoder. To accommodate the computation of the outlier
+decoder for the aforementioned outlier-victim pair encoding and                                                 abfloat values, the decoder will generate an exponent-integer pair.
+outlier data type. On these architectures, our proposed OliVe archi-                                            Therefore, the decoder needs to append a 00002 as the exponent
+tecture can directly support the mixed precision [60, 72] and mixed                                             number for the normal int4 data type. For flint4, we exploit its
+data type [60, 72], which are efficient for quantizing DNN tensors                                              original decoder [32] to get the exponent-integer pair.
+that have different importance and distribution.
+                                                                                                                Outlier Decoder. The above OVP decoder contains an outlier
+                                                                                                                decoder for outlier values with the E2M1 abfloat data type. Fig. 7
+4.1      GPU Tensor Core                                                                                        shows the details of the 4-bit abfloat decoder design. For a 4-bit
+We first describe how to integrate the OliVe design into the ten-                                               E2M1 abfloat number 𝑥 = (𝑏 2𝑏 1𝑏 0 )2 , following equations decode
+sor core architecture of GPU in the Fig. 6a. We employ Turing                                                   exponent and integer:
+architecture [59] as our baseline GPU, which has 68 streaming mul-
+tiprocessors (SMs), and each SM has eight tensor cores (544 in total),                                                                              exponent = bias + (b2 b1 )2
+as shown in Tbl. 5. According to the modeling of prior work [67],
+each tensor core has two octets, which have eight FEDPs (four-
+                                                                                                                                                                     (
+                                                                                                                                                                         0          𝑖 𝑓 𝑥 = 0002
+element dot product). As such, there are 68 × 8 × 2 × 8 × 4 = 34, 816                                                                      integer =
+                                                                                                                                                                         (1𝑏 0 )2   𝑜𝑡ℎ𝑒𝑟𝑤𝑖𝑠𝑒
+16-bit float multipliers. The Turing architecture can originally sup-
+port mixed-precision computation. For example, the RTX 2080Ti
+GPU with Turing architecture [59] provides 107.6, 215.2, and 430.3
+TOPS (tera operations per second) for 16-bit float, 8-bit int, and
+4-bit int, respectively. Therefore, we assume that the tensor core
+                                                                                                                                          Bias
+                                                                                                                                                                                +         0:3             Exponent
+                                                                                                                                           1:2
+
+can simultaneously support 8-bit 8EDP (eight-element dot product)                                                                            0                  0
+and 4-bit 16EDP (16-element dot product), as shown in Fig. 6a.                                                                                                                  0
+                                                                                                                                                                1:3                      +1     1
+                                                                                                                                                                                                    4:7
+                                                                                                                                                                                1                         Integer
+                                                                                                                                                    001              0000                       0
+                                                         ✖                                 ➕                ✖
+                                                                                                                                    0:2
+     Architecture          SM      TC       16-bit Unit             8-bit Unit      4-bit Unit                        Input
+                                                                                                                                      3
+      Turing [59]          68      544          34,816                 69,632        139,264
+                 Table 5: The Turing GPU architecture.                                                              Figure 7: The 4-bit abfloat decoder for outlier values.
+

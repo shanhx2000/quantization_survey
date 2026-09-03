@@ -1,0 +1,64 @@
+time multi-media system, like an edge multi-media SoC or
+other GPU-based systems. Such CODEC units are particularly
+attractive to our target workloads, real-time quantized VLM
+inference: 1) CODEC units already have deep specialization
+for quantization and de-quantization by exploiting the data
+similarity from the raw video frames, and such similarity
+still exists in visual tokens; 2) CODEC units are mostly idle
+during model inference, which could be leveraged. However,
+existing CODEC units were designed for INT-pixel quan-                            Fig. 2. Pair-wise differences among different token kinds.
+tization, while visual tokens to VLM models are floating-
+point. As discussed above, naively extending CODEC with                    tokens (b) using heatmaps. Token similarity is quantified by
+full floating-point operation will be hardware-expensive. In               L1 distance, where lighter colors (yellow) indicate smaller
+addition, such CODEC units are hardwired for a specific                    distances and thus higher similarity. In Fig. 2(b), the colors are
+video encoding/decoding standard, while model quantization                 consistently dark, while Fig. 2(a) shows significantly lighter
+requires some flexibility for different data distributions, which          colors, highlighting the high similarity between visual tokens.
+requires careful management to extend the CODEC micro-                        These visual and language token sequences are subsequently
+architecture.                                                              concatenated and fed into a large language model (LLM) [40]
+   Takeaway. CODEC can be a promising unit for quantization                to enable multimodal reasoning. LLM inferences typically
+and de-quantization, but some extensions are required to make              consist of two stages, prefilling and decoding. In the prefill-
+it fit input visual token quantization.                                    ing stage, the concatenated visual and language tokens are
+   Our goal is to have an end-to-end and unified flow for input            processed in parallel through multiple transformer layers to
+visual token quantization and inference. End-to-end means this             “fill” the key–value (KV) cache. Each transformer block in-
+approach is useful for both prefilling and decoding, and unified           cludes three major components: the QKV projection, the self-
+means this approach is applicable to all matrix multiplications,           attention mechanism, and the feed-forward network (FFN).
+including projection, feed forward, and attention. The quan-               The QKV projection maps the tokens into the Query (Q), Key
+tization and de-quantization shall have negligible accuracy                (K), and Value (V ) matrices, usually implemented in General
+loss, and can be achieved with modest underlying hardware                  Matrix Multiplication (GEMM). Self-attention then produces
+cost. We address these issues by presenting AQuant, a soft-                the weighted output as O = softmax(Q · K T ) · V . The FFN
+ware/hardware co-designed instance for VLM quantization and                generates the final output through linear transformations to the
+inference, as presented in Fig. 1. The technical contributions             next transformer block or used as the final representation.
+of this work are:                                                             Prefilling and decoding stages exhibit very different com-
+   • An algorithm that captures the input similarity among                 pute/memory characteristics. A single image or video frame
+       visual tokens for dynamic quantization, while avoiding              produces 0.5K-4K visual tokens. During prefilling, GEMMs
+       expensive floating-point operations. (§III-A)                       in each component of a transformer block are applied to this
+   • A software-hardware co-designed workload-balanced                     long visual token sequence, making prefilling compute-bound.
+       adaptive quantization approach that reduces cost while                 In contrast, the decoding stage recurrently generate tokens
+       improving hardware utilization. (§III-B)                            one at a time. The dominated operation shifts from GEMM
+   • Novel micro-architectural extensions to existing CODEC                to matrix-vector multiplications (GEMV). With orders-of-
+       to flexibly support different quantization configurations           magnitude lower arithmetic intensive compared with prefilling,
+       with modest cost. (§IV)                                             while keeping the same memory footprint on model weights
+                                                                           and KV-caches, decoding is memory-bound.
+            II. BACKGROUND AND M OTIVATION
+                                                                                         Wider Distribution                    Narrower Distribution
+A. Vision-Language Model                                                                                                          74% data falls
+                                                                                                                                   into [-0.3,0.3]
+   Vision-Language Models (VLMs) have proven its promise
+of integrating visual information from images and videos with
+natural language understanding. A visual encoder, such as ViT-                            46% data falls
+                                                                                           into [-0.3,0.3]
+L/14 [32], maps the raw input image/video pixels to a sequence
+of visual tokens, and the input texts are first tokenized as
+language tokens then mapped to a sequence of embeddings
+through an embedding lookup.
+   The visual token encoder essentially finds a homomorphism
+between the pixels and the visual tokens, which indicates
+that two similar pixels are still similar in visual tokens, as                   Fig. 3. Data distribution of (a) visual tokens, and (b) deltas.
+demonstrated in our profiling in Fig. 2. This figure captures              Motivation. Compared to the 0.5K-4K visual tokens for a
+pair-wise differences between visual tokens (a) and language               single image or video frames, the text prompt description is
+
+
+
+
+                                                                    1418
+

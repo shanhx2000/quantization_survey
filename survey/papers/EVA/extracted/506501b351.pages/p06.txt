@@ -1,0 +1,87 @@
+      reduced, and all memory accesses become regular and                                            d               N                     Shared    2n
+                                                                                                          v                           v
+
+
+
+
+                                                                                                                                                     ……
+      coalesced.                                                                                Tile 0              Tile 0
+                                                                                 v·d    Reshape Tile 1              Tile 1
+                                                                                                                                            WC               d
+   2) Lower bandwidth demand. The dot-product operation                     1                             V                           V
+                                                                                 Tile 0 K=V·d
+                                                                                                    …                …                               N
+      aggregates every d weights into one value, reducing the                              Input                                           1
+      lookup bandwidth requirement by a factor of d.                                                           Weight Index                      Output
+                                                                             Off-Chip DRAM
+   3) Reduced computation. For LLMs, the output dimension                    On-Chip SRAM 2n=256                               N                    Output
+      N often exceeds 4096, while the codebook size is only
+
+
+
+
+                                                                                                    ……
+      2n = 256. Conventional GEMV requires 1 × N × K                        Constant WC                       d=8            Tile 0         v         N
+                                                                                                                                      WI     1
+      multiply-accumulate operations, whereas VQ-GEMM                        d=8
+                                                                                       Input                             2n                      Partial Sum
+      needs only K      n              n
+                   d × 2 × d = K × 2 operations, achieving
+                                                                                Tile
+                                                                                       v=32
+                                                                                                    VQ              v=32                  Epilogue    v=32
+                                                                                 0                 GEMM                       OC
+      approximately 2Nn = 16× fewer computations.
+   4) Higher accelerator utilization. Recasting LLM decoding
+                                                                          Fig. 4. Tiling strategy of the VQ-GEMM operation in EVA. Input and WI
+      into GEMM greatly improves hardware utilization. The                tensors are streamed as tiles from off-chip memory, while the WC and output
+      matrix dimension in the M direction is no longer fixed              remain stationary on-chip for reuse.
+      at 1, but expanded to V = K d , which is typically greater
+      than 512, enabling efficient use of the accelerator’s               eration, the architecture design remains simple, scalable, and
+      matrix–multiplication units.                                        highly generalizable across different accelerators.
+   Together, these advantages allow EVA to achieve high                      First, EVA adopts a systolic-array-based computation core,
+throughput with regular memory access, lower bandwidth                    which has been widely used in modern AI accelerators [19],
+demand, and significantly improved compute efficiency.                    [21], [27]. The proposed VQ-GEMM operation can be directly
+                                                                          mapped onto the existing systolic array with minimal mod-
+C. Epilogue for Lookup and Reduction
+                                                                          ification. While VQ requires FP16 arithmetic for accuracy,
+   After the VQ-GEMM operation, we obtain the intermediate                the LLM prefill stage can maintain accuracy using only INT8
+result matrix O, as shown in Fig. 3 (b) 4 . In the epilogue               precision [31], [67]. To support both regimes efficiently, we
+stage, two operations are required to reconstruct the final               introduce a reconfigurable PE design that performs one FP16
+output of LLM decoding.                                                   operation or four INT8 operations per cycle, enabling seamless
+   1) Lookup using the index matrix. Each output element                  and high-throughput reuse across FP16 VQ decoding and
+is selected from O according to its corresponding index in the            INT8 prefill computation.
+weight index matrix I:                                                       Second, a dedicated epilogue unit is introduced to sup-
+                      ŷ = Lookup(O, I),                                  port VQ-specific post-processing, including the lookup and
+                                                                          accumulation operations described earlier. This unit is opti-
+where ŷ denotes the intermediate partial sum. This lookup                mized for conflict-free access and add-only reduction, ensuring
+is conflict-free because both I and O share the same height               low latency and efficient integration with the systolic array
+V = K/d. Each row of O is mapped to a dedicated memory                    pipeline.
+bank, enabling parallel access along the V dimension without                 These architectural components and their co-optimization
+conflicts. Compared with conventional VQ methods, accessing               strategies will be discussed in detail in the following sections.
+the same number of WI entries does not require additional
+memory banks. However, the bandwidth of each bank is                                   IV. V ECTOR Q UANTIZATION - BASED GEMM
+reduced by a factor of d, since each access fetches only one                This section introduces the VQ-based GEMM design in
+FP16 element instead of an 8d centroid with 8 FP16s.                      EVA, including the tiling strategy, the mixed-precision GEMM
+   2) Reduction by accumulation. After lookup, the selected               unit, and its architectural integration with the epilogue stage.
+elements are accumulated to form the final output vector.
+This add-only reduction requires no multipliers and incurs                A. Tiling Strategy
+minimal hardware cost, allowing the epilogue to run efficiently              Tiling is an essential optimization for GEMM execution
+in parallel with the GEMM pipeline.                                       because the on-chip memory resources of accelerators are
+   Advantages. The epilogue is lightweight and hardware-                  limited. As shown in Fig. 4, the tensors involved in the VQ-
+friendly, featuring: (i) add-only operations, (ii) conflict-free          GEMM computation, including the input, weight index (WI),
+parallel access, (iii) reduced bandwidth by a factor of d, and            weight codebook (WC), and output, are pre-arranged in off-
+(iv) a simple, efficient pipeline design.                                 chip DRAM before execution. Among these tensors, only the
+   Overall, this stage completes the LLM decoding process                 input and WI matrices are tiled for streaming access, while the
+with minimal overhead and provides a clean interface between              WC and output remain stationary on-chip to maximize reuse.
+VQ-GEMM computation and final output reconstruction.                         For the input, the matrix is reshaped and divided into tiles
+                                                                          of size v ×d, where v is set to 32 in our design. Each input tile
+D. Efficient VQ Architecture                                              is loaded into the on-chip buffer for one round of computation.
+  Finally, Fig. 3 (c) presents the overall EVA architecture.              Similarly, the WI tensor is accessed by v rows per iteration,
+Thanks to the structured scheduling of the VQ-GEMM op-                    corresponding to v ×N elements. Since v ×N can be large for
+
+
+
+
+                                                                   1356
+

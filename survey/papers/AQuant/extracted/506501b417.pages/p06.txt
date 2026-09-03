@@ -1,0 +1,67 @@
+operations, as the resulting output features are critical for             Similarity Detection. As shown in Fig. 9, we reuse the
+reconstructing the final results.                                         subtract–and-abs reduction tree in the motion-estimation (ME)
+                                                                          module to implement similarity detection for visual tokens.
+C. Result Reconstruction                                                  To avoid expensive floating-point operations, we modify the
+   As discussed above, applying the weight matrix Wq to                   subtract unit to support exponent-similarity detection, as in-
+quantized visual tokens becomes Wq B + Wq δ. As the base                  troduced in Section III-A. The unit extracts the exponent
+token B belongs to one of M candidate base tokens, which                  field from each floating-point token, computes an approximate
+constitute only a small subset of all visual tokens, Wq B’s               magnitude 2exponent via bit shifting, and concatenates it with the
+computation can be eliminated at runtime by directly selecting            sign bit before subtraction. This subtraction is implemented as
+the results from precomputed candidate base tokens. Given the             an INT10 operation.
+data similarity among the input visual tokens, δ can be encoded              To explain this design decision: In IEEE 754 single-
+with fewer bits, allowing Wq δ to be computed at a lower cost.            precision, the exponent field has 8 bits and encodes an effective
+Summing both terms, Wq B and Wq δ, we can reconstruct the                 range of [−127, 128], which in principle could span a very
+final Q matrix.                                                           large dynamic range if used directly. However, our profiling of
+                                                                          LLM inference workloads shows that the exponents of visual
+D. Extending AQuant to the Decoding Stage                                 tokens exhibit a much narrower range of [0, 8]. Thus, 2exponent
+   The key to achieving high-performance decoding lies in                 falls into [1,256], which can be represented within 9 bits.
+reducing the memory bandwidth consumption of the KV-                      After concatenating the sign bit, we obtain a 10-bit value,
+cache. However, directly applying the procedures described                leading to a compact 10-bit integer representation suitable for
+above to the self-attention operation during decoding cannot              the similarity-detection datapath.
+effectively reduce the KV-cache loading cost, since K and V               Spatially Shared ME PE. AQuant exposes a “knob”, the
+are floating-point matrices that must first undergo exponent-             number of candidate base tokens (M introduced in Sec-
+similarity detection. Therefore, after KV -matrix projection,             tion III-A), to tune the tradeoff between quantization cost and
+instead of writing the reconstructed KV-cache back to memory,             quality. More candidates generally improve similarity match-
+we re-quantize the KV-cache and then store it in off-chip                 ing but also increase distance computation and comparison
+memory for later use in decoding. Since these data occupy                 cost. However, as discussed in Section II-B, the original ME
+significantly less memory, the proposed design effectively                module is hard-wired to evaluate 64 candidate macroblocks
+reduces memory traffic per token. The KV-cache values are                 using an 8 × 8 PE array, which leads to underutilization when
+then reconstructed online when needed. This design decision               we only need, for example, 16 or 32 candidate base tokens.
+trades off computing for memory bandwidth, and the benefit                   To support different numbers of base candidates efficiently,
+evaluation will be discussed in Section V.                                we make the ME PE array reconfigurable. We make a 4 × 4
+                                                                          PE block as the basic reconfigurable block, and no finer
+               IV. AQ UANT A RCHITECTURE                                  granularity is supported. This design decision is made be-
+                                                                          cause: 1. fewer than 16 base candidates is over aggressive
+   In this section, we explain the AQuant architecture, which
+                                                                          for quantization; 2. coarser granularity avoids the excessive
+specializes the quantization using CODEC and processing the
+                                                                          power/area overhead. Given M candidates, the array allocates
+quantized tokens using an NPU. As illustrated in Fig. 8, the
+                                                                          ⌈M16 ⌉ such blocks and merges them to form a larger logical
+input visual tokens are first read from off-chip memory and
+                                                                          PE block, allowing the same 8 × 8 mesh to serve varying base
+forwarded to the enhanced CODEC (step A ) for similarity
+                                                                          set sizes. As shown in Fig. 9, given that T 1 and T 2 both have
+detection and base-delta quantization (step B ). The resulting            32 candidate base tokens, respectively, the reconfigurable PE
+quantized data are then dispatched to the NPU (step C )                   array distributes two 4 × 8 PE blocks (outlined in yellow and
+according to their adaptive precision. The NPU consists of                red) for them, occupying the whole PE array.
+two MAC arrays (step D ) that performs matrix multiplications                We similarly adapt the comparator tree in the ME engine
+on the high- and low-precision deltas. The partial sums from              to match this 4 × 4 granularity. A 4-stage comparator tree is
+both precisions are forwarded to the accumulation engine to               used as the basic comparison unit, taking 16 distances from
+aggregate the results (step E ), and the reconstruction engine            one 4 × 4 PE block and producing the minimum. Multiple
+then combines them with the precomputed base token results                such 16-input units can then be composed with an additional
+to reconstruct the final activations (step F ).                           2-stage comparator tree to select minima across several blocks.
+                                                                          For each minimum, the corresponding visual token ID i and
+A. Enhanced CODEC Design                                                  base token ID j are packed as (T i , T j ) entries and written
+   To realize our visual token quantization algorithm on a                into the similar token table (bottom right of Fig. 9).
+video CODEC with modest hardware overhead, we extend                      Adaptive Quantization: We extended the CODEC quanti-
+the CODEC in two aspects: (i) adding flexibility for similarity           zation data path for our adaptive quantization discussed in
+detection, and (ii) augmenting the datapath to process floating-          Section III-B. As shown in Fig. 10(a), the original circuit for
+point inputs. The specialized CODEC unit builds upon the                  INT16 quantization is implemented by an affine transform
+design shown in Fig. 5 and described in Section II-B.                     followed by a right shift and clamping.
+
+
+
+
+                                                                   1422
+

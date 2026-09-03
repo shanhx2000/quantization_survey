@@ -1,0 +1,90 @@
+  Extensive experiments demonstrate that EVA achieves up to                                                          1.58Bit   0110 0        -4.79
+                                                                                    2D:                          2             1212 1
+
+
+
+
+                                                                                                                                                          Analytic
+11.17× speedup and 7.17× improvement in energy efficiency                     High-dimensional               1       Quantized 1 0 1 0
+                                                                                                                                                0
+                                                                                   Vector                0                              2     4.79
+over the state-of-the-art lookup-based baseline, FIGLUT, while                                                        Weight 1 1 1 2
+                                                                                                       Uniform                      Scale Factor = 4.79
+preserving arithmetic precision after vector quantization.                   1D: Scalar               Quantization   MSE: 1.58      Zero Point = 1
+                                                                             -2.97 -0.83 0.45 -4.98
+
+
+
+
+                                                                                                                                                          Non-Analytic
+            II. BACKGROUND AND M OTIVATION                                                                           1.58Bit     0110     0   -3.68
+                                                                             -0.45 4.6 1.14 2.83
+                                                                                                                      Weight     1212     1   0.235
+A. LLM Decoding: Computational Inefficiency                                   2.09 -3.22 0.68 -3.55                              2010
+                                                                                                                      Index      1112     2   3.093
+                                                                             -1.05 0.72 1.22 2.85      K-Means
+   The core operation in transformer-based Large Language                                              Clustering    MSE: 0.71          Weight Codebook
+Models (LLMs) [28], [56] is matrix multiplication, expressed                   High-Precision
+                                                                                  Weight
+
+
+
+
+                                                                                                                                                          Non-Analytic
+as Y = XW. Here, X ∈ RM ×K denotes the input matrix,                                                                 1.0Bit    3   1   0 1.18, 2.84
+                                                                                                                               2   0   1 1.07, -3.92
+and W ∈ RK×N represents the projection or feed-forward                                                                Weight   1   1   2 -0.45, 4.60
+                                                                                                      2D K-Means      Index    3   0   3 -2.01, -0.05
+weight matrix. Autoregressive LLMs [60] are typically ex-
+                                                                                                       Clustering    MSE: 0.40         Weight Codebook
+ecuted in two distinct phases: prefill and decoding. During
+the prefill phase, the model processes multiple tokens from
+                                                                         Fig. 2.     Comparison of quantization schemes: (a) uniform quantization
+several sequences simultaneously [72]. As a result, all three            (analytic); (b) K-means (1D vector) quantization (non-analytic); (c) 2D vector
+dimensions (M , K, and N ) of the matrix multiplication are              quantization (non-analytic).
+large, enabling General Matrix Multiplication (GEMM). This
+configuration allows GPUs and other accelerators to exploit              such as linear scaling and rounding. Both activations and
+extensive data reuse, thereby achieving high computational               weights can be quantized in this way, and such approaches are
+efficiency [7], [30], [49].                                              widely adopted for compute-bound workloads where reduced-
+   In contrast, during the decoding phase, the model generates           precision arithmetic directly lowers FLOPs [31], [70].
+tokens sequentially, one at a time. Consequently, the total                 However, the decoding phase of LLM inference is in-
+number of rows is reduced to M = 1, turning the matrix                   herently memory-bound, rather than compute-bound. There-
+multiplication XW from a large-scale GEMM operation into                 fore, modern systems typically employ weight-only quanti-
+a small-scale General Matrix–Vector Multiplication (GEMV)                zation [16], [37], where weights are stored in low-bit rep-
+operation. As shown in Fig. 1 (a), performing GEMV on                    resentations (e.g., 4-bit), while activations remain in high
+accelerators optimized for GEMM is highly inefficient for two            precision (e.g., FP16). This strategy effectively reduces mem-
+primary reasons. First, when M is small, only a narrow portion           ory bandwidth requirements and achieves near-linear speedups
+of the GEMM unit is active, while most processing element                proportional to the reduction in data transfer volume.
+(PE) lanes remain idle.                                                     Nonetheless, the computation itself still operates in high
+   Second, GEMV inherently suffers from low arithmetic                   precision. Thus, this approach functions primarily as a com-
+intensity because one dimension of the matrix cannot be reused           pression technique rather than a low-precision computation
+across computations. During decoding, activations are small,             method. Because of its simple and analytic nature, decod-
+but the weight matrix dominates the memory footprint and                 ing from such quantized weights is efficient: element-wise
+must be repeatedly fetched for each generated token without              dequantization can be performed in-place without additional
+reuse. As a result, GEMV operations become memory-bound,                 dependencies. Consequently, weight-only analytic quantization
+with the majority of runtime dominated by weight loading                 has been widely adopted in decoding-optimized frameworks
+rather than computation. This inefficiency has motivated ex-             such as AWQ [37] and GPTQ [16].
+tensive research on compressing the weight matrices during                  Despite its practicality, analytic quantization offers lim-
+the decoding process to reduce memory bandwidth demand                   ited representational flexibility. Its quantization error remains
+and improve overall inference efficiency [37], [39].                     relatively high under aggressive compression. More impor-
+   GEMVs occur only in the decode phase with a batch size                tantly, it cannot alter the underlying GEMV computation
+of 1. In this article, we will refer to both strict GEMVs and            paradigm: the decoding process remains a sequence of small,
+GEMV-like GEMMs from small batches, as they both cause                   memory-bound matrix–vector multiplications.
+array underutilization.                                                     Non-analytic quantization. In contrast, non-analytic quan-
+                                                                         tization removes the requirement for closed-form quantization
+B. Quantization                                                          functions. Instead, it directly learns quantization mappings by
+   Quantization methods for LLMs can be broadly catego-                  minimizing a reconstruction loss, typically the mean squared
+rized into two classes: analytic quantization and non-analytic           error (MSE), commonly through K-means clustering [6], [15],
+quantization. As illustrated in Fig. 2, the key distinction lies in      [22] (Fig. 2 (b)). This approach achieves substantially lower
+whether the quantization function can be explicitly represented          quantization errors than analytic methods and maintains high
+by arithmetic operations (e.g., rounding, scaling).                      fidelity even at 2-bit precision. Representative schemes in
+   Analytic quantization. As shown in Fig. 2 (a), analytic               this category include lookup-table (LUT)-based quantization
+quantization refers to schemes with explicit mathematical for-           methods [21], [22], [34] that replace arithmetic dequantization
+mulations that map high-precision values (e.g., FP32, FP16) to           with direct table lookups.
+low-bit values (e.g., INT4/8, FP4/8) through simple operations              However, this flexibility comes at a cost. Since the mapping
+
+
+
+
+                                                                      1353
+

@@ -1,0 +1,91 @@
+                    cols           Compressed Sparse Row (CSR) format                              several rows at once, and offsets could also be compressed.
+                  0 1 2 3                0 1 2 3 4
+                0 0 a b 0                                                                          Fig. 1 shows coordinates and values stored contiguously, but
+                                 offsets     0 2 4 5 7
+                1 c 0 d 0                                                                          applications often store them separately; the DCL can handle
+         rows
+
+
+                2 0 0 0 e            rows 1,a 2,b 0,c 2,d 3,e 1,f 2,g                              them with two parallel range fetch operators. The DCL can
+                3 0 f g 0                          {coordinate, value} pairs                       also handle many other sparse formats, which recent work has
+                Fig. 1. Compressed Sparse Row (CSR) matrix format.                                 systematized as a composition of access primitives that the
+                               Memory                                                              DCL supports [19, 37, 67], including matrices in DCSR, COO,
+   offsets[4]             7              rows[3]        2,d              marker (row-end)          DIA, or ELL; higher-dimensional tensors and tiled variants; and
+                                                                                                   graphs in adjacency lists and their blocked variants, common
+                0:5 Range            5      2:4 Range              0,c R 2,b 1,a
+inputQ                        offsetsQ                             rowsQ                           in streaming graph analytics [27, 39]. Moreover, the DCL is
+         Fig. 2. DCL pipeline that traverses CSR matrix from Fig. 1.
+                                                                                                   not limited to a single data structure, as we will see next.
+                                                                                               C. Applying the DCL to graph algorithms
+offsets and rows. For each row index i, offsets[i] stores
+the starting location of the ith row in the rows array. Each                                      Irregular applications are characterized by indirect, data-
+element of the rows array stores the column coordinate of a                                    dependent accesses across or within data structures. So far we
+nonzero element and its value.                                                                 have seen how DCL expresses the traversal of a single sparse
+                                                                                               data structure. Since most irregular applications use multiple
+   Fig. 2 shows how the DCL encodes the traversal of the sparse
+                                                                                               data structures, effective acceleration requires handling access
+matrix in Fig. 1, using a simple pipeline with two range fetch
+                                                                                               patterns that span data structures, including read-only and read-
+operators. The first operator fetches the contents of the offsets
+                                                                                               write data. To illustrate this, we focus on graph algorithms.
+array, and the second operator interprets these offsets as ranges
+                                                                                                  Most graph algorithms proceed in iterations. On each iter-
+to the rows array to fetch the contents of each row.
+                                                                                               ation, the data of each vertex is updated based on the data
+   With this implementation, the core specifies ranges of rows
+                                                                                               of neighboring vertices. There are two basic execution styles:
+to be fetched by enqueueing them to the input queue, and then
+                                                                                               Push (source-stationary) and Pull (destination-stationary). In
+consumes the rows by dequeueing from the output queue. In
+                                                                                               Push algorithms, source vertices (i.e., those whose values must
+the example, the core has enqueued the range 0:5, denoting
+                                                                                               be propagated) are processed one by one, and each vertex prop-
+a traversal of the whole matrix (traversing smaller ranges is
+                                                                                               agates (pushes) its update to its outgoing neighbors. In Pull
+also useful, e.g., with parallel processing). Note how queues
+                                                                                               algorithms, destination vertices are processed one by one, and
+decouple operation: the first range-fetch operator is currently
+                                                                                               each vertex reads (pulls) updates from its incoming neighbors.
+fetching the last offset (7), the second operator is fetching the
+                                                                                                  Push and Pull algorithms
+second element of the second row (2,d), and the core has not yet                                                                 0       1 vertices 0 1 2 3
+                                                                                               use the same main data struc-                offsets 0 2 4 5 7
+consumed anything. Because rows are variable-sized, a marker
+                                                                                               tures: the graph adjacency 2              3 neighs 1 2 0 2 3 1 2
+denotes the end of each row (R between 2,b and 0,c).
+                                                                                               matrix, usually in CSR for-
+                            Memory                                                                                                Fig. 4. Adjacency matrix in CSR.
+                                                                                               mat as shown in Fig. 4, en-
+                  Range        Range             Decompress                                    codes the outgoing (Push) or incoming (Pull) edges of each
+   input             offsets      Compressed rows                rows                          vertex; and one or more arrays that hold algorithm-specific
+Fig. 3. DCL pipeline for matrix where each sparse row is entropy-compressed.                   per-vertex or per-edge data.
+Data compression can further reduce the size of sparse data                                          1   def PageRankIter ( Graph g, Array scores ,
+structures. For example, consider a variant of the CSR format                                        2                      Array contribs ):
+in Fig. 1 where each row is individually compressed, e.g., with                                      3     for src in range(g. numVertices ):
+                                                                                                     4       for dst in g. neighs [g. offsets [src ]:
+delta encoding, and the offsets array points to the start of                                         5                             g. offsets [src +1]]:
+each compressed row. Ligra+ [62] uses such a format to reduce                                        6         scores [dst] += contribs [src]
+bandwidth and graph size. But Ligra+ achieves small speedups                                                   Listing 1. Single iteration of Push PageRank.
+because it decompresses rows in software. SpZip avoids these                                      Listing 1                              Source Vertex Data contribs
+overheads by supporting decompression operators in the DCL.                                    shows pseu-                   Range
+   Fig. 3 shows a DCL pipeline to traverse this CSR variant with                               docode for                                Adjacency Matrix
+                                                                                                                             Range             Range
+data-compressed rows. Compared to Fig. 2, the key change is                                    one iteration                                                neighbors
+                                                                                                                   input             offsets
+the addition of a decompress operator that takes compressed                                    of       Push    (src range) Destination Vertex Data             Indir
+rows as input and produces uncompressed rows. As before, this                                  PageRank.                          (Prefetch Only)
+decompress operator is decoupled from the core and other stages                                In this code,           Fig. 5. DCL pipeline for Push PageRank.
+through queues, allowing SpZip to hide decompression latency.                                  vertices push updates (contribs) to their out-neighbors,
+DCL’s generality: Though we have focused on a specific data                                    adjusting their scores (in a second phase, not shown, the
+format and access pattern, the DCL supports many other access                                  score and contrib of each vertex are updated for the next
+patterns and data structures. For instance, compressing each                                   iteration). Accesses to destination scores require two indirec-
+row individually is sensible if we require accesses to random                                  tions (offsets→neighbors→scores) that span two data
+rows; for programs that access long chunks, we could compress                                  structures (the adjacency matrix and the scores array).
+
+
+
+
+                                                                                            1071
+
+          Authorized licensed use limited to: Duke University. Downloaded on September 02,2026 at 19:08:17 UTC from IEEE Xplore. Restrictions apply.
+

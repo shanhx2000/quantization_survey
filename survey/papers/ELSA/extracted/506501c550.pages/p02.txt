@@ -1,0 +1,79 @@
+                 ܶଵ ܶଶ ܶଷ   ܶே                                                 !
+                                     !               !         
+                                      +)*,)&%            +%#!% &+*(            '!%&"%        (*!*!&% +#*!*
+                                        *#&-     !(+!*                )!%        #,#!'#!%      ''!% &+*!%
+                                                                "  
+   %'+*$
+   %' * $   %'+*'!")                                                                                                             +*'+* &.)
+                                        Fig. 2: Overall architecture and execution ﬂow of ELSA.
+
+             IF Neuron                         ST-BIF Neuron                          TABLE I: SNN operators supported by ELSA.
+‫ݔ‬ଵ       ‫ݓ‬                       ‫ݕ‬    ‫ݔ‬ଵ       ‫ݓ‬                      ‫ݕ‬          Category       Model                         Operators
+                                                        ܵ    ௧
+‫ݔ‬ଶ      െ‫ ݓ‬σ       ܸ௧                 ‫ݔ‬ଶ       െ‫ ݓ‬σ                                              CNN                         MM-sc
+                            ߠ                               ܸ௧    ȣ           Matrix Mult.
+‫ݔ‬ଷ                                                                                            Transformer                  MM-sc, MM-ss
+         ‫ݓ‬                            ‫ݔ‬ଷ       ‫ݓ‬
+                                                                                                 CNN              residual addition, image-to-column
+nIntegrate pUpdate oFire n Integrate pUpdate oFire                            Miscellaneous
+                                                                                              Transformer       ssoftmax, slayernorm, residual addition
+
+Fig. 3: Neural dynamics of (left) IF and (right) ST-BIF neuron.
+                                                                                    erator (ANT [18]), and 2.9× speedup and 22.1× energy
+still adopt coarse-grained layer-wise pipelines, where com-                         savings over the SOTA SNN accelerator (PAICORE [13]).
+putation advances only after all N spines/tokens in a layer
+are buffered and synchronized. This prevents completed                                             II. P RELIMINARY OF SNN
+spines/tokens from being forwarded immediately. Conse-
+quently, early responses can emerge only after the ﬁnal layer is                 A. Neural Dynamics of Spiking Neurons
+reached. Such layer-level synchronization substantially delays                      1) Integrate-and-Fire (IF) Neuron: The IF neuron is widely
+the ﬁrst possible response compared with an ideal ﬁne-grained                    used in SNNs and has been adopted by many neuromor-
+spine/token-wise pipeline, as illustrated in Fig. 5. These lim-                  phic chips [7], [11], [12], [19]. Unlike continuous activations
+itations motivate an SNN accelerator that supports true ﬁne-                     (e.g., ReLU), IF neurons communicate via binary spike trains
+grained spine/token-wise pipelining for elastic inference.                       ({0,1}), enabling event-driven and addition-only computation.
+   This work proposes ELSA, a near-SRAM dataﬂow archi-                           However, IF-based SNNs incur an accuracy loss relative to
+tecture that exploits elastic inference in convolutional and                     ANN counterparts due to conversion errors [2], [4].
+transformer-based SNNs. ELSA introduces a ﬁne-grained                               2) Bipolar Integrate-and-Fire with Spike Tracer (ST-BIF)
+spine/token-wise pipeline, supported by dedicated mapping                        Neuron: The ST-BIF neuron can be mathematically equivalent
+algorithms, that allows each completed spine/token to advance                    to quantized ReLU under speciﬁc conditions [4]. As shown in
+to the next layer immediately. This ﬁne-grained processing is                    Fig. 3, ST-BIF emits ternary spikes ({-1,0,1}) via three steps:
+essential for achieving low-latency elastic inference. Fig. 2                       Step-1: Spikes Integration. The neuron receives and inte-
+illustrates the overall architecture and execution ﬂow. Input                    grates pre-synaptic spikes xi,t ∈ {−1, 0, 1} into the membrane
+spikes encoded across time-steps are continuously processed                      Vt at t time-step through synaptic weight wi :
+by neural cores and delivered through the network-on-chip                                                        N
+(NoC). To further improve efﬁciency, ELSA incorporates                                             V̂t = Vt−1 + i=1 xi,t · wi                (1)
+SNN-speciﬁc hardware optimizations, including bundled AER
+for compact spike communication and mini-batch spiking                           where Vt−1 is the membrane potential before integration, V̂t
+Gustavson-product for sparse, memory-efﬁcient computation.                       is the membrane potential after integration, t is the time-step.
+The key contributions are as follows:                                               Step-2: Neuron Firing. After integration, the neuron emits
+ Fine-grained pipeline for elastic inference: ELSA in-                          a spike according to the decision function Θ:
+                                                                                                             ⎧
+   troduces a spine/token-wise pipeline that forwards each                                                   ⎪
+                                                                                                             ⎨1;   Vˆt ≥ Vthr & St < Smax
+   completed spine/token to the next layer immediately. Such                                ˆ
+                                                                                    yt = Θ(Vt , Vthr , St ) = 0;   other                      (2)
+   streaming execution exploits elastic inference to reduce the                                              ⎪
+                                                                                                             ⎩
+   latency to the ﬁrst response and improve throughput.                                                        −1; Vˆt < 0 & St > Smin
+ SNN-aware hardware optimizations: We propose a bun-
+                                                                                 where St is a memory unit in the ST-BIF neuron (aka., spike
+   dled AER protocol that packs multiple spikes into one
+                                                                                 tracer) that records the accumulated sum of emitted spikes.
+   ﬂit, reducing NoC trafﬁc under ﬁne-grained pipelining.
+                                                                                 Smax and Smin denote its upper and lower bounds, respectively.
+   We further design a mini-batch spiking Gustavson-product
+                                                                                 Vthr is the ﬁring threshold.
+   dataﬂow to reduce memory accesses while exploiting spike
+                                                                                    Step-3: Membrane Update. After ﬁring, the ST-BIF neu-
+   sparsity. Together, these optimizations lower on-chip com-
+                                                                                 ron updates its membrane potential and spike tracer:
+   munication and computation energy.
+ High-performance elastic inference: ELSA is the ﬁrst                              Vt = V̂t − yt · Vthr ;    St = St−1 + Θ(V̂t , Vthr , St−1 )           (3)
+   SNN accelerator explicitly optimized for elastic inference. It
+   achieves on-par accuracy while delivering a 3.4× speedup                      The membrane update follows the “soft reset” rule [20], while
+   and 13.6× energy savings over the SOTA QANN accel-                            the spike tracer is updated by accumulating the emitted spikes.
+
+
+
+
+                                                                          2551
+

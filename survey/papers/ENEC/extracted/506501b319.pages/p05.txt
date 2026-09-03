@@ -1,0 +1,72 @@
+  3 Handling and transferring variable-length memory op-                  Algorithm 1: Basic Design of ENEC
+     erations is inefficient and time-consuming, severely im-             The right-side markers [B1-B4] represent the primary architectural
+     pacting algorithms like Huffman coding.                              bottlenecks on Ascend NPUs addressed in Section V
+  4 Compression computations are primarily vector-based                     Input : W : Raw Weights (BF16/FP16/FP32), Tf req : Frequency Table
+     element-wise operations and cannot directly utilize                    Output: Stream: Compressed Binary Output
+                                                                      1 Compression (Processing 8,192 elements per block):
+     the Ascend’s Cube unit designed for matrix opera-                  // Component Separation
+     tions. Therefore, we construct a collaborative inference         2 {E, S, M } ← Split(W )
+     pipeline where compression is handled by the AIV and             3 E ′ ← Tf req [E]                                      // [B1] Gather Lookup
+                                                                      4 (Limit: High latency in non-contiguous memory access, 35% overhead)
+     model operations are executed by the AIC.                          // Group-based bit-width calculation
+  5 AscendC lacks fast inter-thread synchronization compa-            5 Divide E ′ into groups of length L
+                                                                      6 for each group G do
+     rable to CUDA, as Ascend NPUs treat each AI Core                 7        bit-width ← ⌈log2 (max(G))⌉ // [B2] Reduction Max
+     as a single, heavyweight thread. The architecture relies         8 end
+                                                                      9 (Limit: Serial dependency in vector units, 40% overhead)
+     on a pipelined dataflow model, optimizing task-queue-              // Bit-packing
+     driven overlaps between data movement and computa-              10 while bits remaining in E ′ do
+                                                                               // Buffer Accumulation
+     tion within a thread, rather than managing fine-grained         11        Fill 8,192 lanes in 32KB buf f er
+     concurrency across massive threads.                             12        if lane status ≥ 16 bits then
+                                                                     13                Output lower 16 bits and bit mask to Stream
+  6 It is challenging to implement lossless compression              14                lanes ← lanes » 16
+     algorithms that require extensive non-arithmetic opera-         15        end
+                                                                     16 end
+     tions (such as comparisons and reductions), including           17 Decompression:
+     Run-Length Encoding (RLE), LZ4, LZ77, and other                    // Offset calculation and bit-unpacking
+                                                                     18 M ask ← Convert bit mask to {0, 1} integers
+     similar dictionary-based methods.                               19 Of f sets ← PrefixSum(M ask)                              // [B3] Prefix Sum
+   These architectural mismatches explain the fundamental            20 (Limit: Cross-lane data dependency within 32B segments, 30% overhead)
+                                                                     21 Lower 16 bits ← Get from Stream using Of f sets
+incompatibility between existing lossless compression algo-          22 E ′ ← buf f er + Lower 16 bits
+rithms and Ascend NPUs. The lack of conditional branch-              23 E ← Tf−1     req [E ]
+                                                                                               ′
+                                                                                                                                  // [B4] Gather Lookup
+                                                                     24 (Limit: Inefficient vector unit utilization in gather, 45% overhead)
+ing, scatter/gather instructions, and efficient variable-length      25 W ← Combine(E, S, M )
+memory operations renders traditional entropy coding and             26 return W
+dictionary-based methods impractical on this platform. More-
+over, the absence of lightweight inter-thread synchronization            achieve more compact encoding (Line 3). Within this 8,192-
+and reliance on a pipelined dataflow model within each                   element block, data is further divided into smaller groups
+AI core restrict parallelization strategies common in GPU-               of length L, and the bit width required for the maximum
+based compressors. These insights motivate our co-design ap-             value in each group is calculated (Lines 5-8). Each thread
+proach: rather than force-fitting existing algorithms, we align          utilizes a dedicated 32KB buffer (with 8,192 32-bit lanes
+compression primitives with Ascend’s vectorized, branch-free             corresponding to 8,192 elements), where each element is
+execution model and memory hierarchy constraints. Building               written into its respective lane. As the number of processed
+on this understanding, we next present ENEC—a lightweight                blocks increases, the lower 16 bits of all lanes that have
+compression algorithm crafted to navigate these architectural            accumulated full 16 bits are gathered to output and a bit mask
+limitations while preserving lossless fidelity.                          is generated, followed by a vectorized right-shift operation
+                                                                         to prepare for the next round (Lines 10-16). This iterative
+B. Basic Design of ENEC                                                  process continues until all data blocks are fully processed.
+   Building upon the architectural constraints identified in             Finally, the compressed content from each thread’s buffer is
+Section IV-A, we now present the basic design of ENEC—a                  saved into the compressed file for decoding purposes.
+lightweight compression algorithm, as shown in the pseu-                    During the decompression phase, bit-unpacking operations
+docode (Algorithm 1). While the architectural analysis re-               are first performed to reconstruct the grouped data. The
+veals fundamental incompatibilities, it also illuminates the             inverse bit-packing employs a reverse gather operation, where
+path forward: by aligning our algorithm with the Ascend’s                the necessary offsets for the reverse gather are precisely
+inherent strengths and working around its constraints, we can            computed using a prefix sum, which is derived by first
+achieve efficient lossless compression.                                  converting the bit mask into a sequence of 0 and 1 integers
+   Guided by Observations 1 and 2 from Section III, our fun-             (Lines 18-22). Subsequently, by executing a lookup in the
+damental compression algorithm proceeds as follows. During               frequency mapping table, the values are converted back
+the compression phase, each thread processes a data block                to their original exponent values (Line 23). By combining
+of 8,192 elements at a time. The exponents are separated                 these restored exponents with the directly stored sign and
+from the floating-point data (while signs and mantissas are              mantissa bits, the original floating-point data can be perfectly
+stored directly), and frequency statistics are collected (Line           reconstructed (Line 25).
+2). The sorted frequency indices serve as mapping values to                 Key Bottlenecks of Basic Design. However, the basic
+
+
+
+
+                                                                  1323
+

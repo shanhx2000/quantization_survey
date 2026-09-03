@@ -1,0 +1,68 @@
+earlier one, thereby preserving more movement flexibility for              B. Compilation Space Encoding Method
+preceding dequant operations. When moving a dequantization                    FlexQ-NDP constructs and encodes the compilation space
+across other instructions, we apply the principles discussed               for low-bit FP in the following aspects.
+in the previous section. These constraints either consume the                 Operator Partition: We follow the definition in prior
+remaining extra buf (line 13/15) or may prevent further                    work [63] to specify how each dimension of the oper-
+movement entirely (line 17&20). Once a valid slot is found,                ator is partitioned across hardware levels: P artition =
+the dequantization is relocated accordingly (line 23). We then             {P artM,K,N
+                                                                                  Ch,Ra,De,Bk }, which represents the partition number
+update the remaining idle cycles of that slot and mark it invalid          of the M/N/K dimensions at the Channel/Rank/Device/Bank
+if its idle window has been fully consumed (line 24).                      hierarchy levels and is constrained by hardware parallelism. It
+   It should be noted that, in weight-only quantization, the               should be noted that the term ”device” refers to the DRAM
+dequantization will provide the dequantized weight value                   modules within a rank that share the command and address
+for computation. As a result, moving dequantization over a                 bus while maintaining independent data buses. This concept
+computation will require storing the weight value used in the              is seldom used in the GDDR family. However, we include it
+computation, the amount of which is much more than the                     here for the compatibility with other memory types.
+partial sum. The available moving range is much smaller under                 Buffer       allocation: We use a four element
+the same partial buffer, as a result, we only implement this               quadruple to describe the size of allocated buffer:
+technique in weight-activation cases.                                      (V al Buf, ScaleA Buf, ScaleW Buf, Dequant Buf ).
+                                                                           We fix the buffer size for final result to the bitwidth
+         VIII. C OMPILATION S PACE E XPLORATION                            of a DRAM column (e.g., 32B), according to previous
+A. Guidelines for Compilation Strategy Selection                           practice in [63]. The sum of these buffers is limited by the
+                                                                           total available buffer size T otal Buf , and the granularity of
+   As discussed in Sec. IV-A, FlexQ-NDP formulates low-bit                 allocation is also set to 32B. For the weight-only quantization,
+FP computation on NDP as a compilation space exploration                   ScaleA Buf is set to zero, and Dequant Buf is parsed as
+problem. Given the complexity of the compilation space,                    the buffer size to store the dequantized weight data.
+we first analyze the compatibility between NDP compilation                    Loop Permutation: Here we take the loop tiling on the K
+strategies and different QConfigs, and summarize two practical             dimension as an example. The granularity of the inner loop (K
+guidelines to enable compilation-space pruning and efficient               inner) is set to the number of values that can be accommodated
+search.                                                                    in a DRAM column:
+   Guideline-1: Operator partition should consider the size of                             KT ile = T ileCol × #V alue/Col             (10)
+QGroup. When partitioning a quantized matrix across PUs,
+additional padding may be introduced because the matrix is                 Based on the tiling scheme, we allow swapping the order
+organized into QGroups under the group-wise quantization                   of M dimension and N dimension, and form two candi-
+scheme. For example, when a 704-wide matrix dimension is                   date loop orders: {Order1=M→K Outer→N→K Inner} and
+partitioned across 32 PUs, each PU can evenly process 22                   {Order2=N→K Outer→M→K Inner}. To maximize data
+elements. However, if the QGroup size is misaligned with                   reuse, we will store weight in the value buffer for Order1,
+this partitioning (e.g., 64), a single QGroup spans three PUs,             and reserve input in the value buffer for Order2. To ensure no
+and the last PU must process elements belonging to two                     buffer miss will be triggered during the inner loop, we restrict
+QGroups with different scales. As a result, this PU is forced              the choice of K T ile by K T ile ≤ Data Buf .
+to perform dequantization while other PUs are still executing                DRAM Mapping: As stated in Sec. VI, the column num-
+MAC, leading to divergent instruction streams across PUs and               ber of scale region ColS can vary under the restriction of
+incurring non-uniform control overhead.                                    ScaleW Buf . Each ColS corresponds to an optimal layout.
+   Guideline-2: Buffer Size Allocation. Since scales also need             C. Compilation Space Pruning
+to be fetched from DRAM and stored in buffer during com-                      1) Pruning with Conflict of Operator Partition and
+putation, how to divide the SRAM buffer between values and                 QGroup: Based on the guideline, some QGroup sizes may
+scales becomes a critical problem. For example, for QConfigs               introduce extra padding during partitioning. We use the re-
+with larger QGroups (e.g., group size 128), more buffer space              duction dimension K as an example. We first determine how
+tends to be allocated to values, as the number of scales                   many full QGroups each PU can process:
+is relatively small. Conversely, for smaller QGroups (e.g.,
+group size 16), a larger portion of the buffer is allocated to                 #P artK = P artK         K         K         K
+                                                                                              Ch × P artRa × P artDe × P artBk ,       (11)
+scales. Furthermore, the proposed scale-value interleaved FP                         #QGroupComplete
+                                                                                            PU       = ⌊ ⌈K/GK ⌉ / P artK ⌋,           (12)
+layout and dequantization-hiding technique are also tightly                            #QGroup  Remain
+                                                                                                         = ⌈K/GK ⌉ % P art . K
+                                                                                                                                       (13)
+coupled to the buffer allocation. For example, constructing
+an itBlock requires determining the number of QGroups                         Further distributing the remaining elements across PUs may
+due to the scale-buffer capacity (Equ. 2), and dequantization              lead to padding. We determine how many PUs should jointly
+instruction reordering is constrained by the available buffer              share a QGroup first, and resulting padding accordingly:
+                                                                                         Remain
+size (extra buf in Alg. 1).                                                           P UQGroup = ⌊P artK /#QGroupRemain ⌋,            (14)
+
+
+
+
+                                                                    1390
+

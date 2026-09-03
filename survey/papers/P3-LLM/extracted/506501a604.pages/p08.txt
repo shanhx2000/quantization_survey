@@ -1,0 +1,71 @@
+                           Input Reg Write            PIM Command                                      only GEMV operations. To further exploit data reuse oppor-
+         t=0     t=1    t=2        t=3       t=4      t=5    t=6        t=7       t=8      t=9
+                                                                                                       tunities inside the PCU, one can increase the activation tile
+ C / A Bus                                                                                             size from 1 × 4 to n × 4 (where n > 1), and compute a
+                                 tCCD_L                     tCCD_S                                     n × 4 × 16 GEMM tile. But this will increase the number of
+    Bank                         Weight 1                             Weight 2                         multipliers by n×, leading to considerable area overhead. A
+HBM-PIM      A   A               W1 × A1                              W2 × A2                          direct workaround is also to reduce the weight size by n×,
+    3
+                                                                                                       resulting in a n × 4 × (16/n) GEMM tile without the need
+  P -LLM     A   B     W1 × A1              W1 × B1         W2 × A2              W2 × B2
+                                                                                                       for additional multipliers. Nevertheless, this approach causes
+             Fig. 7: Command timing of HBM-PIM and P3 -LLM.                                            severe under-utilization of the PIM bandwidth because of the
+                                                                                                       inherent 256-bit column access granularity of HBM.
+multiplied directly with the query. Therefore, an online RoPE                                             Instead of adopting spatial data, we introduce a novel opti-
+operation must be applied to the key cache in each decoding                                            mization that exploits temporal data reuse inside the PCU. Our
+iteration. Fortunately, RoPE is essentially a few element-wise                                         key insight is that the proposed low-precision PCU not only
+operations with negligible runtime overhead [93]. Since RoPE                                           reduces the area, but also permits a higher operating frequency
+is performed on NPU and its outputs are high-precision, we opt                                         compared to the baseline HBM-PIM [49]. Specifically, our
+to calculate the following Q · K T on NPU if the key cache is                                          evaluation (detailed in Section VI-A) demonstrates that the
+quantized before RoPE. In contrast, the post-RoPE quantized                                            PCU of P3 -LLM can reliably achieve 2× higher frequency
+key cache can be directly multiplied with the query, which                                             than that of HBM-PIM using FP32 accumulators. Given
+permits Q · K T to be computed by the low-precision PCU.                                               that HBM-PIM operates at a clock cycle of tCCD L , which
+                                                                                                       corresponds to 4 memory bus cycles, the proposed PCU can
+C. Optimization on Quantized Computation Flow                                                          instead operate P3 -LLM at tCCD S , which is typically a half of
+Quantization Granularity. The quantization granularity has                                             tCCD L across all HBM generations [33], [36], [37].
+a direct impact on the computation flow. For query and KV-                                                Fig. 7 compares the command timing between HBM-PIM
+cache, we employ per-head quantization, where a group of                                               and P3 -LLM. Initially, the host NPU sends input activations to
+Dh elements are quantized together and Dh is the head size.                                            the PCU register. Subsequently, a PIM command is initiated
+This allows immediate quantization of each newly generated                                             every tCCD L on HBM-PIM, which reads out 256-bit weights
+token and eliminates the need to buffer a window of FP16                                               from the DRAM row buffer and performs a GEMV operation.
+KV-cache as done in prior works [29], [61]. Additionally,                                              P3 -LLM allows the same weight slice to be reused twice
+weights are quantized per-group with a group size of 128                                               by two different inputs, effectively doubling the throughput
+following BitMoD [6]. Activations are quantized per-token                                              for cases where multiple inputs share the same weight. Our
+using FP8-E4M3. Finally, attention-score quantization does                                             simulation shows that the PIM power of P3 -LLM increases
+not need scaling since FP8-S0E4M4 already covers the                                                   by 28% when its PCU operates at tCCD S instead of tCCD L ,
+required numerical range. Instead, we directly round the least                                         resulting in 1.56× better energy efficiency. This is because
+significant bits of every FP16 attention-score and keep its                                            the majority of PIM power dissipation comes from DRAM cell
+highest 4 mantissa bits.                                                                               access and column decoder switching, which do not change as
+                                                                                                       the throughput-enhanced PCU reuses the same set of weights
+Quantized Computation Flow. As shown in Fig. 6(c),
+                                                                                                       from the row buffer across two consecutive tCCD S windows.
+P3 -LLM performs quantized matrix multiplication on the low-
+precision PCU, and implements operator fusion to minimize                                                                    VI. E VALUATION
+the runtime overhead of dequantization, which needs to be                                              A. Experimental Methodology
+executed on NPU using high-precision arithmetic. For linear
+layers, the dequantization scaling is performed after matrix                                           Models and Datasets. We select eight representative mod-
+multiplication. For Q · K T , since the post-RoPE key cache                                            els from Llama and Mistral families with varying sizes.
+contains per-channel smoothing factors (SSF ), we fuse SSF into                                        Specifically, we evaluate Llama-1-(7B, 13B) [84]; Llama-2-
+query via element-wise multiplication prior to FP8 quantiza-                                           (7B, 13B) [67]; Llama-3.1-8B [64]; Llama-3.2-3B [66]; and
+tion. Similarly, for P · V , we fuse the per-value-head scaling                                        Mistral-7B-(v0.1, v0.3) [38]. We obtain the pre-trained mod-
+factors (SV ) into attention-scores before FP8 quantization.                                           els from their HuggingFace repository, and implement the
+One potential issue of fusing SV is that it may cause the                                              proposed W4A8KV4P8 quantization algorithm in PyTorch.
+resulting attention-scores’ magnitude to become larger than                                            We apply pre-RoPE key-cache quantization to Llama-1 and
+one, which is outside the range of FP8-S0E4M4. To prevent                                              Llama-2 given their short sequence length, while Llama-3 and
+this, we apply a second-level scaling that divides SV with                                             Mistral adopt post-RoPE key-cache quantization. For accuracy
+its maximum SV max , resulting in SV ∈ [0, 1]. Note that the                                           evaluation of quantized models, we measure the perplexity3 on
+quantization scaling factor is always positive by definition in                                        Wikitext-2 [63] and C4 [14] datasets. Additionally, we eval-
+Eq. 1, so fusing SV still produces unsigned attention-scores.                                          uate the accuracy on three difficult logical and mathematical
+This second-level scaling factor SV max is later multiplied back                                       reasoning tasks, including MMLU [26], ARC-Challenge [10],
+into the result of P · V .                                                                             and GSM8K [74]. For these reasoning tasks, we use the
+                                                                                                          3 For perplexity comparison with other baseline works, we use a context
+D. Throughput-Enhanced PCU
+                                                                                                       length of 2K to align with their reported results. Additionally, Llama-1
+  Despite the proposed low-precision PCU achieving 4× the                                              supports a maximum context length of 2K; exceeding this limit results in
+computational throughput than HBM-PIM, it still supports                                               infinite perplexity across all baselines.
+
+
+
+
+                                                                                                 611
+

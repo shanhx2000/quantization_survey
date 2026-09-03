@@ -1,0 +1,81 @@
+                            0.02                                                             as drop-in replacements for standard layers (TorchAO). Within
+% Relative Log Loss (RLL)
+
+
+                                                                                             each library, multiple recipes provide fine-grained control over
+                                                                          Hard Swish         forward and backward pass datatypes, quantization strategies
+                            0.01                                          BlockNorm 256
+                                                                                             (tensorwise, rowwise, blockwise), and other features like fast
+                                                                          Hard Swish
+                                                                          BlockNorm 512      accumulation.
+                             0                                            Hard Swish            This diversity, while providing flexibility, creates a challeng-
+                                                                                             ing optimization problem. Selecting the optimal combination of
+                                   25   30       35       40    45   50                      library and recipe for each GEMM operation requires balancing
+                                             Billion Examples
+                                                                                             accuracy constraints with performance objectives, a task that
+                                                                                             becomes intractable to perform manually across hundreds of
+Fig. 8. Hard Swish and BlockNorm with sufficiently large block size converges                modules in production models.
+to minimal loss.                                                                             Library and Recipe Selection LoKA Dispatch addresses this
+                                                                                             challenge through a lightweight runtime system that leverages
+a production Wukong model using a BlockNorm of size 256
+                                                                                             the statistical insights from LoKA Probe to make optimal kernel
+with RMSNorm in Figure 8, demonstrate its ability to preserve
+                                                                                             selection decisions. Rather than applying uniform low-precision
+model quality.
+                                                                                             policies across all operations, LoKA Dispatch treats each
+   3) Hard Swish: Sigmoid-based swish activation and normal-
+                                                                                             GEMM as an independent optimization opportunity, selecting
+ization come with large overheads and numerical challenges
+                                                                                             the fastest implementation that satisfies accuracy requirements.
+due to the expensive exponential operations [29], making Swish
+                                                                                                The core algorithm operates through constrained optimiza-
+significantly slower than lightweight activations such as ReLU.
+                                                                                             tion. For each GEMM operation, candidate implementations
+   We replace normal swish function with Hard Swish [61],
+                                                                                             are first filtered by accuracy constraints derived from LoKA
+a piecewise linear, close approximation to Swish that signifi-
+                                                                                             Probe’s MERE analysis. Only libraries and recipes whose
+cantly reduces computational cost while maintaining similar
+                                                                                             expected error falls below a conservative threshold (typically
+representational power. The Hard Swish function is defined as
+                                                                                             MERE < 0.2) and whose speedup (per LoKA Probe analysis)
+follows:
+                                  ReLU6(x + 3)                                               exceeds a minimum improvement factor (typically > 1.05×)
+                h-swish(x) = x ·                                                             are considered. From this filtered set, LoKA Dispatch selects
+                                         6
+                                                                                             the implementation with the highest measured throughput.
+   where ReLU6 provides a bounded ReLU operation that                                        The heterogeneous nature of this mapping underscores the
+outputs zero for negative inputs,                                                            importance of fine-grained, per-operation optimization rather
+   The elimination of exponential operations reduces com-                                    than global policies.
+putational overhead, while the piecewise linear nature of                                    Trainer Integration The technical implementation of LoKA
+Hard Swish makes it naturally amenable to low-precision                                      Dispatch centers on providing a unified interface across diverse
+computation. Additionally, Hard Swish integrates seamlessly                                  low-precision libraries while maintaining compatibility with
+with BlockNorm, allowing both operations to be fused within                                  existing training frameworks. We implement a custom autograd
+the same kernel for maximum efficiency.                                                      function that serves as a universal adapter, allowing the same
+   The representational power of Hard Swish remains compara-                                 high-level interface to route to different underlying kernel
+ble to standard Swish for the typical input ranges encountered                               implementations.
+in recommendation models, while providing substantially                                         During model initialization, we perform a transformation
+better behavior under limited numerical range. This trade-                                   pass that identifies target linear layers and replaces them with
+off of slightly simplified activation dynamics in exchange for                               LoKA-aware linear wrappers. These wrappers encapsulate the
+dramatically improved low-precision stability proves highly                                  dispatch logic while maintaining identical semantics to standard
+beneficial in practice.                                                                      PyTorch linear layers, ensuring compatibility with existing train-
+C. LoKA Dispatch: Per-Operator Kernel Orchestration                                          ing pipelines and optimization strategies. The autograd function
+                                                                                             called by the wrappers handles both forward and backward
+   With improved low-precision accuracy enabled by LoKA                                      pass routing, maintaining separate optimization decisions for
+Probe’s targeted analysis and LoKA Mods’ architectural                                       each direction when beneficial. This granular control proves
+improvements, the final challenge is achieving optimal end-to-                               particularly valuable because forward and backward passes
+end throughput. Even with numerically stable components,                                     often have different optimal implementations due to varying
+the diversity of GEMM shapes, hardware characteristics,                                      tensor shapes, layouts, datatypes and computational patterns.
+and available libraries means that no single low-precision                                      It’s worth noting that LoKA Dispatch does not need to
+implementation performs best across all scenarios.                                           operate dynamically per-iteration once static profiling results
+   Modern low-precision ecosystems present a complex op-                                     are obtained. For inference, kernel selection is entirely statically
+timization landscape. Libraries differ fundamentally in their                                determined, and distribution shifts are handled naturally via on-
+design philosophy: some provide bare kernels with maximum                                    line continuous training. For training, Dispatch’s dynamism acts
+agility (e.g., DeepGEMM), others offer comprehensive quanti-                                 purely as a safeguard against massive distribution shifts (e.g.,
+zation pipelines (e.g., FBGEMM), while still others function                                 sudden user behavior changes during a holiday). Dynamically
+
+
+
+
+                                                                                          1375
+

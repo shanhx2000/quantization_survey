@@ -1,0 +1,96 @@
+        Orig. Op                For 1 PU                    After Tiling                After Mapping                                  W/A       DRAM Bank                                         OP Type     Inst. Field
+                                                                                                                   HW.                 Matrix                                    Scales           ReadToBuf    A/B; data/scale
+ for m in (M)                   for m in (M0)               for m in (M0)          for m in (M0):                                                               W
+ for n in (N)                   for n in (N0)               for k0 in (K0/K1)      for k0 in (K0/K1):         HW ISA                                                             Values           Compute      DRAMAddr, buffer src/dst
+                                                            RD Buf.(m,k0)          RD Buf.(DramAddr)                                   Values                                                     Dequant      buffer src/dst
+ for k in (K)                   for k in (K0)
+                                                            for n in (N0)          for n in (N0):                  Sim.                Scales                   A                Partial Result   HostAccess   (RD/WR) DRAM(row,col,len)
+ O[m,n]+=A[m,k]*W[k,n]          MAC(m,n,k)
+                                                            for k1 in (K1)         for k1 in (K1):
+                                                            MAC(m,n,k)             MAC(DramAddr)
+                                                                                                                                          (a) DRAM Mapping             (b) Buffer Allocation              (e) Instruction Type
+                                                                                                            INST Gen.
+                                                                                                                                      A Values    W Values                  Scales          Scales      W Values                 A Values
+
+       Op Info            1. Op Partition                         2. Loop-Tiling               3. DRAM Mapping
+                                                                                                                                       FP4 Mode (MAC)        FP32 Mode (MAC)                   FP8 Mode (MUL)          FP16 Mode (MAC)
+        GEMM                                   N0            Divided A          Divided W            0 →2 → 4 → 6
+       (M,K,N)                                               K1                                       DRAM Array                          Partial Sum.              Final Sum.                    Dequanted W               Final Sum.
+                            W         K0 Divided                              K1 0 2 4 6         0                    1
+                                             W               0/2/. 1/3/.                                                                  Compute             Result Dequant                   Weight Dequant              Compute
+   M      A                                                  Buf.Size                            2                    3
+                                                                                 1 3 5 7                                                  (c) Weight-Activation DataFlow                              (d) Weight-Only DataFlow
+          K                                BK0 BK1           8 Buffer Fetch                               Open 2 Row
+                         Ch1 Ch2           …
+
+                                                             2 Buffer Fetch                               Open 1 Row                             Fig. 3. Baseline Low-bit FP GEMM Compilation Flow
+   K     W               Ch3 Ch4                              0/2/. 1/3/.        0 2 4 6         0                    2
+
+          N               Channels         Banks                                 1 3 5 7         4                    6               [33] architecture to enable group-wise scaling and dequanti-
+                                                                                                                                      zation. This allows further quantification and analysis of the
+                 Fig. 1. Basic Compilation Flow of NDP Architectures                                                                  overhead introduced by such formats in Sec. IV.
+                                                                                                                                         Fig. 2(a) illustrates the overall system organization. Similar
+   Host           NDP Chips                FP32 Datapath FP16 Datapath FP16 Datapath FP4 Datapath
+                                                              Format Decoder                                                          to the Hynix-AiM architecture, the NDP system consists of
+                  Channel 0
+   PCIe           Channel 1
+                                      8b    2*5b       4*4b            8*2b       24b       2*11b 4*4b       8*2b                     32 GDDR6 chips, each containing two memory channels. The
+   (a) System Overview          x32     8-bit       5-bit     4-bit  2-bit          12-bit 12-bit 6-bit 6-bit                         host communicates with the NDP system through PCIe. Each
+                                        ADD         ADD       ADD x2 ADD x4         MUL MUL MUL x4 MUL x4
+       DRAM Bank 0 (BK 0)                           Exponent Adder
+                                                                                                                                      channel contains 16 DRAM banks. As illustrated in Fig. 2(b),
+                  32B(256b)                                                                   Shift & ADD
+
+                           ×20
+                                            Normalization & Rounding                         Mantissa Multiplier                      a multi-precision PU is attached to each bank and reused
+                                                                                                                          x8
+                     …     SRAM
+                           Buffer                     64 x FP8 Adder                                  MUL (without                    for both low-precision value computation and high-precision
+    BK I/O                                                                                             adder tree)
+          256b     256b
+    Multi-Precision PU
+                                                      32 x BF16 Adder                                                                 dequantization. In addition, a 5Kb SRAM buffer is placed
+                                        Adder         16 x FP32 Adder              MAC (with          Precision
+ BK 1 BK 2 BK 3 … BK 15                 Tree                ……                     adder tree)       Conversion     output            near each bank, organized as 20 individual 32B buffers. Each
+(b) NDP Channel Architecture                                         (c) Multi-Precision PU                                           32B buffer can be configured to store values, scales, or partial
+                    Fig. 2. Low-bit FP-oriented NDP Architecture                                                                      sums.
+                                                                                                                                         For different FP formats, the total operand width that can
+size, scale format, value format, and weight-only/weight-                                                                             be processed in parallel by each PU is fixed at 256b, matching
+activation quantization.                                                                                                              the GDDR6 read/write bit width. As shown in Fig. 2(c), the
+                                                                                                                                      decoding and exponent processing of each format are handled
+B. Baseline NDP Compilation Flow
+                                                                                                                                      individually, while the mantissa computation reuses the same
+   Fig. 1 illustrates existing NDP compilation flow, which                                                                            multiplier array. The adder tree is further optimized by using
+contains operator partition, loop tiling, DRAM mapping, and                                                                           different precisions at different levels. The detailed design and
+instruction generation [42], [63]. Because PU and memory                                                                              implementation of the PU are described in Sec. IX-A. Besides
+units are tightly coupled in NDP, data access, compute, and                                                                           MAC operations, the PU also supports MUL operations for
+communication performance all strongly depend on data lay-                                                                            dequantization without accumulation in weight-only cases.
+out. First of all, the operator partition divides the weight matrix
+into multiple blocks. When each block is mapped to a specific                                                                         B. Baseline Low-bit FP Compilation Flow
+memory unit (e.g., a DRAM bank), it also determines the
+PU that will process the block. Then, loop tiling optimizes                                                                              To execute fine-grained grouped FP-based GEMM on the
+the traversal order to maximize the data reuse in SRAM                                                                                NDP architecture, the existing NDP compilation flow needs
+buffer. After that, DRAM mapping procedure assigns the                                                                                to be extended to deal with fine-grained group scales and the
+specific row/column address for each block (i.e., optimizes                                                                           extra dequantization operations.
+the data layout). The optimization objective here is to reduce                                                                           1) Scales Partitioning: After value partitioning, scales are
+DRAM row-buffer miss. When PU needs to access data in                                                                                 partitioned accordingly to ensure that the scale associated with
+another DRAM row (i.e., row-changing), a precharge DRAM                                                                               each value is located in the same DRAM bank.
+command is required to close the current open row and charge                                                                             2) Scales Mapping: As shown in Fig. 3(a), the scales
+the bitline, which is more expensive than repeatedly accessing                                                                        of different groups are stored densely in DRAM bank, and
+the same row. Finally, NDP compiler generates the instructions                                                                        separated from the value, following the strategy in [30] and
+to enable performance simulation (offline) and control NDP                                                                            traditional GPU systems (e.g., scales are stored in a contiguous
+hardware (online). The instructions will be further split into a                                                                      memory layout in Triton [57]).
+series of DRAM commands and PU commands.                                                                                                 3) Buffer Allocation: Different from integer GEMM com-
+                                                                                                                                      putation, where buffers are typically dedicated to values and
+        III. L OW- BIT FP- ORIENTED NDP A RCHITECTURE                                                                                 results, low-bit FP introduces additional data such as scales
+                                                                                                                                      and intra-group partial sums. As a result, the limited on-
+A. Architecture Overview
+                                                                                                                                      chip buffers must be carefully allocated for different purposes.
+   Since current mainstream NDP architectures do not support                                                                          In our design, this allocation is determined at compile time
+fine-grained grouped FP formats, we extend the Hynix AiM                                                                              through either search-based strategies or heuristic rules.
+
+
+
+
+                                                                                                                               1385
+

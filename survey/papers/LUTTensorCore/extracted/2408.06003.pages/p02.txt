@@ -1,0 +1,62 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                   Mo et al.
+
+
+natively. Consequently, most low-bit LLM inference systems have              instruction set, which includes essential metadata specifying the
+to utilize dequantization-based approaches for mpGEMM [16, 39,               operand types and shapes. With the extension, LUT Tensor Core
+51, 69]. Dequantization upscales low-bit representations to match            leverages the shape information provided in LMMA to recompile
+the hardware-supported GEMM. Such extra operations can become                LLM workloads using tile-based deep learning compilers [5, 62, 84],
+a performance bottleneck in large batch scenarios.                           producing efficient kernels for the new hardware.
+    Lookup table (LUT) is another popular approach for low-bit com-              Our LUT-based Tensor Core exhibits a power and area reduction
+putation and is well-suited for mpGEMM [26, 38, 45, 53, 71]. By              of 4× to 6× compared to the conventional Tensor Core. To validate
+precomputing multiplication results between low-precision weights            the performance enhancement of mpGEMM, we integrate our LUT-
+and high-precision activations, LUT-based methods eliminate the              based Tensor Core design and instructions into Accel-Sim [30], a
+need for dequantization and replace complex operations with sim-             GPU hardware simulator. The results show that our LUT-based
+ple table lookups. In practice, LUTs are implemented on a per-tile           Tensor Core occupies only 16% of the area of a conventional Tensor
+basis. For each small tile of mpGEMM, a lookup table is precom-              Core while achieving even higher mpGEMM performance. Com-
+puted specifically for the activations within a tile and reused across       pared to state-of-the-art (SOTA) LUT software implementations
+weight matrix columns, significantly reducing storage overhead               [53], LUT Tensor Core achieves up to a 1.42× speedup in gen-
+while maintaining efficiency.                                                eral matrix vector multiplications (GEMV) and a 72.2× speedup in
+    Despite its potential, LUT-based mpGEMM still experiences no-            GEMM. Compared to SOTA LUT accelerators [38], LUT Tensor
+table performance gaps and challenges in both software and hard-             Core achieves 1.44× higher compute density and energy efficiency,
+ware implementations. On the software side, LUT kernels face                 enabled by the software-hardware co-design. Our code is avail-
+limited instruction support and inefficient memory access, which             able at https://github.com/microsoft/T-MAC/tree/LUTTensorCore_
+lead to suboptimal performance compared to dequantization-based              ISCA25.
+kernels on GPUs, as shown in Figure 4. On the hardware side, con-                Our contributions can be summarized as follows:
+ventional LUT designs lack optimization for mpGEMM and often                 • We propose LUT Tensor Core, a software-hardware co-design
+fall short of expected performance improvements. This is due to key             for LUT-based mpGEMM to boost the inference efficiency of
+challenges such as high table precomputation and storage overhead,              low-bit LLMs.
+limited support for diverse bit-width combinations, inefficiencies           • Experiments show that the proposed LUT-based Tensor Core
+from suboptimal tiling shapes, and the lack of dedicated instruction            achieves 4× to 6× power, performance, and area (PPA) gains.
+sets and compilation support; see §2.3 for details.                             LUT Tensor Core exhibits inference speedups of 2.06× to 5.51×
+    LUT Tensor Core addresses these challenges through a holis-                 for low-bit LLMs like BitNet and quantized LLAMA models, with
+tic software and hardware co-design. By optimizing hardware-                    comparable area and accuracy.
+unfriendly tasks, such as table precomputation and storage man-              • Beyond efficiency, our design can accommodate a wide range
+agement, in a software-based approach, LUT Tensor Core reduces                  of weight (e.g., INT4/2/1) and activation precisions (e.g., FP16/8,
+the workload on hardware, simplifying its design and improving                  INT8). Moreover, LUT Tensor Core can be integrated into exist-
+its compactness and efficiency. To be specific:                                 ing inference hardware and software stacks with the extended
+Software optimization (§ 3.1). To amortize the overhead of pre-                 LMMA instructions and compilation optimizations.
+computing lookup tables, we observed that conventional designs
+precompute redundantly across multiple units. LUT Tensor Core                2 Background and Motivation
+splits the precomputation into an independent operator, thus avoid-
+ing redundancies, and fuses it with the previous operator to further         2.1 LLM Inference and Low-Bit Quantization
+reduce memory accesses. To reduce storage overhead, LUT Ten-                 Recently, LLMs mainly rely on the decoder-only transformer ar-
+sor Core exposes and exploits the inherent symmetry of a lookup              chitecture [66], as shown in Figure 1. Specifically, LLMs are built
+table for mpGEMM by reinterpreting {0, 1} as {−1, 1}, reducing               with sequential transformer layers, where each transformer layer
+the table size by half. LUT Tensor Core also reduces the table               contains a multi-head attention block followed by a feed-forward
+width and supports various activation bit widths by applying table           block. In both blocks, the primary computations are GEMM, or
+quantization techniques.                                                     mpGEMM operations with weight quantization. The scaling up of
+Hardware customization (§ 3.2). LUT Tensor Core customizes                   LLMs requires substantial hardware resources [21, 28]. For exam-
+the LUT-based Tensor Core design. The aforementioned software                ple, LLAMA-2-70B [65] consumes 140GB of memory for its model
+optimizations have simplified the hardware design by offloading the          weights alone (in FP16), far exceeding the capacity of a modern GPU
+circuitry tasks to software, reducing the need for broadcasting and          like NVIDIA A100 or H100. This imposes a considerable challenge
+multiplexers by half. Meanwhile, LUT Tensor Core incorporates a              for LLM deployment.
+flexible bit-serial-like circuit to accommodate various combinations            To reduce inference costs in LLM deployment, low-bit quanti-
+of mixed precision operations. Moreover, LUT Tensor Core con-                zation has become a popular approach [10, 12, 64, 76]. It reduces
+ducts a design space exploration (DSE) for the shape of LUT-based            the precision of numerical representations of a model, thus de-
+Tensor Core and identifies an elongated tiling shape that enables            creasing memory footprint and computation time. In LLM quanti-
+more efficient table reuse.                                                  zation, weight quantization is preferred over activation quantiza-
+New instruction and compilation support (§ 3.3). LUT Tensor                  tion [37, 39]. This is because the values of model weights are static
+Core extends the traditional Matrix Multiply-Accumulate (MMA)                and thus can be quantized offline. Weights can be quantized to
+instruction set to the LUT-based Matrix Multiply-Accumulate (LMMA)           4-bit, 2-bit, and even 1-bit. Post-training quantization (PTQ) incurs
+                                                                         2
+

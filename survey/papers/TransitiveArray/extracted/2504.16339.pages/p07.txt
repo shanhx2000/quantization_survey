@@ -1,0 +1,141 @@
+Transitive Array: An Efficient GEMM Accelerator with Result Reuse                                                                                                                    ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                                                                                                                                                                                                        Network on Chip
+      （a) TransArray Overview                                      （c) TransArray PE                                         Oﬀ-Chip DRAM                                On-Chip Buﬀer
+                                                                                                                                                                                     m                                      (NoC)
+                                                                                                                                                                          8-bit Tile                                             m
+                                                                                                                     1   GEMM                      M
+                                                                                                                                                                               k                                                  T
+                  SI     Static                                                                                                                                          Input       T
+                                                   Transtive
+                                                                   Prefix       12    ＋       12
+                                                                                                        Suffix           Tiling                                                                                 T : TransRow
+                                                 Transtive                                                                         8-bit               k                  m                                          Width
+                                                Transtive
+                                                  ArrayUnit
+                                                        Unit        Input                                                         Input K
+                                               Transtive
+                                                 Array
+                                                                                8
+                                                                                                                                                                                                                         T
+                                                Array Unit                                                                                                                                       k
+                                               Array Unit                   Prefix PE (PPE)                                                     m                     32-bit
+      DRAM
+
+
+
+
+                                                                                                     Output                                    Matrix               n Partial
+                    Buﬀer
+
+
+
+
+                                                                                                                                                                                                                PopCount Sorter
+                   Buﬀer                                                                                                      K                                        Sum
+                                                 VPU               Suffix        16
+                                                                                              24                          S-bit                                               Tile
+
+
+
+
+                                                                                                                                                                                            h = S×n
+                                                                                      ＋              Acc                 Weght                                                k                                                                 Transtive
+
+
+
+
+                                                                                                                                                                                     S×n
+                   PopCount Sorter                  Dynamic                                                                                                                                           T                                         Array Unit
+
+
+
+
+                                                                                                                                                                                                                                   h
+                                                                                     24
+                                                      SI                                                         N
+                       Scoreboard Unit                                                                                            n
+
+
+
+
+                                                                                                                                                                                                                                                               Static/Dynamic SI
+                                                                         Accumulation PE (APE)                                                                       n
+                                                                                                                          k
+                                                                                                                          Matrix               Matrix                     Tile                                                              Sub-tile
+                                                                                                                         Quantized             32-bit                     S-bit            Binary
+                 Weight
+                                                                                                                          Weight               Output                    Weght             Weght                                  Scoreboard Unit
+              (TransRow)                      Input FIFO       Distributed
+                  FIFO
+                                                               Prefix Buﬀer                           …                                                                             Static SI                                                 Dynamic SI
+             TransRows                                                                                                             Static Public
+                             TranSparsity
+
+
+
+
+                                                                                                   … APE                                                                      All tiles share the                                          Each sub-tile has
+                                                                                                                                Scoreboard Info (SI)
+                                                                                          T                                                                                    same public SI.                                               its private SI.
+                       XOR                                     Compute Prefix                         …
+              Prefixes                                               …                        Accumulation
+             SI                                                     PPE                                                                                                                                                           Multiplication-Free
+                                                                             T
+
+
+
+
+                                              Benes Net              …                        Output Buﬀer           TransRow             7                              0 1 1 1
+                                                                    m                                                                                                      4 OPs
+                                                                                                                                                           Prefix                                         XOR
+                          Dispatcher                                        Processor                                                                                                                                Prefix
+                                                                                                                                                                                                                                               -1      Add-Acc
+                                                                                                                  SI            Lane 1                       5           0 1 0 1                                     Buﬀer                               Unit
+                                            （b) TransArray Unit                                                                    TR         Prefix
+                                                                                                                                      1       None                                                                                     PPE
+Figure 7: (a) Overview of Transitive Array architecture. (b)
+                                                                                                                                                                         TranSparsity                                                         ＋        -3
+                                                                                                                                                                                                                                  6
+One Transitive Array unit. (c) Prefix PE (PPE) and Accumula-                                                                          5        1                          0 0 1 0
+                                                                                                                                                                                                                                  -5                        ACC
+tion PE (APE) design.                                                                                                                 7        5                                              Benes Net                           -2           -2           APE
+                                                                                                                                                                          Only 1 OP
+from the SI. Then TransArray uses XOR (⊕) to prune TransRow                                                                                                              Save 3 OPs                                     4
+                                                                                                                                      15       7                                                                      Input
+into TranSparsity: 7 ⊕ 5 = 2 (0010). The TranSparsity value (0010)
+                                                                                                                     2    Prefix Indexing                    3      TranSparsity Pruning                                               4    Computation
+corresponds to the element in the input matrix, i.e., −2 in Fig. 8 4 .
+Additionally, the Prefix (0101) is sent to the Prefix Buffer, allowing                                           Figure 8: Processing flow of the Transitive Array unit. 1 :
+retrieval of the precomputed prefix result, −1 for Prefix 5 (0101).                                              GEMM tiling layout and Scoreboard Information (SI). 2 : Re-
+Thus, instead of each TransRow accumulating all 4 input elements                                                 trieving the prefix for each TransRow using SI. 3 : Pruning
+as in the original dense GEMM, it now requires only a single accu-                                               for TranSparsity. 4 : Computation.
+mulation, effectively saving 𝑇 × operations for 𝑇 -bit TranSparsity.
+    This reduction is the primary source of sparsity in our design.
+As a result, our architecture achieves up to 75% sparsity for 4-bit                                              crossbar to buffer the partial sums and arrange them appropriately.
+TranSparsity and 87.5% sparsity for 8-bit configurations. Further-                                               We implement a double buffer mechanism so that the partial sum
+more, after the first dispatch, each node in the Scoreboard replaces                                             buffer overlaps and conceals the overhead associated with buffering,
+its Prefix with its own index. Subsequent identical TransRows can                                                thereby enhancing overall system efficiency. We also put a shifter in
+reuse the result from the first computed TransRow. This signifi-                                                 place to shift their value to accommodate their bit-level according
+cantly improves efficiency.                                                                                      to their indices.
+
+4.4          Distribution Network                                                                                4.5          Processing Element
+In Fig. 7 (b) Dispatcher and Fig. 8 Step 3 , the TransArray needs to                                             In Steps 4 , we utilize adders to complete all computations for the
+fetch the input data and prefix data. We adopt the Benes network [4]                                             TransArray. For the TransArray, we design two types of Processing
+to support input data access, which is an established non-blocking                                               Elements (PEs).
+network widely adopted in studies [46, 55]. The Benes network has                                                   As shown in Fig. 7 (c), the first PE is the Prefix Processing
+only 2 log(𝑁 ) + 1 levels for an 𝑁 -input and 𝑁 -output configuration,                                           Element (PPE), which is responsible for transitively computing
+resulting in very high hardware efficiency. For the prefix buffer,                                               the prefix results. According to our analysis in Sec. 2.1, maintaining
+we employ a distributed buffer design where each prefix buffer                                                   sufficiently high precision in the adder allows us to perform lossless
+operates independently. This approach significantly reduces the                                                  computations based on integers. Therefore, we employ a 12-bit
+overhead associated with prefix buffers by eliminating the need to                                               adder to satisfy the precision requirements for PPE. The PPE design
+store all prefix nodes and avoiding complex network designs.                                                     is highly concise, featuring only one 12-bit adder that adds the
+   Additionally, we incorporate a crossbar between Step 3 and                                                    input and prefix sum, stores the result in the prefix buffer. The TPE
+Step 4 for data arrangement in the prefix buffer to avoid bank                                                   array is formed by 𝑇 lanes, each with 𝑚 = 32 adders for 𝑇 -bit width
+conflicts originating from the row index. For each cycle, only 𝑇                                                 TranSparsity.
+vectors are sent to the double buffer in 𝑇 -bit TranSparsity. If the                                                The second PE is the Accumulation Processing Element
+𝑇 vectors correspond to the same memory bank based on their                                                      (APE), depicted in Fig. 7 9 , which is responsible for accumulating
+row indices, conflicts may arise when they are stored in the same                                                the final results. The APE only comprises a 24-bit accumulator.
+buffer bank. To mitigate this, we introduce a queue within the                                                   It accesses the partial sums from the prefix buffer and efficiently
+

@@ -1,0 +1,81 @@
+quantization method and a scale-aware LUT generation mech-                                   Input Tokens
+anism.                                                                  Omni-LUT                   is        a
+                                                                                                                                MHA
+   To address these challenges, we propose Omni-LUT, a                                       Prefill Phase
+quantization-hardware co-design that extends LUT-based ex-                                                         KV
+                                                                                                                  Cache               Q       K    V
+ecution from AW-GEMM in linear layers to AA-GEMM                                             Decode Phase
+in attention. On the quantization side, Omni-LUT uses                                          Layer 0                                MatMul
+
+
+
+
+                                                                          Self-regression
+hardware-aware binary-coding quantization for the KV cache                                     Layer 1
+                                                                                                             QKV Generation
+                                                                                                                  Multi-Head          Scale
+without relying on high-precision outlier isolation. For the                                                       Attention
+
+
+
+
+                                                                                                  ...
+Key cache, Omni-LUT performs offline-calibrated per-channel                                                         (MHA)         SoftMax
+                                                                                                                  Projection
+binary-coding quantization (BCQ) and improves accuracy                                         Layer N
+                                                                                                                 Feed Forward             MatMul
+with Attention-aware Sensitivity-based Bit Allocation (AS-                                                         Network
+Bit), which assigns additional bit-planes to sensitive Key
+                                                                      BCQ-based quantization                 scheme
+channels. For the Value cache, Omni-LUT uses online per-
+                                                                                            Output Tokens
+token binary-coding uniform quantization (BC-UQ), which
+is simple yet sufficiently accurate for runtime deployment.                                      Fig. 1: Structure of LLM Inference.
+A Binary-coding Quantization Unit (BQU) quantizes each
+generated Key and Value vector into binary-coding bit-planes
+used by the LUT processing elements. On the hardware side,                                                   II. BACKGROUND
+Omni-LUT integrates the BQU and a scale-aware LUT Gen-
+eration Unit (LGU) with a phase-adaptive hybrid-stationary           A. LLM Inference
+LUT-based systolic array. The LGU embeds scaling and                    As shown in Fig. 1, the LLM inference [65] consists of two
+zero-point compensation into LUT construction. This enables          phases: prefill and decode. The prefill phase is responsible for
+the row-wise scaling direction needed by weights, Keys,              processing the entire input token sequence at once. During this
+and Values, so AA-GEMM can stay on the LUT datap-                    prefill phase, the LLM generates the Query (Q), Key (K), and
+ath without sacrificing model accuracy. Together, the BQU            Value (V) activations for each token. The resulting K and V
+and LGU provide the binary-coding bit-planes and scale-              tensors for all input tokens are written back to memory, known
+aware lookup tables needed by the systolic array to execute          as the KV cache. Because the prefill phase is used to process
+both AW-GEMM and AA-GEMM. The systolic array uses a                  matrix multiplications involving a large number of input token
+weight-stationary (WS) dataflow for GEMM-dominated prefill           sequences, it is typically computationally intensive, especially
+and a general matrix-vector multiplication (GEMV)-optimized          in the presence of long prompts (contexts) [13], [21], [54],
+output-stationary variant (OS-V) for decode, sustaining high         [78]. Once the prefill is complete, the decode phase begins
+utilization across both phases.                                      to generate the output token, processing one token at a time
+   Experiments show that Omni-LUT improves energy effi-              through an auto-regressive loop. For each iteration, the LLM
+ciency by 1.25×–1.91× over the SOTA LUT-based GEMM                   takes the single token generated in the previous step as its
+accelerator under an equal peak-throughput hardware setup            input and must load the entire KV cache from memory. In
+in long context workloads, while maintaining competitive             each attention layer, the LLM generates the Q, K, and V
+model accuracy compared with SOTA KV cache quantization              activations for the newly generated token. The new Q conducts
+methods, and maintains strong hardware area efficiency. The          the attention computations for all existing K and V pairs,
+contributions of this paper are summarized as follows:               including those stored in the KV cache from previous steps.
+                                                                     Whenever a new output token is generated, this new key-value
+  • We propose Omni-LUT, a LUT-based GEMM accelerator                pair is appended to the cache. The decode phase is memory-
+    that extends efficient low-bit LUT execution from AW-            intensive because each generated token requires reading the
+    GEMM to AA-GEMM.                                                 accumulated KV cache from memory.
+  • We develop a hardware-aware KV cache quantization
+    design, including offline-calibrated per-channel Key BCQ         B. LLM Quantization
+    with AS-Bit and lightweight online per-token Value BC-              Quantization transforms the high-precision data, including
+    UQ, that preserves model accuracy without relying on             the weights and activations of LLMs, into a low-bit data
+    high-precision outlier processing.                               representation. A simple method is uniform quantization [22],
+  • We introduce a scale-aware LUT Generation Unit that
+                                                                     [44], [45], [69], which maps a continuous value range to 2q
+    embeds scaling and zero-point compensation into LUT              discrete, evenly-spaced levels, meaning the step size between
+    construction, enabling the accuracy-optimal quantization         each level is constant. Uniform quantization [20], [29], [38],
+    direction for weights, Keys, and Values.                         [73] is useful for evenly distributed data, but it fails when non-
+  • We design a phase-adaptive hybrid WS/OS-V LUT-based
+                                                                     uniform data distributions are present, such as when the data
+    systolic array that improves utilization across GEMM-            contains significant outliers. The non-uniform quantization
+    dominated prefill and GEMV-dominated decode.                     avoids this by allocating its discrete levels based on the data’s
+
+
+
+
+                                                               323
+

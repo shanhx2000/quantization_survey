@@ -1,0 +1,81 @@
+                        Weight (W)                       Input (I)             path of MUX1 ¸ for the original weights is to handle DNNs’
+              (a)        W0      W1   W2   ✱   I0   I1    I2   I3    I4   I5
+          Operation:                                                           layers where SmartExchange is not applied on.
+                                 S
+                                                    F     I    F     O
+                                                                                  Fourth, the handling of compact models: when handling
+
+
+
+
+                              time
+                                                                               compact models, we consider an adjusted dataflow and PE line
+                       Cycle 1        W0       I0   I1    I2   I3    I4   I5
+              (b)                                                              configuration for improving the utilization of both the PE slice
+                                               +    +     +    +
+           Temporal                                                            array and the MAC array within each PE line. Specifically, for
+                       Cycle 2        W1       I1   I2    I3   I4    I5
+           schedule:
+                                               +    +     +    +               depth-wise CONV layers, since the number of CONV channels
+                       Cycle 3        W2       I2   I3    I4   I5
+                                                                               is only 1, the dimC PE lines will no longer correspond to
+
+
+
+
+                                               =
+
+                                                    =
+
+                                                         =
+
+                                                               =
+                                               O0   O1   O2    O3              input channels. Instead, we map the R number of 1D CONV
+Fig. 6: An illustration of the proposed 1D row stationary along                operations along the dimension of the weight height to these
+each PE slice (in this particular example, FIFO size is 5, and                 PE lines. For squeeze-and-excite/FC layers, each PE line’s
+in general it should be dimF + S − 1): (a) 1D CONV and (b)                     MAC array of dimF MACs can be divided into multiple
+processing flow of 1D row stationary.                                          clusters (e.g., two clusters for illustration in the top part of
+                                                                               Figure 5 (b)) with the help of the two REs in one PE line
+with the same weight filter using the PE slice array of size                   (denoted as ¹ and º) and multiplexing units at the bottom
+dimM (with each PE slice having dimC PE lines) and dimC                        of the MAC array, where each cluster handles computations
+number of input channels, where the resulting partial sums                     corresponding to a different output pixel in order to improve
+are accumulated using the adder trees at the bottom of the PE                  the MAC array’s utilization and thus latency performance. In
+lines (see the bottom right side of Figure 5 (a)). In this way, a              this way, the proposed SmartExchange accelerator’s advantage
+total of dimM consecutive output channels (i.e., dimM weight                   is maintained even for compact models, thanks to this adjust-
+filters) are processed in parallel to maximize the reuse of input              ment together with 1) our adopted 1D row stationary dataflow
+activations. Note that this dataflow is employed to match the                  within PE lines, 2) the employed bit-serial multipliers, and 3)
+way we reshape the weights as described in Section III.C.                      the possibility to heavily quantized coefficients (e.g., 4-bit).
+    Second, the PE line design: each PE line in Figure 5                          Coefficient matrix indexing. For encoding the sparse co-
+includes an array of dimF MACs, one FIFO (using double                         efficients, there are two commonly used methods: 1) a 1-bit
+buffers), and two RE units, where the REs at the left restore                  direct indexing where the indexes are coded with 1-bit (0 or
+the original weights in a row-wise manner. During operations,                  1 for zero or non-zero coefficients, respectively) [56]; and
+each PE line processes one or multiple 1D CONV operations,                     2) an RLC indexing for the number of zero coefficient rows
+similar to the 1D row stationary in [7] except that we stream                  [7]. Since SmartExchange algorithm (see Section III) enforces
+each rebuild weight of one row temporally along the MACs for                   channel-wise sparsity first and then vector-wise sparsity on
+processing one row of input activations. In particular, the 1D                 top of channel-wise sparsity, the resulting zero coefficients
+CONV operation is performed by shifting the input activations                  are mostly clustered within some regions. As a result, a 1-bit
+along the array of MACs within the PE line (see Figure 6)                      direct indexing can be more efficient with those clustered zero
+via an FIFO; this 1D CONV computation is repeated for the                      coefficients removed.
+remaining 1D CONV operations to complete one 2D CONV                              Buffer design. For making use of DNNs’ (filter-
+computation in ≤ (S × R) cycles (under the assumption of w/                    /vector-wise or bit-level) sparsity for skipping corresponding
+sparsity and w/o bit-serial multiplication) with 1) each weight                computations/memory-accesses, it in general requires a larger
+element being shared among all the MACs in each cycle, and                     buffer (than that of corresponding dense models) due to the
+2) the intermediate partial sums of the 2D CONV operations                     unknown dynamic sparsity patterns. We here discuss how we
+are accumulated locally in each MAC unit (see the bottom                       balance between the skipping convenience and the increased
+right part of Figure 5 (b)).                                                   buffer size. Specifically, to enable the processing with sparsity,
+    Third, the RE design: as shown in the bottom left corner                   the row pairs of non-zero input activations and coefficients
+of Figure 5 (b), an RE unit includes an RF (register file) of                  are selected from the Input GB and the Index GB (using the
+size S × S to store one basis matrix and a shift-and-add unit                  corresponding coefficient indexes), respectively, as inspired
+to rebuild weights. The time division multiplexing unit at the                 by [56], which are then sent to the corresponding PE lines
+left, i.e., MUX1, is to fetch the ¶ coefficient matrices, ·                    for processing with the resulting outputs being collected to
+basis matrices, or ¸ original weights. This design enables                     the output GB.
+the accesses of these three types of data to be performed                         First, input GB: to ensure a high utilization of the PE array,
+in a time division manner in order to reduce the weight                        a vanilla design requires (dimC × dimF × bitsinput )× input
+bandwidth requirement by taking advantage of the fact that it                  activation rows (than that of the dense model counterpart)
+is not necessary to fetch these three types of data simultane-                 to be fetched for dealing with the dynamic sparsity patterns,
+ously. Specifically, the basis matrix is fetched first and stored              resulting in (dimC × dimF × bitsinput )× increased input GB
+stationary within the RE until the associated computations                     bandwidth requirement. In contrast, our design leads to a
+are completed; the weights are then rebuilt in an RE where                     ≥ 1/S reduction of this required input GB bandwidth, with
+each row of a coefficient matrix stays stationary until all its                dimC × dimF × bitsinput inputs for every (S + “Booth encoded
+associated computations are finished (see Figure 2). The third                 non-zero activation bits”) cycles. This is because all the FIFOs
+

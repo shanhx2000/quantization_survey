@@ -1,0 +1,1391 @@
+                                                Oaken: Fast and Efficient LLM Serving with Online-Offline
+                                                             Hybrid KV Cache Quantization
+                                                              Minsu Kim∗                                           Seongmin Hong∗                                    RyeoWook Ko
+                                                              KAIST                                                   HyperAccel                                         KAIST
+                                                    Daejeon, Republic of Korea                                  Seoul, Republic of Korea                       Daejeon, Republic of Korea
+                                                     mskim@casys.kaist.ac.kr                                    sm.hong@hyperaccel.ai                           ryeowookko@kaist.ac.kr
+
+                                                            Soongyu Choi                                              Hunjong Lee                                      Junsoo Kim
+                                                              KAIST                                                    HyperAccel                                     HyperAccel
+arXiv:2503.18599v2 [cs.AR] 14 May 2025
+
+
+
+
+                                                    Daejeon, Republic of Korea                                  Seoul, Republic of Korea                        Seoul, Republic of Korea
+                                                     soongyu1291@kaist.ac.kr                                      hj.lee@hyperaccel.ai                           js.kim@hyperaccel.ai
+
+                                                                                        Joo-Young Kim                                        Jongse Park
+                                                                                         HyperAccel                                            KAIST
+                                                                                   Seoul, Republic of Korea                          Daejeon, Republic of Korea
+                                                                                    jy.kim@hyperaccel.ai                              jspark@casys.kaist.ac.kr
+
+                                         Abstract                                                                                an LLM accelerator, LPU, and conducted a comprehensive evalu-
+                                         Modern Large Language Model (LLM) serving system batches mul-                           ation. Our experiments show that for a batch size of 256, Oaken
+                                         tiple requests to achieve high throughput, while batching attention                     achieves up to 1.58× throughput improvement over NVIDIA A100
+                                         operations is challenging, rendering memory bandwidth a criti-                          GPU, incurring a minimal accuracy loss of only 0.54% on average,
+                                         cal bottleneck. Today, to mitigate this issue, the community relies                     compared to state-of-the-art KV cache quantization techniques.
+                                         on high-end GPUs with multiple high-bandwidth memory (HBM)
+                                         channels. Unfortunately, HBM’s high bandwidth often comes at the                        CCS Concepts
+                                         expense of limited memory capacity, necessitating systems to scale,                     • Computer systems organization → Neural networks; Multi-
+                                         which reduces core utilization and increases costs. Moreover, recent                    core architectures; • Computing methodologies → Neural net-
+                                         advancements enabling longer contexts for LLMs have substantially                       works.
+                                         increased the key-value (KV) cache size, further intensifying the
+                                         pressures on memory capacity. To lower the pressure, the literature                     Keywords
+                                         has explored KV cache quantization techniques, which commonly                           Accelerator; Large Language Models (LLM); Serving; Batched Infer-
+                                         use low bitwidth (e.g., INT4) for most values, selectively using                        ence; Quantization; Key-Value (KV) Cache
+                                         higher bitwidth (e.g., FP16) for outlier values. While this approach
+                                         helps achieve high accuracy and low bitwidth simultaneously, it                         ACM Reference Format:
+                                         comes with the limitation that the cost for online outlier detection                    Minsu Kim, Seongmin Hong, RyeoWook Ko, Soongyu Choi, Hunjong Lee,
+                                                                                                                                 Junsoo Kim, Joo-Young Kim, and Jongse Park. 2025. Oaken: Fast and Ef-
+                                         is excessively high, negating the advantages of quantization.
+                                                                                                                                 ficient LLM Serving with Online-Offline Hybrid KV Cache Quantization.
+                                            Inspired by these insights, we propose Oaken, an acceleration
+                                                                                                                                 In Proceedings of the 52nd Annual International Symposium on Computer
+                                         solution that achieves high accuracy and high performance simul-                        Architecture (ISCA ’25), June 21–25, 2025, Tokyo, Japan. ACM, New York, NY,
+                                         taneously through co-designing algorithm and hardware. To ef-                           USA, 16 pages. https://doi.org/10.1145/3695053.3731019
+                                         fectively find a sweet spot in the accuracy-performance trade-off
+                                         space of KV cache quantization, Oaken employs an online-offline
+                                         hybrid approach, setting outlier thresholds offline, which are then
+                                                                                                                                 1    Introduction
+                                         used to determine the quantization scale online. To translate the                       The recent advent of large language models (LLMs) has signifi-
+                                         proposed algorithmic technique into tangible performance gains,                         cantly impacted the computing industry. Almost every sector of the
+                                         Oaken also comes with custom quantization/dequantization en-                            modern economy is exploring the adoption of LLMs, with many al-
+                                         gines and memory management units that can be integrated with                           ready actively using them for various applications. Most real-world
+                                         any LLM accelerators. We built an Oaken accelerator on top of                           applications rely on hyperscaler-provided LLM serving systems
+                                                                                                                                 because on-premise LLM deployment requires prohibitive costs.
+                                         ∗ Co-first authors who contributed equally to this work.
+                                                                                                                                    As LLM inferencing is for multi-tenant environments, the serv-
+                                                                                                                                 ing systems batch multiple requests to parallelize the inference
+                                                                                                                                 computation [12, 14, 32, 36, 50, 64, 77]. While batching promises a
+                                         This work is licensed under a Creative Commons Attribution 4.0 International License.   significant throughput boost for operations where operand matrices
+                                         ISCA ’25, Tokyo, Japan                                                                  can be shared across requests on GPUs and other AI accelerators,
+                                         © 2025 Copyright held by the owner/author(s).
+                                         ACM ISBN 979-8-4007-1261-6/2025/06                                                      attention layers in transformer-based LLMs consist of un-batchable
+                                         https://doi.org/10.1145/3695053.3731019                                                 operations with request-specific, un-shareable operands, lowering
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                     Kim, Hong, et al.
+
+
+                   Dedicated accelerator          Oaken                                30, 31, 33, 40, 41, 43, 75, 78, 79, 86] have recently developed
+                   GPU                                                                 LLM-targeted quantization techniques. While these techniques
+                   GPU with quan%za%on   CXL-PNM [53]
+Eﬀec%ve Capacity
+
+
+
+
+                   PIM/PNM                LPU [48]     Tender [35]                     successfully achieve significant reductions in bitwidth, they
+
+
+
+
+                                                                      Throughput
+                   Oaken                               QServe [41]                     often prioritize minimizing bitwidth over effectively translating
+                                                   Atom [86]                           these reductions into practical inferencing speedups.
+                                    KVQuant [22]
+                                                   TransPIM [88]                      Alone, none of the solutions is sufficient for building fast and effi-
+                                                         A.Acc [52]
+                           DFX [21]            A100 [49]                           cient LLM serving systems, which motivates us to develop an accel-
+                                        TPUv4 [28]     NeuPIMs [20]                eration solution, namely Oaken. By jointly leveraging algorithmic
+                                                                                   and hardware techniques, Oaken achieves otherwise unattainable
+                                                                                   levels of effective bandwidth and capacity, resulting in substantially
+                                 Eﬀec%ve Bandwidth
+                                                                                   higher throughput than alternatives, as shown in Figure 1. Oaken
+Figure 1: Existing solutions for LLM inference serving sys-                        comprises (1) Algorithmic technique: an online-offline hybrid
+tems plotted on the bandwidth-capacity trade-off space. The                        KV cache quantization technique, and (2) Hardware technique:
+“effective bandwidth” and “effective capacity” represent the                       the hardware incarnations of the proposed algorithms, including
+scale of data that can be transmitted to/from and stored on                        quantization/dequantization engines and memory management
+memory, respectively. We also delineate their corresponding                        units that can be integrated with any existing LLM accelerators.
+throughput (i.e., tokens/sec) using the colors presented on a                      Oaken makes the following contributions:
+1D heatmap on the right side.                                                      (1) Online-offline hybrid KV cache quantization: Many of the
+                                                                                       recently-proposed KV cache quantization techniques commonly
+                                                                                       use low bitwidth (e.g., INT4) for most values, while selectively
+hardware utilization. As the un-batchable operations cannot exploit                    using higher bitwidth (e.g., FP16) for outlier values [15, 19, 22,
+on-chip data reuse, they produce enormous memory read, causing                         33, 80, 86]. While this approach achieves high accuracy and
+memory bandwidth to become the key system bottleneck.                                  low bitwidth, the prohibitively high cost of online threshold
+   Additionally, request batching in LLM inference has another                         calculation or mixed-precision computation renders it nearly
+resource implication. LLMs generate key-value activation and cache                     impractical for real-world use cases. Thus, there is a critical
+them in memory for computation reuse, often called KV cache. As                        need for a cost-effective solution to identify thresholds that
+this KV cache is not shared across different user requests, the large                  distinguish outliers from inliers, enabling the translation of
+batch size is directly translated into a large KV cache size, requiring                KV cache quantization into tangible speedups. To achieve this
+massive memory capacity. Furthermore, as KV cache size scales                          goal, Oaken employs an online-offline hybrid approach, where
+linearly with the sequence length, the recent trend of supporting                      data-agnostic outlier thresholds are determined at offline and
+very long sequences (e.g., 2 million tokens [76]) places even greater                  subsequently applied to set the quantization scale at online.
+pressure on memory capacity.                                                           Furthermore, Oaken introduces a quantization loss mitigation
+   Consequently, LLM serving systems require both high bandwidth                       technique that shifts values toward a smaller range, converting
+and high capacity to enable fast inferencing. This resource demand                     outliers into inliers prior to quantization. Finally, Oaken stores
+aligns with the immense user demand for LLM services, making                           the quantized values by using dense tensors for inliers and
+it challenging for service providers to build cost-effective LLM                       fusing sparse outliers into the dense tensors.
+serving systems. Existing solutions often choose to trade-off one                  (2) Quantization-aware hardware modules for LLM accelera-
+resource for the other, as visualized in Figure 1. Below, we classify                  tors: We devise custom quantization/dequantization engines
+the existing solutions into the following three categories:                            and memory management units, which are aware of the pro-
+(1) Prioritizing bandwidth over capacity: Currently, using HBM-                        posed quantization algorithm. These hardware modules can be
+    equipped GPUs is the de-facto standard solution for LLM in-                        integrated with any existing LLM accelerators such as GPUs,
+    ference processing [28, 45, 49]. While this approach achieves                      NPUs, and LLM-customized ones [21, 23, 53, 82]. We place these
+    massive bandwidth, it often compromises capacity, forcing sys-                     modules in the DMA unit that is commonly present in modern
+    tems to scale out, which not only reduces core utilization but                     LLM accelerators. In designing the memory management unit
+    also increases the cost of building the system.                                    (MMU), the challenge is to achieve the maximal bandwidth,
+(2) Leveraging PIM and/or PNM: Even with HBMs, LLM infer-                              which is close to the physical limit, while effectively laying
+    encing systems still face bandwidth bottlenecks. To address this                   out the dense and sparse matrices in memory. We design the
+    challenge, recent works have explored the near-data processing                     MMU with two management tables for dense and sparse data,
+    (NDP) paradigm, leveraging PIM [20, 52, 59] and/or PNM [53].                       respectively, to handle virtual-to-physical address mappings
+    While these approaches mitigate the bandwidth bottleneck,                          and manage the single address space at page granularity. This
+    their inherent nature requires further reductions in memory                        design maximizes memory bandwidth utilization while avoid-
+    capacity, limiting their viability as a fundamental solution.                      ing fragmentation and burst order issues.
+(3) Exploring LLM quantization strategies: One fundamental                           To evaluate the effectiveness of Oaken, we use eight differ-
+    strategy for jointly addressing the conflicting objectives is to               ent LLMs that include OPT [84], Llama2 [66], Mistral [25], and
+    minimize the memory footprint required for LLM inferencing.                    Mixtral [26], with varying sizes. We use Wikitext, PIQA, Wino-
+    To achieve this goal, a large body of prior work [10, 17, 22,                  grande, and Hellaswag datasets, which are widely used in prior
+Oaken: Fast and Efficient LLM Serving with Online-Offline Hybrid KV Cache Quantization                                                         ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+Input Token(s)                                                                                                          KV Cache
+                                                                Generate        Q
+   Oaken                                                                        K                Q      KT               Softmax               S        V                  Projection
+   means            oak            trees      LayerNorm           QKV           V
+   made
+    of                                        Multi-Head
+                                              Attention                         Q1                                            Score                         Context
+                 Decoder 1     Decoder 1                       Input                                                                                                                    Output
+  Decoder 1                                                            WQ =     Q2       Softmax ( Q1            K 1T    )=     S1    ,   S1       V1       =   C1                      Hidden
+                                               Residual       Hidden
+                                                              States            Q3                                                                                                      States
+                 Decoder 2     Decoder 2                                                                                                                              C1                  E1
+  Decoder 2                                                     E1              K1
+                                              LayerNorm         E2     WK =     K2       Softmax ( Q2            K 2T    )=     S2    ,   S2       V2       =   C2    C2      Wo    =     E2
+                      ...
+
+
+
+
+                                     ...
+      ...
+
+
+
+
+                                                                E3              K3                                                                                    C3                  E3
+  Decoder N      Decoder N     Decoder N     Feed-Forward                                                                                                                  Shared
+                                               Network                          V1
+Output Token                                                           WV =     V2       Softmax ( Q3            K 3T    )=     S3    ,   S3       V3       =   C3
+                                               Residual                         V3
+     oak            trees            .
+                                                                      Shared                                 Not Shared              Not Shared
+ Prefill Phase     Generation Phase                              Activation-Weight                             Activation-Activation                                  Activation-Weight
+                             (a)                                                                                              (b)
+
+Figure 2: (a) Structure of LLM inference and decoder layer during the prefill and generation phases. (b) Operations in the
+multi-head attention layer, including activation-weight and activation-activation operations, during the generation phase of
+batched inference for three requests.
+
+
+works [11, 22, 31, 33, 37, 41, 73, 86, 87]. We synthesize the Sys-                       2.2     Batching for High-Throughput LLM
+temVerilog RTL code of our accelerator in TSMC 28nm technology                                   Inference
+using Synopsys Design Compiler, which offers the area information
+                                                                                         Batching is a commonly used method to enhance inference through-
+of each component in the accelerator. Our experimental results
+                                                                                         put in LLM serving systems [1, 20, 32, 64, 77]. It entails processing
+report that compared to NVIDIA A100 using state-of-the-art KV
+                                                                                         multiple requests simultaneously and boosts inference throughput
+cache quantization techniques, Oaken offers up to 1.58× through-
+                                                                                         by converting memory-bound operations into compute-bound ones
+put speedup, owing to the bitwidth reduction that reaches up to
+                                                                                         through on-chip data reuse. For instance, in the feed-forward net-
+70.0%. We achieve this speedup by only introducing a modest 0.87%
+                                                                                         work, weights read from memory can be reused across multiple
+accuracy degradation, which demonstrates the algorithmic robust-
+                                                                                         requests, reducing memory access and increasing throughput.
+ness of our KV cache quantization technique. Furthermore, Oaken
+                                                                                            Figure 2(b) depicts the two types of operations that comprises the
+modules incur only 8.21% area overhead, which is negligible given
+                                                                                         multi-head attention layer. In activation-weight operations, includ-
+the significant performance benefits they enable. These advantages
+                                                                                         ing Generate QKV and Projection, the activations of the requests
+demonstrate that Oaken achieves the dual objectives of bandwidth
+                                                                                         share the same weights. This enables on-chip data reuse, reduc-
+and capacity, representing an important step toward building fast
+                                                                                         ing memory access and execution time. However, in activation-
+and cost-effective LLM inference serving systems.
+                                                                                         activation operations, where the query is multiplied by the trans-
+                                                                                         posed key or the score is multiplied by the value, each request
+                                                                                         requires distinct keys or values, making batched processing chal-
+                                                                                         lenging. As a result, batching fails to reduce memory accesses in
+2 Background                                                                             this case, providing no performance benefits in terms of latency.
+2.1 A Primer on LLM Inference
+As illustrated in Figure 2(a), inference of large language model is
+mainly divided into two phases: the prefill phase and the generation                     2.3     LLM Quantization
+phase [4, 8, 25, 66, 84]. The prefill phase takes input tokens and                       Recently, as demands for LLM inference ever-increasing memory
+passes them through decoder layers to generate a single output                           capacity, the community has explored solutions to mitigate this
+token. In the generation phase, the token generated in the previ-                        demand through quantization techniques that reduce the bit pre-
+ous iteration is used to produce the next token. This process is                         cision of weights or activations. Many of these studies focus on
+autoregressive, with each iteration generating one token.                                easing the memory pressure caused by model weights, which is
+    LLMs typically consist of multiple decoder layers, with multi-                       particularly effective for accelerating small-batch inference [17,
+head attention being one of the key operations. As visualized in                         30, 40, 42, 60, 69, 70, 78]. However, these methods achieve limited
+Figure 2(b), the multi-head attention begins with generating the                         speedup for larger batches and long sequence lengths due to the KV
+query, key, and value activations. The key and value are buffered in                     cache, whose size scales with the batch size and sequence length.
+the on-chip memory for subsequent operations and are also stored                         Approaches to quantize both weights and activations also face simi-
+as KV cache in the off-chip memory for future iterations. The query                      lar limitations [15, 34, 64, 71]. To this end, researchers have recently
+is then multiplied with the transposed key, which is directly fetched                    started directing their attention to KV cache quantization. Some of
+from the on-chip memory during the prefill phase, while it is loaded                     these works propose quantizing the keys and values of the atten-
+from the off-chip KV cache during the generation phase. Similarly,                       tion layers on a per-vector basis [22, 41, 43], while others propose
+subsequent computation using the value requires access to either                         quantizing the KV cache into multiple vector groups of similar
+on-chip memory or the KV cache in the same manner as the key.                            magnitudes, applying channel reordering technique [5, 35, 39, 86].
+ ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                                                    Kim, Hong, et al.
+
+
+                Ap Prefill Phase of Request A                  AG Generation Phase of Request A                                                                             HBM-NPU     LPDDR-NPU
+
+
+
+
+                                                                                                                            Throughput (token/sec)
+                                                                                            100                                                      1000                               300
+
+
+
+
+                                                                       GPU Utilization(%)
+# cores
+
+
+
+
+               Underutil.    # cores              Underutil.
+                                                                                            80                                                                                          250
+                                                                                                                                                      800
+                                                       Bandwidth                            60                                                                                          200              OOM
+                                                       Contention                                                                                    600
+          Ap                           Ap Bp Cp                                             40                                                                                          150
+                                                  CG                                                                                                  400
+                                                  BG                                        20                                                                                          100
+               AG                                 AG                                         0                                                        200                                50
+                      Time                                      Time                              Input QKV MHA Post FFN
+                                                                                                    LN Gen       LN                                     0                                 0
+                                                                                                                                                            1   4    8 12 16 24 32            1   4    8 12 16 24 32
+                (a)                                     (b)                                                 (c)
+                                                                                                                                                                    Batch Size                         Batch Size
+                                                                                                                                                                (a) Llama2-13B                        (b) OPT-30B
+ Figure 3: Characteristic analysis of LLM inference for (a) sin-
+ gle request and (b) batched multiple requests. (c) Utilization                                                                                                                   HBM-NPU              LPDDR-NPU
+ measurement during the generation phase with batched mul-                                                                                              # Compute cores              256                   256
+ tiple requests using NVIDIA A100 GPU.                                                                                                                Matrix unit dim. / core       32×32                 32×32
+                                                                                                                                                      Vector unit dim. / core         32                    32
+                                                                                                                                                       Peak FP16 TFLOPS             270.3                 270.3
+                                                                                                                                                        Memory capacity             80 GB                256 GB
+ 3             Motivation                                                                                                                              Memory bandwidth            2.0 TB/s              1.1 TB/s
+ This paper focuses on effectively utilizing batched LLM inference                                                                                                                (c)
+ to enhance throughput. To accomplish this, we thoroughly analyze
+ the characteristics of LLM inference, particularly comparing the                                                          Figure 4: Throughput of accelerators equipped with HBM and
+ un-batched and batched execution in this section.                                                                         LPDDR memory when using (a) Llama2-13B and (b) OPT-30B
+                                                                                                                           (OOM refers to “Out-of-Memory.”). (c) Accelerator specifica-
+ 3.1             Characterization of Batched LLM Inference                                                                 tion with HBM and LPDDR memory.
+ Single-instance inferencing. We analyze the bottlenecks of batched
+ inference by examining accelerator core utilization in both single
+ and batched request scenarios. Figure 3(a) shows the difference in
+ core utilization between the prefill and generation phases when
+                                                                                                                               opportunity to enhance throughput with a larger batch size,
+ processing a single request. During the prefill phase, multiple cores
+                                                                                                                               while it also increases the demand for memory capacity due
+ are utilized to process multiple input tokens in a parallelized man-
+                                                                                                                               to the KV cache, driving up system construction costs.
+ ner. However, the generation phase processes only one token from
+                                                                                                                           (2) The increased KV cache size due to the aggressive batched
+ the previous iteration, making it highly sequential process that
+                                                                                                                               processing also causes a high demand for memory bandwidth
+ limits parallelization. Therefore, the accelerator can utilize only a
+                                                                                                                               to efficiently compute attention operations, delaying the entire
+ few cores, resulting in high latency in generating all output tokens.
+                                                                                                                               generation phase during batched inference.
+ Batched inferencing. Figure 3(b) illustrates core utilization for
+ batched inference. Similar to the single-request scenario, the prefill
+ phase for batched requests is also parallelizable across multiple                                                         3.2                         Trade-off between Bandwidth and Capacity
+ cores, resulting in high core utilization. However, the generation                                                        While LLM serving demands both high bandwidth and large ca-
+ phase when processing batched requests still shows underutiliza-                                                          pacity, memory technologies exhibit a trade-off between these two
+ tion, engendering even longer latency due to bandwidth contention.                                                        resources. High-bandwidth memory (HBM) sacrifices a substantial
+ This is because key-value from attention layers cannot be batched                                                         portion of capacity to deliver exceptional bandwidth, whereas Low-
+ and shared across requests, and the accelerator utilizes a limited                                                        Power Double Data Rate (LPDDR) DRAM occupies the opposite
+ number of cores per request. Figure 3(c) shows GPU core utilization                                                       end of the trade-off space. Motivated by these observations and
+ during the generation phase of Llama2-13B model on an NVIDIA                                                              insights, we conduct preliminary studies to better understand the
+ A100 GPU, indicating that underutilization primarily arises from                                                          performance implications of these conflicting resources on LLM
+ the multi-head attention operations.                                                                                      inferencing throughput.
+ Batching: the double-edged solution. A straightforward solution                                                               Figure 4(a) and (b) present throughput comparison results for
+ to this issue is to increase the batch size to fully utilize all the cores,                                               Llama2-13B and OPT-30B models using two accelerator variants
+ but this introduces a new challenge. The key-value size required for                                                      with different memory types. We set both the input and output
+ attention operations is proportional to the batch size. However, as                                                       sequence length to 1K and use an existing LLM-customized acceler-
+ the batch size increases, the memory footprint due to the KV cache                                                        ator [48]. Figure 4(c) lists the specifications of the two accelerators
+ also grows, resulting in longer operation latency which is bounded                                                        evaluated. For the smaller LLM model, both accelerators achieve
+ by memory bandwidth. Recent techniques, such as grouped and                                                               sublinearly-scaling throughput as the batch size increases, with the
+ multi-query attentions, reduce the memory overhead by shrinking                                                           HBM-based accelerator achieving the highest performance due to
+ the KV cache size but cannot fully address this issue [3, 61].                                                            its superior bandwidth. However, for larger LLM models and batch
+    Our analysis suggests the two key observations:                                                                        sizes, scaling challenges become evident for the HBM-based accel-
+ (1) While the prefill phase fully utilizes the compute resources, the                                                     erator. In contrast, the LPDDR-based accelerator can accommodate
+     generation phase often fails to do so. This imbalance offers an                                                       larger batches, demonstrating the best performance.
+   Oaken: Fast and Efficient LLM Serving with Online-Offline Hybrid KV Cache Quantization                                                               ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                    450                                                            2500
+
+
+
+
+                                                          Throughput (token/sec)
+                           KV Size                                                            w/o Quant.            Limitations of existing KV cache quantization solutions. Re-
+Memory Usage (GB)
+
+
+
+
+                           Model Size                                              2000       Weight Quant.
+                                                                                              KV Quant.
+                                                                                                                    cently, a large body of prior works has explored the KV cache quanti-
+                    300                                                                                             zation methods [5, 35, 41, 43, 86]. While these works have pioneered
+                    256                                                            1500
+                                                                                                                    a novel research direction, they are constrained by substantial run-
+
+
+
+                                                    94%
+                                                                                   1000                       OOM   time overhead to enable quantization, compromises in accuracy
+                    150
+                                                                                                              OOM
+                                              89%                                   500                             for faster quantization, or a combination of both. QServe [41] and
+                                        80%
+
+
+                                                                                                                    Atom [86] reorder key-value channels by applying the transfor-
+                     0 1                                                              0
+                            8 16 32 64 128 256                                            1    8 16 32 64 128 256   mation matrix adopted in RPTQ [78], while QServe also handles out-
+                               Batch Size                                                      Batch Size           liers by applying the scaling matrix introduced by SmoothQuant [71].
+                      (a) Memory Requirement                                        (b) Quantization Comparison     Tender [35] performs channel reordering via indirect indexing and
+                                                                                                                    groups key-value channels with similar magnitude. These solutions
+   Figure 5: (a) Memory usage breakdown to KV cache and                                                             have a limitation in that they come with accuracy degradation due
+   model parameters of Llama2-13B model as batch size sweeps                                                        to their low quantization granularity and suffer from additional run-
+   from 1 to 256. (b) Throughput comparison among no quan-                                                          time overhead of channel reordering. KIVI [43] and KVQuant [22]
+   tization, weight and KV cache quantization of Llama2-13B                                                         propose to use per-vector mixed-precision quantization based on
+   model inference. Experiment is conducted with LPDDR-NPU.                                                         the insight that each KV channel exhibits a distinct pattern in the
+                                                                                                                    magnitude of its values. These methods minimize accuracy loss by
+                                                                                                                    isolating outlier channels from the rest, but they incur substantial
+      To summarize, while high memory bandwidth is crucial for
+                                                                                                                    overhead from sorting operations or mixed-precision computations,
+   achieving high throughput, sufficient memory capacity is also es-
+                                                                                                                    which largely offsets the performance gains of quantization.
+   sential to efficiently serve LLMs, particularly with larger models and
+                                                                                                                       These limitations in existing solutions emphasize the need for
+   batches. Several recent studies also emphasize the importance of
+                                                                                                                    a KV cache quantization technique that achieves low bitwidth
+   memory capacity in LLM inference and suggest introducing large-
+                                                                                                                    without compromising accuracy. Furthermore, such low bitwidth
+   capacity memory into the LLM accelerators [53, 83]. Despite the
+                                                                                                                    must translate into tangible throughput improvements at the hard-
+   industry’s growing demand for large-scale LLM inference, current
+                                                                                                                    ware level. To meet these demanding requirements, we propose an
+   memory technologies struggle to meet both capacity and bandwidth
+                                                                                                                    algorithm-hardware co-designed acceleration solution for efficient
+   requirements, necessitating a choice. We explore this trade-off by
+                                                                                                                    batched LLM inference, Oaken.
+   evaluating our solution, equipped with either LPDDR or HBM mem-
+   ory, across various batched inference scenarios.
+                                                                                                                    4     Oaken’s KV Quantization Algorithm
+   3.3                    KV Cache Quantization                                                                     Our quantization algorithm is driven by three primary empirical
+  Leveraging the memory that offers either sufficient bandwidth or                                                  properties we obtain from observing the value distribution of the KV
+  capacity, combined with scaling out the system, can help address                                                  cache during LLM inference. Building upon the three observed prop-
+  the bottlenecks in batched inference. However, this approach incurs                                               erties, we incorporate three algorithmic techniques into Oaken’s
+  substantial system-building costs and severe resource underutiliza-                                               KV cache quantization. Below, we will first discuss the empirical
+  tion, making it neither a fundamental nor a sustainable solution.                                                 analysis results for KV cache distribution and then describe the
+  Algorithmic approach to the memory wall. To tackle the mem-                                                       three techniques one by one.
+  ory wall challenge, the community has explored algorithmic ap-
+  proaches to reduce the demands on both conflicting resources fun-                                                 4.1    Observations in KV Distribution
+  damentally. Quantization is one such direction, widely recognized                                                 Existing LLM quantization methods often suggest that dealing with
+  for its ability to alleviate both capacity and bandwidth bottlenecks                                              large values has a significant impact on model accuracy [15, 19,
+  simultaneously. As discussed in Section 2.3, many efforts focus on                                                22, 33, 71, 80, 86]. Moreover, other prior works suggest that small
+  weight quantization and reducing the computation workload to                                                      values near zero can vanish due to underflow during quantization,
+  accelerate LLM inference [15, 17, 33, 51, 71, 78]. However, our ex-                                               leading to larger error [2, 13, 27, 34]. These observations underscore
+  perimental results show that weight-only quantization has a limited                                               the importance of analyzing the distribution and characteristics of
+  impact on addressing the memory wall in the batched scenarios.                                                    the quantization targets. We examine the value distribution of the
+  Limitations of weight-only quantization techniques. Figure 5(a)                                                   KV cache across several LLMs and datasets and derive key insights
+  illustrates the memory capacity requirements for model weights                                                    for designing effective quantization techniques.
+  and KV cache as batch size increases. While the memory usage                                                      Observation 1. Figure 6(a) presents the minimum and maximum
+  for weights remains constant, the KV cache size grows, eventu-                                                    range of KV cache values for each decoder layer across various
+  ally dominating the entire device memory. Figure 5(b) compares                                                    LLMs using the Wikitext2 dataset. Notably, the magnitude of keys
+  the performance between 4-bit weight quantization and 4-bit KV                                                    and values varies across models and among decoder layers within
+  cache quantization. The result shows a minimal performance im-                                                    each model. These variations are distinctive properties of each
+  provement from weight quantization, showing its ineffectiveness in                                                model and decoder layer, driven by differences in their model
+  addressing the memory wall for batched LLM inference. However,                                                    weights. From this observation, we gain the insight that the quanti-
+  KV cache quantization delivers larger performance gains, demon-                                                   zation factor should be determined separately for each model and
+  strating its effectiveness in relieving memory pressure.                                                          its individual decoder layers.
+  ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                               Kim, Hong, et al.
+
+
+                               Keys – Wikitext2                                             Keys (Llama2-7B)                                          Keys (Llama2-7B)
+                20            OPT-6.7B     Llama2-7B                                   Wikitext2    PIQA        Hellaswag             2000
+                                                                             20
+Min-Max Range
+
+
+
+
+                                                             Min-Max Range
+
+
+
+
+                                                                                                                            Token Index
+                10                                                                                                                    1500
+                                                                             10
+                0                                                             0                                                       1000
+            -10                                                          -10                                                              500
+            -20                                                          -20
+                                                                                                                                            0
+                     0   5     10    15    20      25   30                         0   5     10    15      20    25    30                       0   1000    2000    3000        4000
+                             Decoder Layer Index                                           Decoder Layer Index                                          Channel Index
+                             Values – Wikitext2                                             Values (OPT-6.7B)                                          Keys (OPT-6.7B)
+                                                                             12                                                       2000
+                12            OPT-6.7B     Llama2-7B                                   Wikitext2    PIQA        Hellaswag
+Min-Max Range
+
+
+
+
+                                                             Min-Max Range
+                                                                              6
+
+
+
+
+                                                                                                                            Token Index
+                 6                                                                                                                    1500
+
+                 0                                                            0                                                       1000
+
+                -6                                                           -6                                                           500
+           -12                                                               -12                                                            0
+                     0   5     10    15    20      25   30                         0   5     10    15      20    25    30                       0   1000    2000    3000        4000
+                             Decoder Layer Index                                           Decoder Layer Index                                         Channel Index
+                                     (a)                                                           (b)                                                      (c)
+
+  Figure 6: (a) Range of KV values from each decoder layer of OPT-6.7B and Llama2-7B models using Wikitext2 dataset. (b) Range
+  of KV values from each decoder layer of Llama2-7B model using Wikitext2, PIQA, and Hellaswag dataset. (c) Distribution of
+  the top 4% keys from the 6th decoder layer of Llama2-7B and OPT-6.7B models using Wikitext2 dataset.
+
+
+  Observation 2. Figure 6(b) shows the minimum and maximum                                               4.2    Algorithm Overview
+  range of KV values when using Llama2-7B model with Wikitext2,                                          We propose a quantization algorithm designed to improve per-
+  PIQA, and Hellaswag datasets. We see that the range of KV cache                                        formance by maximizing the compression ratio of the KV cache
+  values remains consistent across these datasets. This observation                                      while minimizing quantization loss, based on the observations and
+  implies there is no need for the quantization factor to be tailored to                                 insights from Section 4.1. Figure 7 illustrates the overall flow of
+  the input sequences but only a global quantization factor per layer.                                   Oaken’s quantization algorithm. Oaken’s quantization technique
+  Observation 3. Prior works have identified a pattern in the mag-                                       consists of three components: (1) Threshold-based online-offline
+  nitude of channel within the KV cache and proposed a per-vector                                        hybrid quantization that separates and quantizes inlier and out-
+  or per-vector-group quantization technique to leverage this pat-                                       lier values, (2) Group-shift quantization that quantizes values with
+  tern [22, 41, 43, 86]. Figure 6(c) presents the distribution of the                                    larger magnitude, and (3) Fused dense-and-sparse encoding that
+  top 4% values of the key from the sixth layer of the Llama2-7B                                         minimizes capacity overhead due to sparse matrices. The following
+  and OPT-6.7B models. The distributions exhibit multiple vertical                                       sections introduce a detailed design of each component.
+  lines, indicating that high-magnitude values are concentrated in
+  specific channels. This pattern in the channel magnitudes, aligning
+  with previous observations, suggests the need for per-vector or
+  per-vector-group quantization. However, this result also reveals                                       4.3    Threshold-based Online-Offline Hybrid
+  exceptions to this pattern, appearing as discontinuous lines and                                              Quantization
+  dots, which cause an accuracy drop when using only a single quan-                                      Oaken minimizes quantization loss by isolating outlier values that
+  tization scale per vector or vector group. Based on this observation,                                  are either exceptionally large or exceptionally small compared to
+  we introduce multiple quantization groups within a channel to                                          typical inlier values. We propose a threshold-based online-offline
+  maintain accuracy, splitting the key-value vector into groups based                                    hybrid quantization method for more fine-grained grouping. Oaken
+  on the magnitude of each element.                                                                      separates the per-token KV vector into three quantization groups:
+     In summary, we derive the following three insights for design-                                      outer, middle, and inner (Figure 7(a)). The middle group consists
+  ing Oaken’s quantization technique:                                                                    of inliers where most KV values belong, while the outer and inner
+       • Oaken should determine the quantization factor separately                                       groups consist of outliers, with large and small magnitudes, respec-
+          for each model and decoder layer.                                                              tively. Oaken prevents the quantization scale from being skewed
+       • Oaken can employ a common scaling factor regardless of                                          due to large-magnitude outliers by isolating the outer group, and
+          input prompts, showing its insensitivity to data patterns.                                     ensures the small-magnitude outliers do not vanish during quanti-
+       • Oaken should use multiple quantization groups segmented                                         zation by isolating the inner group [2, 13, 27, 34].
+          by the magnitude of the values within each vector.                                             Offline outlier threshold profiling. To separate outliers from
+                                                                                                         inliers, the topK operation is typically used to maintain a constant
+                                                                                                         ratio of outliers [22]. While this approach results in minimal quan-
+                                                                                                         tization loss, the topK operation, essentially a sorting with a time
+  Oaken: Fast and Efficient LLM Serving with Online-Offline Hybrid KV Cache Quantization                                        ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                                                                                                           16-bit          4-bit             4-bit
+
+
+
+
+                                                                                                                 Dense
+                                                                                                                 Inlier
+Frequency
+
+
+
+
+            Outer                   Inner                     Outer
+            Group                   Group                     Group                   Middle Group
+                                                                                                                                         idx g s             idx g s
+                         Middle               Middle                                                                                     idx g s             idx g s
+
+
+
+
+                                                                                                                 Outlier
+                                                                                                                 Sparse
+                         Group                Group                                                                                      idx g s             idx g s
+                                                                                                                                         idx g s             idx g s
+                                       0                                               Outer Group
+                                                                                                                           16-bit        7-bit 5-bit           8-bit
+                                       (a)                                                    (b)                                           (c)
+ Figure 7: Oaken’s quantization algorithm consisting of three components: (a) threshold-based online-offline hybrid quantization,
+ (b) group-shift quantization, and (c) fused dense-and-sparse encoding.
+
+
+ complexity of 𝑂 (𝑛 log 𝑛), introduces significant overhead when per-                      Oaken dynamically separates KV cache values into three groups
+ formed during inference, degrades end-to-end performance. Oaken                           using four group thresholds obtained from offline profiling. It then
+ employs offline outlier threshold profiling, leveraging the consis-                       retrieves the minimum and maximum values for each quantization
+ tent characteristics in the distribution of KV cache discussed in                         group, calculates the scaling factor online, and quantizes the value
+ Section 4.1 to avoid expensive online operations.                                         within each group accordingly.
+     The criteria for splitting the KV cache into three groups are based
+ on four thresholds determined through offline threshold profiling:
+   𝑜 , 𝑇 𝑖 , 𝑇 𝑖 , and 𝑇 𝑜 . Using these thresholds, the outer group, middle
+ 𝑇𝑙𝑜                                                                                       4.4      Group-Shift Quantization
+        𝑙𝑜 ℎ𝑖           ℎ𝑖
+ group, and inner group are defined as follows:                                            Oaken’s threshold-based online grouping effectively mitigates in-
+                                          𝑜
+                          𝐺𝑜 = {𝑥 | 𝑥 < 𝑇𝑙𝑜     𝑜
+                                            or 𝑇ℎ𝑖 < 𝑥 },                                  formation loss by splitting values into three groups: outer, middle,
+                                𝑜         𝑖     𝑖         𝑜
+                                                                                           and inner group. However, this approach poses a new challenge.
+                    𝐺𝑚 = {𝑥 | 𝑇𝑙𝑜 ≤ 𝑥 < 𝑇𝑙𝑜 or 𝑇ℎ𝑖 < 𝑥 ≤ 𝑇ℎ𝑖 },               (1)          When quantizing the outer group, whose values have large magni-
+                                         𝑖
+                             𝐺𝑖 = {𝑥 | 𝑇𝑙𝑜        𝑖
+                                           ≤ 𝑥 ≤ 𝑇ℎ𝑖 }                                     tudes, directly applying uniform quantization results in information
+                                                                                           loss. Previous works have addressed this by using mixed precision
+     Oaken performs approximately a hundred offline inferences with
+                                                                                           (e.g., FP16) for outliers, distinct from the precision used for inliers
+  sample input prompts to gather distribution information from the
+                                                                                           (e.g., INT4) [22, 30, 33, 86]. However, using mixed precision for
+  KV cache of each decoder layer. The four group thresholds are
+                                                                                           outliers introduces sparsity, incurring a storage cost of 23 bits per
+  extracted during the profiling process from the KV cache of each in-
+                                                                                           entry: 16 bits for the value, 6 bits for the index, and 1 bit to indi-
+  ference run using topK operations, and their averages are computed
+                                                                                           cate the group. Dealing with sparse, mixed-precision outliers also
+  for each decoder layer. These statistics are then used to establish
+                                                                                           requires additional hardware modules, which adds complexity to
+  group thresholds for the KV cache. As discussed in Section 4.1,
+                                                                                           the accelerator. While these overheads are negligible when the out-
+  Oaken’s offline profiling should be performed separately for each
+                                                                                           lier fraction is small, they become substantial as the proportion
+  model, whereas the KV cache distribution and the profiling are inde-
+                                                                                           increases. Moreover, this extra complexity makes it challenging to
+  pendent of both the profiling dataset and future inputs. It effectively
+                                                                                           explore the sweet spot in the accuracy-performance trade-off by
+  minimizes accuracy loss with only a small number of inferences,
+                                                                                           adjusting the group thresholds.
+  ensuring minimal and one-time overhead.
+                                                                                              One straightforward way to address this issue is to quantize out-
+  Uniform quantization. Oaken adopts uniform quantization, where                           liers as well. However, as discussed in Section 4.1, quantizing outer
+  the scaling factor 𝜎 is calculated using only simple statistics to min-                  groups is challenging due to their wide magnitude range. To address
+  imize hardware complexity:                                                               this, we propose group-shift quantization, a hardware-efficient algo-
+                                  2𝑚 − 1                                                   rithm that minimizes quantization loss while compressing outliers
+                                  𝜎=       ,                       (2)                     to a lower bitwidth.
+                                Max − Min
+ Where 𝑚 is the bitwidth of the quantized value, and Max and Min                           Group-shift algorithm. The core idea of Oaken’s group-shift
+ represent the maximum and minimum of the values to be quantized.                          algorithm is to shift the entire group using the thresholds obtained
+ The uniform quantization function, which converts a value 𝑥 into                          from offline profiling to narrow the range of values, making low-
+ its quantized value, is defined using the scaling factor from Eq. 2:                      bit quantization possible. For instance, for the outer group, we
+                                                                                           subtract𝑇ℎ𝑖𝑜 from values larger than𝑇 𝑜 , and subtract𝑇 𝑜 from values
+                          𝑄 (𝑥) = round((𝑥 − Min) × 𝜎).                       (3)                                                  ℎ𝑖              𝑙𝑜
+                                                                                                            𝑜 . While the middle group corresponds to inliers,
+                                                                                           smaller than 𝑇𝑙𝑜
+  Oaken finds the minimum and maximum values for each of the                               our group-shift algorithm can also be applied in the same manner.
+  three quantization groups and computes the quantization scaling                          Figure 7(b) shows that applying the aforementioned method shifts
+  factor for each group dynamically online.                                                the distribution of both the outer and middle groups, concentrating
+  Online KV cache quantization. As previously discussed, Oaken                             them within a narrower range. As a result, Oaken can quantize
+  performs per-token quantization on the KV cache, focusing only                           groups spanning wide ranges to low bitwidth using group-shift,
+  on the key-value vector newly generated in each attention layer.                         minimizing the quantization loss. Note that the group-shift method
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                           Kim, Hong, et al.
+
+
+                                                                                  Oaken Accelerator
+does not require additional information beyond those obtained from                                                  Oaken Compute Core
+the offline profiling described in Section 4.3.                                         ...           Host                   Vector       DMA
+                                                                            MC     MC         MC                 Control
+                                                                                                    Interface     Unit     Processing
+   In summary, Oaken’s quantization function 𝑄𝑜 (𝑥), which con-                                                               Unit       Quant.
+                                                                                                                                         Engine
+verts the value 𝑥 to the quantized one, is defined as follows:
+                                                                                     Interconnect                            Matrix     Dequant.
+                                𝑜)                          𝑜                                                   Register   Processing    Engine
+                       𝑄 (𝑥 − 𝑇ℎ𝑖          𝑥 ∈ 𝐺𝑜 and 𝑥 > 𝑇ℎ𝑖                                                     File
+                     
+                                                                                                                              Unit
+                     
+                                                                                                                                          MMU
+                                                                           Core Core Core Core ... Core
+                     
+                     
+                     
+                     
+                               𝑜)
+                       𝑄 (𝑥 − 𝑇𝑙𝑜                           𝑜
+                                           𝑥 ∈ 𝐺𝑜 and 𝑥 < 𝑇𝑙𝑜
+                     
+                     
+                     
+             𝑄𝑜 (𝑥) = 𝑄 (𝑥 − 𝑇ℎ𝑖𝑖 )        𝑥 ∈ 𝐺𝑚 and 𝑥 > 𝑇ℎ𝑖𝑖 ,   (4)
+                     
+                     𝑄 (𝑥 − 𝑇𝑙𝑜
+                     
+                               𝑖 )        𝑥 ∈ 𝐺𝑚 and 𝑥 < 𝑇𝑙𝑜𝑖
+                     
+                                                                                Figure 8: Overall Oaken accelerator architecture.
+                     𝑄 (𝑥)
+                     
+                                           𝑥 ∈ 𝐺𝑖
+                     
+where 𝑄 (𝑥) is a quantization function defined in Eq. 3. Oaken            also manages the scheduling of incoming requests and distributing
+quantizes middle group into 4-bit, inner and outer groups into 5-bit.     them across compute cores for efficient processing. An interconnect
+                                                                          links these components and is optimized to maximize bandwidth
+4.5     Fused Dense-and-Sparse Encoding                                   utilization during memory read, ensuring efficient data transfer to
+Oaken employs a dense-and-sparse encoding strategy, as proposed           the compute cores. This design enables the concurrent use of all
+in prior works, to efficiently store dense inliers and sparse out-        memory controllers for reading model parameters and distributing
+liers [22, 30]. In Oaken, the middle group, which consists of inliers     them across the compute cores. On the other hand, memory writes
+and makes up the majority of the KV cache, is stored in a dense ma-       from the compute cores are less frequent and involve smaller data
+trix. The outer and inner groups, which consist of outliers, are stored   sizes, reducing bandwidth consumption and simplifying the logic
+using a sparse matrix format, Coordinate List (COO) [16, 18, 72, 85],     design without compromising performance.
+with the corresponding elements in the dense matrix being zeroed.
+COO format used in Oaken requires extra 6 bits to indicate the            5.2    Oaken Compute Core
+location of each value, along with 1 bit to denote the quantization
+                                                                          Overall design. The main modules of the proposed accelerator
+group, and the bits used to represent the value for each entry.
+                                                                          are the compute cores, which are adapted from the architecture
+   To further reduce capacity overhead, we propose leveraging
+                                                                          introduced in LPU [48] to enable end-to-end LLM inference. Each
+the zeroed elements in the dense matrices. These zeroed elements,
+                                                                          compute core consists of a Matrix Processing Unit (MPU) and Vec-
+corresponding to positions originally occupied by outliers in the KV
+                                                                          tor Processing Unit (VPU) designed to execute LLM inference op-
+cache, remain unused after separating the KV cache into dense and
+                                                                          erations token-by-token. These processing units are designed to
+sparse matrices. We introduce a fused dense-and-sparse encoding
+                                                                          maintain high utilization throughout the entire process while mini-
+method that repurposes these unused 4 bits to store part of the
+                                                                          mizing inefficient logic and ensuring low latency. MPU is designed
+outliers, as illustrated in Figure 7(c). Specifically, four bits of the
+                                                                          to stream weight read from memory to perform efficient matrix-
+quantized 5-bit outliers are embedded in the zeroed elements of the
+                                                                          vector multiplication, while VPU handles element-wise operations
+dense matrix, while the remaining 6 index bits, 1 group bit, and 1
+                                                                          between matrix-vector computations. The direct memory access
+sign bit are stored in the sparse COO format.
+                                                                          (DMA) unit facilitates data transfer by reading weights from mem-
+   Since the index bits in the COO format already indicate the
+                                                                          ory to feed the processing units and writing KV cache back to mem-
+location of outliers within the dense matrix, a dedicated flag to
+                                                                          ory. This DMA unit also incorporates quantization/dequantization
+denote their presence is unnecessary. Moreover, with each entry in
+                                                                          engines and a memory management unit (MMU), all of which are
+the sparse matrix fixed at 8 bits and memory-aligned, the memory
+                                                                          critical for implementing the proposed KV quantization technique.
+management unit can efficiently handle both dense and sparse
+matrices on a page basis, the details of which will be described in       Quantization engine. Figure 9(a) shows the quantization engine
+Section 5.2. By combining our fused dense-and-sparse encoding             in DMA unit, designed to perform online KV cache quantization.
+strategy with group-shift quantization, we reduce the bitwidth of            First, the ① decomposer module partitions incoming activa-
+each outlier entry from 23 to just 8 bits, increasing the compression     tions into three quantization groups based on outlier thresholds
+ratio of the KV cache, while keeping memory alignment.                    determined offline. It then performs group shift for the outer and
+                                                                          middle groups by subtracting their streamed thresholds from the
+5 Oaken’s Accelerator Architecture                                        values of these groups. Finally, the middle group is directed to
+                                                                          the inlier quantization path, while outliers, whether from inner or
+5.1 Architecture Overview                                                 outer groups, are routed to the outlier quantization path, with zeros
+Figure 8 illustrates the overview of the proposed architecture, which     inserted in the alternate path accordingly.
+mainly consists of compute cores, memory controllers, a host inter-          Both the ② inlier and ③ outlier quantizer modules handle
+face, and an interconnect. The compute cores are designed to sup-         quantization for each key and value vector. Quantization scaling
+port end-to-end LLM inference operations. The memory controllers          factors are dynamically computed during runtime, based on per-
+handle device memory to read data, including model parameters,            token min and max values for each group. After calculating the
+keys, and values, and are also responsible for writing keys and           scaling factors, these two modules finally perform 4/5-bit uniform
+values back to memory. The host interface employs a PCIe-based            quantization. The quantized inlier and outlier values are merged
+connection to communicate with the host system. This interface            using an OR gate and sent to the quantized dense matrix. The outlier
+Oaken: Fast and Efficient LLM Serving with Online-Offline Hybrid KV Cache Quantization                                                 ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+           Inlier               Dense KV                   Inlier Scaling Factor (𝜎)                                    Dense Management Table              Memory Layout
+          Outlier               Sparse KV                 Outlier Scaling Factor (𝜎)                                       Address Xfer Size
+                                                                                                                            0x0000      0x04
+
+
+
+
+                                                                                                                                                 Sequence
+Control Register Matrix Processing Unit                     Device Memory                                                   0x0004      0x04
+
+
+
+
+                                                                                                                                                  Length
+
+
+
+
+                                                                                                                                                                              Page
+                                                                                             Token 1          idx g s       0x0008      0x04
+1           Threshold                KV           4                     5                                     idx g s       0x000C      0x04
+                  Decomposer                                                   Zero-Insert    Layer 1         idx g s
+                                                                                              Head 1
+
+
+
+
+                                                                                                                                 ...
+2                                                                                Shifter                      idx g s
+                        3
+    Min&Max                          Min&Max
+                                                                                                                        Sparse Management Table
+
+
+
+
+                                                                                                                                                                ...
+                                                         Buffer
+
+
+
+
+                                                                    Outlier
+     Finder                           Finder                                                 Token 2
+
+
+
+
+                                                                    Index
+                                                                                                              idx g s      Address Xfer Size                idx g s idx g s
+     <    Min                         <   Min                                    Buffer       Layer 1                                                       idx g s idx g s
+                                                                                                              idx g s       0x1000      0x02
+     >    Max Buffer                  >   Max                                                 Head 1                                                        idx g s idx g s
+
+
+
+
+                                                                                                                                                 Sequence
+
+
+
+
+                                                                                                                                                                              Page
+                                                                                                                            0x1002      0x02
+
+
+
+
+                                                                                                                                                  Length
+        𝜎                   Buffer       𝜎                                                                                  0x1004      0x01
+
+
+
+
+                                                                                                                                                                ... ...
+                                                                                                        ...
+    Calculator                       Calculator          Outlier                                                            0x1005      0x01
+                                                                              Concatenator
+                                                        Extractor
+
+
+
+
+                                                                                                                                 ...
+         Quantizer            Quantizer
+                                                      Dequantizer              Dequantizer
+                            Outlier Spliter                                                  Figure 10: Operations of memory management unit (MMU)
+                                                                      OR                     for handling dense and sparse data.
+           OR               Zero-Remove
+                               Shifter
+                                                                         KV                   (1) Addresses and transfer size management: Dense matri-
+                 Device Memory                           Matrix Processing Unit                ces have predictable sizes that are well-aligned within memory
+         (a) Quantization Engine                      (b) Dequantization Engine                spaces, while sparse matrices vary in size. Thus, management
+                                                                                               tables are needed for both dense and sparse data to accommodate
+Figure 9: Quantization and dequantization engines of Oaken                                     this variability. These tables contain the virtual-to-physical ad-
+compute core.                                                                                  dress mappings and transfer sizes for the KV cache, considering
+                                                                                               up to the maximum sequence length per attention head. Physical
+                                                                                               addresses and transfer sizes are dynamically calculated during
+                                                                                               inference by checking available pages on demand.
+module generates an index and a group flag for COO transformation.                            (2) Read-write granularity and order determination: To max-
+It employs a zero-remove shifter [57, 67] to implement fused dense-                            imize memory bandwidth utilization, burst access should be lever-
+and-sparse encoding, optimizing memory usage.                                                  aged whenever possible to reduce the total number of memory
+Dequantization engine. The dequantization engine, illustrated in                               transactions. Writing KV cache involves relatively small sizes,
+Figure 9(b), is also integrated into the DMA unit to dequantize the                            as it only includes the key-value for the current token, whereas
+KV cache retrieved from memory.                                                                reading requires retrieving the KV cache for all previous tokens.
+    The ④ inlier dequantizer module buffers incoming dense data                                To address this, Oaken organizes KV cache for the current token
+to synchronize with sparse data processed by the outlier dequan-                               in a layout that facilitates burst reads in subsequent operations.
+tizer module. The ⑤ outlier dequantizer module handles sparse                                  Key-value vectors generated in the current layer are divided by
+COO data by performing a zero-insert [57, 67] operation to restore                             attention head and written to distinct pages, as explained in Sec-
+the original data alignment. It identifies the original positions of                           tion 5.2. When the KV cache for the next token is generated, it is
+fused outliers using the index and group information of the sparse                             divided similarly and written sequentially, immediately follow-
+data and inserts the necessary zeros accordingly. Both dequantizer                             ing the previous tokens’ KV cache. This sequential arrangement
+modules then restore the data, which is buffered to be aligned with                            allows that the KV cache for all previous tokens can be read in
+the outputs of the counterpart module. Finally, the outputs from                               burst mode, allowing Oaken to efficiently utilize bandwidth.
+both dequantizer modules are merged via an OR gate and forwarded
+to the processing unit.                                                                      5.3        Token-level Batch Scheduling
+    Since the dequantization engine does not require the entire KV                           Efficient scheduling is crucial for Oaken to efficiently serve LLM
+cache for its operation, we designed it to function in a streaming                           inference. Each compute core in Oaken is optimized to process a
+manner. This design allows the dequantization engine to maintain                             single token efficiently. During the prefill phase, input tokens from
+low latency, while efficiently processing all past KV cache.                                 each request are scheduled for parallel processing across multiple
+Memory management unit. Figure 10 illustrates the operations of                              cores. However, in the generation phase, each core handles a single
+memory management unit, which manages the reading and writing                                output token from one request, which reduce hardware utiliza-
+of quantized KV cache. We design the MMU unit to handle dense-                               tion. For larger batches, Oaken improves overall core utilization by
+and-sparse matrices in a page-based manner, optimizing bandwidth                             processing multiple requests in parallel.
+utilization. It supports multiple memory accesses in burst mode and                             Although the overhead for KV cache quantization and dequan-
+streamlined operations to hide latency of memory and quantiza-                               tization is minimal, Oaken further minimizes this by overlapping
+tion/dequantization operations. Since Oaken’s MMU units share a                              them with other operations. In batched inference, KV cache cannot
+common address space, MMU operates in each compute core inde-                                be shared across cores because each core processes distinct requests,
+pendently, preventing interference. Without this specialized MMU,                            forcing each core to monopolize the memory bandwidth. Oaken
+processing variable-sized sparse matrices would require additional                           employs a scheduling strategy that hides latency by overlapping
+overhead for indexing, reshaping, and subsequent operations. There                           KV quantization and dequantization with DMA reads and attention
+are two major challenges associated with the design of MMU unit:                             computations from other requests.
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                      Kim, Hong, et al.
+
+
+Table 1: Hardware specification of NVIDIA A100 GPU and                 hardware in RTL using SystemVerilog and verify its functionality
+Oaken equipped with either HBM or LPDDR memory.                        with Synopsys VCS functional verification solution. The RTL is
+                                                                       synthesized using Synopsys Design Compiler for a target clock
+                            NVIDIA A100 Oaken-HBM Oaken-LPDDR          frequency of 1 GHz on TSMC 28nm technology.
+  Peak FP16 TFLOPS              312         270        270
+                                                                       Baselines. For accuracy evaluation, we use Tender [35], Atom [86],
+  Operating frequency         1.4 GHz     1.0 GHz    1.0 GHz
+                                                                       QServe [41], KIVI [43], and KVQuant [22] as baselines. For perfor-
+     Memory type                HBM         HBM      LPDDR
+                                                                       mance evaluation, we first use vLLM [32] as the FP16-operating
+   Memory capacity             80 GB       80 GB     256 GB
+  Memory bandwidth            2.0 TB/s    2.0 TB/s   1.1 TB/s
+                                                                       GPU baseline, as it represents the state-of-the-art LLM serving
+                                                                       system and delivers superior performance compared to other alter-
+                                                                       natives. We also use most of the baselines for accuracy evaluation,
+                                                                       excluding Atom, which lacks open-source code availability. KIVI,
+6 Evaluation                                                           QServe, and KVQuant serve as additional GPU baselines, running
+6.1 Methodology                                                        on A100 GPUs. Tender [35] is an LLM inference accelerator employ-
+                                                                       ing quantization, which offers an open-source simulator. For a fair
+Models and datasets. For evaluation, we use Llama2-7B, 13B,
+                                                                       comparison, we align Tender’s memory specifications and compute
+and 70B [66], OPT-6.7B, 13B, and 30B [84], Mistral-7B [25] and
+                                                                       capabilities with those of the A100 GPU. All quantization-based
+Mixtral-8x7B [26] models. Llama2, Mistral, and Mixtral models im-
+                                                                       baselines employ 4-bit KV cache-only quantization. While QServe
+plement grouped-query attention [3], while Mistral and Mixtral
+                                                                       and Tender offer weight and activation quantization, we disable
+models also incorporate a sliding window [6]. Additionally, Mixtral
+                                                                       these features for fair comparison with the other baselines.
+model further integrates mixture-of-experts (MoE) layers [62]. To
+evaluate model accuracy, we utilize Wikitext2, PIQA, Winogrande,       Thresholds. Throughout the evaluation, we set the outer, middle,
+and Hellaswag datasets, which are widely evaluated in prior stud-      and inner group ratio to 4%, 90%, and 6%, respectively. This global
+ies [22, 31, 33, 35, 41, 86, 87]. Wikitext2 [46] dataset consists of   configuration applies to all models and datasets for the following
+tokens extracted from Wikipedia articles, while PIQA [7], Wino-        two reasons. First, as discussed in Section 4.1, KV cache distribution
+grande [58], and Hellaswag [81] constitute questions and answers.      is independent of the input dataset. Second, although the optimal
+We report zero-shot accuracy (%) for PIQA, Winogrande, and Hel-        group ratio varies slightly across LLMs, its impact on inference
+laswag datasets and perplexity for Wikitext2 dataset. Note that        performance and accuracy is marginal. Section 6.2 explores the
+for perplexity, lower values indicate better performance. For real-    threshold search space and group count, justifying this choice.
+world benchmarking, we use two open-source production traces           Offline profiling. Oaken’s offline profiling is performed by collect-
+from Azure LLM inference services, Conversation [47, 54] and Burst-    ing topK values, which represent four boundaries of the quantiza-
+GPT [68]. We follow the methodology established in prior work          tion groups, during inference and averaging the gathered values. As
+to simulate inference serving scenarios [20]. Requests are sampled     mentioned, we use the same group ratio and the Wikitext2 dataset
+from the trace over a time period, and batches are synthesized with    for all LLMs. However, since the KV cache distribution varies by
+varying input and output sequence lengths. We repeat this process      model, requiring different group thresholds and individual profil-
+across multiple batches, measuring the average performance.            ing. Despite this, Oaken’s offline profiling requires only about a
+Accelerator platforms. For the end-to-end performance evalua-          hundred inferences and takes approximately ten minutes, even for
+tion, we developed a hardware simulator for the Oaken accelerator      the Llama2-70B model. Since this process is required only once
+by extending the existing hardware simulator of LPU [21, 53]. LPU      before serving LLM inference online, the overhead is negligible.
+was initially optimized for low-latency inference without batching
+support, while the follow-up work scaled it to accommodate larger
+batches [48]. We extend the LPU architecture to integrate Oaken        6.2    Experimental Results
+by incorporating quantization/dequantization engines and memory        Throughput. Figure 11 presents the end-to-end throughput com-
+management units into the LPU’s DMA units. For GPU baselines,          parison results among GPU baselines (vLLM, KVQuant, KIVI, and
+we use NVIDIA A100 GPUs equipped with 80 GB HBM [49]. We use           QServe) and ASIC accelerators (Tender and Oaken). The results
+a single GPU for Llama2-7B, 13B, and Mistral-7B models, as it could    are omitted when the baseline system lacks support for the corre-
+accommodate all the model parameters. For larger models including      sponding models. For a batch size of 256, Oaken-LPDDR achieves
+OPT-30B, Mixtral-8x7B, and Llama2-70B models, we use two GPUs,         an average throughput improvement of 1.79× over vLLM and 1.58×
+employing pipeline parallelism to keep computation capability and      over QServe. This improvement is attributed to the reduced ex-
+memory bandwidth consistent, while scaling capacity to 160 GB.         ecution time of the attention operations, which accounts for the
+Hardware specifications and implementation. Table 1 summa-             majority of inference time. Oaken alleviates bandwidth and capacity
+rizes the specifications of the NVIDIA A100 GPU and the Oaken          bottlenecks by minimizing memory access to the KV cache.
+accelerator used in our evaluations. Oaken-LPDDR is equipped with         GPU baselines perform well for small batches and models, but as
+an LPDDR memory module matching the specifications used in             the batch size grows, they cannot accommodate the entire batch due
+prior works [53, 83]. Oaken-HBM is configured with HBM memory          to capacity constraints, leading to performance saturation. Tender,
+identical to that of the A100 GPU. The HBM memory offers higher        which uses the same HBM memory as A100 GPUs, also does not
+bandwidth but has a smaller capacity compared to LPDDR mem-            scale for large batches. Oaken-HBM outperforms other baselines
+ory, making a trade-off between them. We implement the Oaken           and Oaken-LPDDR for small models and batch sizes. However, it
+   Oaken: Fast and Efficient LLM Serving with Online-Offline Hybrid KV Cache Quantization                                                     ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                      GPU (vLLM)           GPU (QServe)      GPU (KVQuant)        GPU (KIVI)     Tender        LPU            Oaken-LPDDR              Oaken-HBM
+                         6000                                               2500                                          12000
+                         4500                                               2000                                           9000
+                                                                            1500
+Throughput (token/sec)
+
+
+
+
+                         3000                                                                                              6000
+                                                                            1000
+                         1500                                                500                                           3000
+                           0                                                   0                                               0
+                                 16          32       64        128   256          16        32     64     128    256                    16        32        64        128     256
+                                              (a) Llama2-7B                                  (b) Llama2-13B                                          (c) Mistral-7B
+                         1200                                               5000                                          1000
+                         900                                                4000                                           800
+                                                                            3000                                           600
+                         600
+                                                                            2000                                           400
+                         300                                                1000                                           200
+                           0                                                   0                                             0
+                                 16          32       64        128   256          16        32     64     128    256                    16        32       64         128    256
+                                                  (d) OPT-30B                                (e) Mixtral-8x7B                                       (f) Llama2-70B
+
+   Figure 11: Throughput results of GPU baselines, LPU, Tender, and Oaken equipped with LPDDR and HBM across six LLMs. We
+   sweep the batch size from 16 to 256. The input and output sequence lengths are set to 1K:1K.
+
+  Table 2: Perplexity results on Wikitext2, and zero-shot accuracy results on PIQA, Winogrande, and Hellaswag datasets with
+  effective bitwidth of each quantization technique.
+
+                                     Llama2                  OPT        Mistral Mixtral     Llama2               Llama2                  Llama2                     Llama2
+                Model
+                                7B    13B 70B         6.7B 13B 30B       7B      8x7B   7B    13B 70B       7B    13B 70B           7B    13B 70B                 7B  13B 70B
+        Task                                             Wikitext2                           PIQA              Winogrande               Hellaswag                       -
+       Metric                                          Perplexity (↓)                     Accuracy (%)        Accuracy (%)            Accuracy (%)             Effective Bitwidth
+      Original 5.47                   4.88    3.32    10.86 10.13 9.56 5.25      3.84 79.05 80.52 82.70    69.13 72.80 80.20       75.98 79.38 83.82          16.00 16.00 16.00
+      KVQuant 5.49                    4.94    3.33    10.88 10.14 9.58 5.33      3.87 78.35 79.33 82.21    67.80 71.74 77.98       75.82 79.25 83.70          4.82 4.81 5.01
+        KIVI   5.50                   4.90    3.33    10.88 10.16 9.58 5.34      3.84 78.07 79.05 78.07    67.84 70.96 76.81       75.57 78.97 83.47          4.99 4.99 4.99
+       Tender 6.42                    5.74    4.25    11.80 11.05 10.44 5.54     NaN 74.27 76.12 77.91     62.90 65.69 74.59       73.89 77.16 75.04          4.07 4.07 4.10
+        Atom   5.62                   4.98    3.37    11.01 10.22 9.64 5.42      4.05 76.17 76.99 81.34    66.46 67.09 75.77       72.22 76.21 80.52          4.25 4.25 4.63
+       QServe 5.67                    5.12    3.36    10.95 10.28 9.62 5.42      4.03 77.37 77.48 81.77    65.29 66.80 76.09       74.41 76.69 83.24          4.25 4.25 4.25
+       Oaken 5.53                     4.93    3.34    10.88 10.16 9.58 5.35      3.90 78.29 79.71 82.59    67.64 70.56 76.64       73.72 78.24 83.50          4.82 4.82 4.89
+
+
+
+  faces challenges in accommodating large models such as Mixtral-                                  channels and group those with similar magnitudes. This approach
+  8x7B and Llama2-70B, or handling large batches due to its insuffi-                               impose minimal overhead due to their low effective bitwidth, as
+  cient memory capacity. Mistral-7B, Mixtral-8x7B, and Llama2-70B                                  they do not require individual processing of outliers; however, this
+  models employ grouped-query attention to reduce KV cache size,                                   comes at the cost of larger accuracy losses, as they rely on coarse-
+  helping to alleviate bandwidth bottlenecks even without KV quan-                                 grained per-group or per-channel quantization without considering
+  tization. However, for larger batch sizes, capacity limitations still                            exceptions in KV distribution, as discussed in Section 4.1.
+  cause saturation, while Oaken accelerators offer scalability, demon-                             Trade-off between accuracy and compression ratio. Figure 12(a)
+  strating the effectiveness of our KV cache quantization technique.                               illustrates the trade-off between accuracy and compression ratio
+  Accuracy. Table 2 presents the accuracy results of each baselines                                in Oaken’s KV cache quantization on Llama2-7B model, which
+  across eight LLMs on Wikitext2, PIQA, Winogrande, and Hellaswag                                  can also be interpreted as a trade-off between accuracy and per-
+  datasets, along with the effective bitwidth on the Llama2 models.                                formance. We sweep the group ratio and measure the perplexity
+  Oaken exhibits an average accuracy loss of 0.87% compared to                                     on Wikitext2 dataset. The effective bits in Oaken are determined
+  the original FP16 baseline, with 0.54% and 0.32% lower accuracy                                  by the ratio of inner and outer groups, as their location is stored
+  than KVQuant and KIVI, respectively, while achieving 1.38% higher                                in the sparse matrix. All points on the same horizontal line share
+  accuracy than QServe. KVQuant and KIVI requires a larger effective                               the same outlier ratio and effective bits, but differ in group compo-
+  bitwidth due to their use of sparse layout for outlier values and fine-                          sition. We select a ratio of 4%, 90%, and 6% for the outer, middle,
+  grained grouping, respectively. They achieve higher accuracy than                                and inner groups, respectively, throughout the entire evaluation,
+  Oaken, but their advantages are largely offset by the prohibitively                              as they are one of the Pareto-optimal points highlighted as a light
+  high overhead of online sorting and mixed-precision operations.                                  blue line. While using higher effective bits might improve accuracy
+  On the other hand, Tender, Atom, and QServe employ an indirect                                   even better than the current configuration, it negatively impacts
+  indexing technique and a transformation matrix to reorder KV                                     the inference performance due to its low compression ratio.
+  ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                                                 Kim, Hong, et al.
+
+
+                 6.0                                                                         300                             Table 3: Accuracy and effective bits using the Llama2-7B
+                                                                                                    Dequantization
+
+
+
+
+                                                                             Latency (sec)
+                                                                                                    Quantization             model with varying number of groups and group ratios while
+
+
+
+
+                                                       Outlier Ratio (i+o)
+                                                 20%                                         200
+                 5.6                                                                                Attention
+Effective Bits
+
+
+
+
+                                                 18%                                                                         keeping the total inner and outer group ratio at 10%.
+                                                                                                    Non-attention
+                                                                                             100
+                 5.2                             14%                                                                                                        Group Ratio          Outlier Effective   Wikitext2
+                             (o:4%, m:90%, i:6%)                                              0                                                              (o / m / i)          Bits   Bitwidth    Perplexity
+                                                 10%
+
+
+
+
+                                                                                                       Oaken
+
+
+                                                                                                       Oaken
+
+
+                                                                                                       Oaken
+                                                                                                         LPU
+
+
+                                                                                                         LPU
+
+
+                                                                                                         LPU
+                                                                                                   Oaken-GPU
+
+
+                                                                                                   Oaken-GPU
+
+
+                                                                                                   Oaken-GPU
+                 4.8                                                                                                                                          4 / 90 / 6           5        4.8        5.526
+                                                  8%
+                                                                                                                                                                  90 / 10          5        4.8        5.804
+                 4.6                                                                                                                                        10 / 90                5        4.8        5.546
+                   5.50      5.55         5.60     5.65                            Batch                                                                      4 / 90 / 3 / 3       5        5.6        5.523
+                          Wikitext2 Perplexity                                      Size            16      32       64                                   2 / 2 / 90 / 6           5        5.6        5.516
+                                    (a)                                                                     (b)                                           2 / 2 / 90 / 3 / 3       5        5.6        5.516
+                                                                                                                                                              4 / 90 / 3 / 3       4        4.8        5.572
+                                                                                                                                                          2 / 2 / 90 / 6           4        4.8        5.531
+  Figure 12: (a) Accuracy and effective bits with varying quanti-                                                                                         2 / 2 / 90 / 3 / 3       4        4.8        5.532
+  zation group ratios. (b) Latency breakdown for non-attention,
+  attention, quantization and dequantization operations using
+                                                                                                                                                   1500
+
+
+
+
+                                                                                                                          Throughput (token/sec)
+  Llama2-7B model across varying batch size.                                                                                                                                   GPU (vLLM)   GPU (QServe)     Tender
+                                                                                                                                                   1200                        LPU          Oaken-LPDDR      Oaken-HBM
+     Table 3 presents the perplexity and effective bitwidth for dif-                                                                               900
+ ferent numbers of groups evaluated on the Llama2-7B model. We                                                                                     600
+ fix the total ratio of inner and outer groups at 10%. Oaken’s fused
+ dense-and-sparse encoding eliminates the need for a bit to represent                                                                              300
+ outliers when using two groups. However, this disrupts memory                                                                                       0
+ alignment, as each sparse COO entry consists of 6 index bits and                                                                                           1K          2K          4K       8K        16K         32K
+                                                                                                                                                                               Total Sequence Length
+ 1 sign bit. To mitigate hardware overhead, an extra padding bit is
+ added, maintaining the same effective bitwidth. Using four or five                                                          Figure 13: Throughput results on Llama2-13B model with a
+ groups improves accuracy but increases bitwidth, as 9-bit COO en-                                                           batch size of 16 when increasing total sequence length from
+ tries require two bits for inner and outer groups. This also misaligns                                                      1K to 32K. The ratio of input and output length is set to 1:1.
+ memory layout, requiring additional padding. While using 4-bit
+ outliers to keep 8-bit alignment preserves the effective bitwidth, it
+ slightly reduces accuracy. In summary, Oaken’s three-group quan-                                                            including Oaken-LPDDR, with its high memory bandwidth and
+ tization offers the optimal balance between cost and accuracy.                                                              KV cache quantization. However, HBM-based systems including
+ Latency breakdown. To better understand the impact of KV cache                                                              QServe and Oaken-HBM cannot handle sequences longer than 16K,
+ quantization on performance, we break down the end-to-end infer-                                                            making it difficult to complete the entire batch due to insufficient ca-
+ ence latency of LPU and Oaken-LPDDR as we vary the batch size.                                                              pacity. Oaken-LPDDR, on the other hand, can accommodate longer
+ We also implement Oaken’s quantization algorithm on GPU and                                                                 sequences of up to 32K by mitigating both bandwidth and capacity
+ measure its operation latencies. Figure 12(b) shows that the latency                                                        pressure through KV quantization and large-capacity memory.
+ of attention operations increases proportionally with the batch size.                                                       Real-world benchmark. Figure 14 presents the generation through-
+ While Oaken does not directly affect the execution time of non-                                                             put results for Llama2-13B and Mixtral-8x7B models, evaluated us-
+ attention operations, it alleviates bandwidth bottleneck through KV                                                         ing two real-world LLM inference traces. We exclude Oaken-HBM
+ quantization. As a result, the execution time of attention operations                                                       and QServe for Mixtral-8x7B model, as Oaken-HBM’s memory can-
+ is, on average, 55.0% shorter than that of LPU, contributing to a                                                           not accommodate the entire model and QServe lacks support for
+ reduction in end-to-end latency. When the batch size is 64, quanti-                                                         MoE layers. Tender, which employs systolic arrays, suffers under-
+ zation and dequantization account for only 1.29% and 3.23% of the                                                           utilization due to the padding required by varying prompt lengths
+ entire latency, respectively. On the contrary, Oaken algorithm on                                                           within a batch. Conversation trace features short output lengths,
+ GPU demonstrates long quantization and dequantization latencies                                                             resulting in a brief generation phase. As the bandwidth bottleneck
+ due to warp divergence in CUDA, which is required to separate                                                               due to the KV cache is noticeable in generation phase, a short gen-
+ multiple quantization groups. Note that Oaken hides both quantiza-                                                          eration length reduces the advantage of Oaken’s KV cache quanti-
+ tion and dequantization latencies by overlapping them with other                                                            zation. Conversely, BurstGPT trace features longer output lengths,
+ operations and processing them in a streaming manner.                                                                       where KV cache quantization in Oaken becomes more beneficial.
+ Sensitivity to sequence length. Figure 13 shows throughput re-                                                              Mixtral-8x7B model utilizes grouped query attention to reduce
+ sults when sweeping the total sequence length from 1K to 32K.                                                               its KV cache size compared to multi-head attention. Quantization
+ For shorter sequence lengths below 8K, the proportion of compute-                                                           baselines, including Oaken-LPDDR and Tender, show little to no
+ bound, batchable operations is larger than memory-bound, non-                                                               performance gain over full-precision baselines. However, as batch
+ batchable attention operations. Therefore, the performance of QServe                                                        size increases or with the BurstGPT trace with longer generation
+ and vLLM outperform Oaken in this range by leveraging the higher                                                            lengths, Oaken-LPDDR demonstrates greater performance gains.
+ parallelizable resources available on GPUs. However, as the se-                                                             In summary, Oaken delivers an advantage over existing solutions in
+ quence length increases, Oaken-HBM surpasses other baselines,                                                               real-world scenarios for the Llama2-13B and Mixtral-8x7B models.
+   Oaken: Fast and Efficient LLM Serving with Online-Offline Hybrid KV Cache Quantization                                               ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                          GPU (vLLM)   GPU (QServe)   Tender    LPU     Oaken-LPDDR    Oaken-HBM    Table 4: Area overhead analysis of compression and decom-
+                          2500                                 2500                                 pression engines on TSMC 28nm.
+Throughput (token/sec)
+
+
+
+
+                          2000                                 2000
+                                                                                                                Module              Area (mm2)          Area ratio (%)
+                          1500                                 1500
+                                                                                                         Matrix processing unit       0.908                 22.86
+                          1000                                 1000
+                                                                                                         Vector processing unit       0.239                  6.03
+                           500                                  500
+                                                                                                          Quantization engine         0.074                  1.86
+                             0                                    0
+                                 16     32     64     128               16     32     64    128          Dequantization engine        0.252                  6.35
+                             (a) Conversation (Llama2-13B)            (b) BurstGPT (Llama2-13B)             Compute core              3.971                  100
+                          2500                                 2500
+ Throughput (token/sec)
+
+
+
+
+                          2000                                 2000
+                          1500                                 1500
+                          1000                                 1000
+                                                                                                    TransPIM [88] proposes a PIM accelerator targeted for encoder-
+                           500                                  500
+                                                                                                    based transformer models such as BERT. AttAcc [52], IANUS [59],
+                             0                                    0
+                                 16     32      64    128               16     32     64    128     and NeuPIMS [20] employ PIM technologies for decoder-based
+                             (c) Conversation (Mixtral-8x7B)          (d) BurstGPT (Mixtral-8x7B)   transformer LLM serving, while they impose capacity pressure on
+                                                                                                    the large-batch long-sequence serving scenarios. Unlike these prior
+                                                                                                    works, this work devises Oaken, which jointly employs KV quan-
+   Figure 14: Real-world benchmark results for generation
+                                                                                                    tization and LPDDR for unleashing larger capacity and increased
+   throughput on Llama2-13B and Mixtral-8x7B models evalu-
+                                                                                                    bandwidth to enable fast and efficient LLM serving.
+   ated with two LLM inference traces: Conversation [47] and
+   BurstGPT [68]. We sweep the batch size from 16 to 128.                                           Acceleration for quantized model inference. There have been
+                                                                                                    several prior works on accelerating quantized neural network infer-
+                                                                                                    ence [9, 24, 29, 38, 55, 56, 63, 65, 74, 82]. Mokey [80] and Olive [19]
+                                                                                                    apply outlier-aware quantization methods to transformer-based
+  Area and power. As reported in Table 4, the quantization and                                      LLMs. LUT-GEMM [51] proposes a lookup-table-based GPU kernel
+  dequantization engines account for a minor percentage of the total                                to eliminate dequantization overhead in quantized LLM inference.
+  compute core area at 1.86% and 6.35%, respectively. In addition, the                              Tender [35] quantizes KV cache as well as weights and activations,
+  power consumption of the entire accelerator embedded with Oaken                                   but its accuracy loss is significant. In contrast, Oaken is an LLM in-
+  modules is 222.7W, which is 44.3% lower than the 400W TDP of the                                  ference acceleration solution optimized for KV cache quantization,
+  A100 GPU. These results clearly indicate that integrating Oaken’s                                 offering a scalable solution while minimizing accuracy loss.
+  quantization and dequantization modules only imposes minimal
+  hardware overhead while improving performance and achieving
+  better energy efficiency compared to the GPU.                                                     8   Conclusion
+                                                                                                    Batched LLM inference faces significant challenges from high mem-
+   7                       Related Work                                                             ory bandwidth and capacity demands, exacerbated by the growing
+                                                                                                    size of KV caches in modern LLMs that produce long-sequence out-
+   LLM quantization. Most prior work on LLM quantization focuses
+                                                                                                    puts. This paper tackles this challenge by proposing an acceleration
+   on weight and/or activation quantization [17, 40, 42, 60, 69, 70] to
+                                                                                                    solution, Oaken, that jointly exploits (1) an offline-online hybrid
+   reduce inference computation costs. RPTQ [78], SpinQuant [44],
+                                                                                                    KV cache compression technique and (2) custom hardware modules
+   and QuaRot [5] introduce transformation matrices for weight and
+                                                                                                    tailored for the proposed algorithm that can be integrated with LLM
+   activation quantization. SmoothQuant [71] mitigates the quantiza-
+                                                                                                    accelerators. Oaken effectively unlocks sufficient bandwidth and
+   tion difficulty by transferring activation outlier scales to weights.
+                                                                                                    capacity, which would otherwise be unattainable, leading to signif-
+   SqueezeLLM [30] applies dense-and-sparse quantization for stor-
+                                                                                                    icant throughput improvements with only marginal accuracy loss.
+   ing weight outliers in full precision. However, many existing ap-
+                                                                                                    These compelling advantages demonstrate that Oaken efficiently
+   proaches overlook the KV cache, whose size scales with sequence
+                                                                                                    addresses the two primary bottlenecks of modern LLM serving.
+   length and batch size, often becoming a major bottleneck for la-
+   tency and throughput in batched LLM inference. Oaken overcomes
+   this issue by employing an offline-online KV cache quantization                                  Acknowledgments
+   algorithm with a customized hardware module, achieving high                                      We thank the anonymous reviewers for their comments and feed-
+   throughput with minimal accuracy degradation.                                                    back. This work was supported by the Institute of Information &
+   LLM inference accelerator. DFX [21] is one of the first LLM ac-                                  Communications Technology Planning & Evaluation (IITP) (No.2018-
+   celerators, which is designed to accelerate the entire GPT2 model                                0-00503, No.RS-2024-00459797, Development of ML compiler frame-
+   using HBM and FPGA. CXL-PNM [53] introduces a LLM accelerator                                    work for on-device AI), IITP under the Graduate School of Artificial
+   largely leveraging the DFX design, while employing LPDDR for                                     Intelligence Semiconductor (IITP-2025-RS-2023-00256472), and the
+   striking a sweet spot in the bandwidth-capacity tradeoff space for                               National Research Foundation of Korea (NRF) (RS-2024-00342148),
+   large-scale LLM serving. LPU [48] is another LLM accelerator that                                grant funded by the Korea government (MSIT). This work was also
+   differs from prior work in optimizing its design for minimal latency.                            partly supported by HyperAccel.
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                            Kim, Hong, et al.
+
+
+References                                                                                    [15] Tim Dettmers, Mike Lewis, Younes Belkada, and Luke Zettlemoyer. 2022.
+ [1] Amey Agrawal, Nitin Kedia, Ashish Panwar, Jayashree Mohan, Nipun Kwatra,                      LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale. arXiv preprint
+     Bhargav S Gulavani, Alexey Tumanov, and Ramachandran Ramjee. 2024. Taming                     arXiv:2208.07339 (2022).
+     Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve. arXiv preprint          [16] Axel Feldmann and Daniel Sanchez. 2023. Spatula: A Hardware Accelerator
+     arXiv:2403.02310 (2024).                                                                      for Sparse Matrix Factorization. In Proceedings of the 56th Annual IEEE/ACM
+ [2] Arash Ahmadian, Saurabh Dash, Hongyu Chen, Bharat Venkitesh, Zhen Stephen                     International Symposium on Microarchitecture (MICRO ’23). 91–104. doi:10.1145/
+     Gou, Phil Blunsom, Ahmet Üstün, and Sara Hooker. 2023. Intriguing Properties                  3613424.3623783
+     of Quantization at Scale. In Thirty-seventh Conference on Neural Information             [17] Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh. 2022. OPTQ:
+     Processing Systems. https://openreview.net/forum?id=IYe8j7Gy8f                                Accurate quantization for generative pre-trained transformers. In The Eleventh
+ [3] Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico                  International Conference on Learning Representations.
+     Lebrón, and Sumit Sanghai. 2023. GQA: Training Generalized Multi-Query                   [18] Christina Giannoula, Ivan Fernandez, Juan Gómez Luna, Nectarios Koziris, Geor-
+     Transformer Models from Multi-Head Checkpoints. https://arxiv.org/abs/2305.                   gios Goumas, and Onur Mutlu. 2022. SparseP: Towards Efficient Sparse Matrix
+     13245                                                                                         Vector Multiplication on Real Processing-In-Memory Architectures. Proc. ACM
+ [4] Rohan Anil, Andrew M. Dai, Orhan Firat, Melvin Johnson, Dmitry Lepikhin,                      Meas. Anal. Comput. Syst. 6, 1, Article 21 (feb 2022), 49 pages. doi:10.1145/3508041
+     Alexandre Passos, Siamak Shakeri, Emanuel Taropa, Paige Bailey, Zhifeng Chen,            [19] Cong Guo, Jiaming Tang, Weiming Hu, Jingwen Leng, Chen Zhang, Fan Yang,
+     Eric Chu, Jonathan H. Clark, Laurent El Shafey, Yanping Huang, Kathy Meier-                   Yunxin Liu, Minyi Guo, and Yuhao Zhu. 2023. OliVe: Accelerating Large Language
+     Hellstern, Gaurav Mishra, Erica Moreira, Mark Omernick, Kevin Robinson, Sebas-                Models via Hardware-friendly Outlier-Victim Pair Quantization. In Proceedings
+     tian Ruder, Yi Tay, Kefan Xiao, Yuanzhong Xu, Yujing Zhang, Gustavo Hernandez                 of the 50th Annual International Symposium on Computer Architecture (Orlando,
+     Abrego, Junwhan Ahn, Jacob Austin, Paul Barham, Jan Botha, James Bradbury,                    FL, USA) (ISCA ’23). Association for Computing Machinery, New York, NY, USA,
+     Siddhartha Brahma, Kevin Brooks, Michele Catasta, Yong Cheng, Colin Cherry,                   Article 3, 15 pages. doi:10.1145/3579371.3589038
+     Christopher A. Choquette-Choo, Aakanksha Chowdhery, Clément Crepy, Shachi                [20] Guseul Heo, Sangyeop Lee, Jaehong Cho, Hyunmin Choi, Sanghyeon Lee,
+     Dave, Mostafa Dehghani, Sunipa Dev, Jacob Devlin, Mark Díaz, Nan Du, Ethan                    Hyungkyu Ham, Gwangsun Kim, Divya Mahajan, and Jongse Park. 2024. Ne-
+     Dyer, Vlad Feinberg, Fangxiaoyu Feng, Vlad Fienber, Markus Freitag, Xavier                    uPIMs: NPU-PIM Heterogeneous Acceleration for Batched LLM Inferencing. In
+     Garcia, Sebastian Gehrmann, Lucas Gonzalez, Guy Gur-Ari, Steven Hand, Hadi                    Proceedings of the 29th ACM International Conference on Architectural Support for
+     Hashemi, Le Hou, Joshua Howland, Andrea Hu, Jeffrey Hui, Jeremy Hurwitz,                      Programming Languages and Operating Systems, Volume 3 (La Jolla, CA, USA) (AS-
+     Michael Isard, Abe Ittycheriah, Matthew Jagielski, Wenhao Jia, Kathleen Kenealy,              PLOS ’24). Association for Computing Machinery, New York, NY, USA, 722–737.
+     Maxim Krikun, Sneha Kudugunta, Chang Lan, Katherine Lee, Benjamin Lee, Eric                   doi:10.1145/3620666.3651380
+     Li, Music Li, Wei Li, YaGuang Li, Jian Li, Hyeontaek Lim, Hanzhao Lin, Zhong-            [21] Seongmin Hong, Seungjae Moon, Junsoo Kim, Sungjae Lee, Minsub Kim, Dongsoo
+     tao Liu, Frederick Liu, Marcello Maggioni, Aroma Mahendru, Joshua Maynez,                     Lee, and Joo-Young Kim. 2022. DFX: A Low-latency Multi-FPGA Appliance
+     Vedant Misra, Maysam Moussalem, Zachary Nado, John Nham, Eric Ni, Andrew                      for Accelerating Transformer-based Text Generation. In 2022 55th IEEE/ACM
+     Nystrom, Alicia Parrish, Marie Pellat, Martin Polacek, Alex Polozov, Reiner Pope,             International Symposium on Microarchitecture (MICRO). 616–630. doi:10.1109/
+     Siyuan Qiao, Emily Reif, Bryan Richter, Parker Riley, Alex Castro Ros, Aurko Roy,             MICRO56248.2022.00051
+     Brennan Saeta, Rajkumar Samuel, Renee Shelby, Ambrose Slone, Daniel Smilkov,             [22] Coleman Hooper, Sehoon Kim, Hiva Mohammadzadeh, Michael W Mahoney,
+     David R. So, Daniel Sohn, Simon Tokumine, Dasha Valter, Vijay Vasudevan, Kiran                Yakun Sophia Shao, Kurt Keutzer, and Amir Gholami. 2024. KVQuant: Towards
+     Vodrahalli, Xuezhi Wang, Pidong Wang, Zirui Wang, Tao Wang, John Wieting,                     10 Million Context Length LLM Inference with KV Cache Quantization. arXiv
+     Yuhuai Wu, Kelvin Xu, Yunhan Xu, Linting Xue, Pengcheng Yin, Jiahui Yu, Qiao                  preprint arXiv:2401.18079 (2024).
+     Zhang, Steven Zheng, Ce Zheng, Weikang Zhou, Denny Zhou, Slav Petrov, and                [23] Suyeon Hur, Seongmin Na, Dongup Kwon, Joonsung Kim, Andrew Boutros,
+     Yonghui Wu. 2023. PaLM 2 Technical Report. arXiv preprint arXiv:2305.10403                    Eriko Nurvitadhi, and Jangwoo Kim. 2023. A fast and flexible FPGA-based
+     (2023).                                                                                       accelerator for natural language processing neural networks. ACM Transactions
+ [5] Saleh Ashkboos, Amirkeivan Mohtashami, Maximilian L. Croci, Bo Li, Pashmina                   on Architecture and Code Optimization 20, 1 (2023), 1–24.
+     Cameron, Martin Jaggi, Dan Alistarh, Torsten Hoefler, and James Hensman.                 [24] Ahmet Inci, Siri Virupaksha, Aman Jain, Ting-Wu Chin, Venkata Thallam,
+     2024. QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs. arXiv preprint                    Ruizhou Ding, and Diana Marculescu. 2023. QUIDAM: A Framework for
+     arXiv:2404.00456 (2024). https://arxiv.org/abs/2404.00456                                     Quantization-aware DNN Accelerator and Model Co-Exploration. ACM Trans.
+ [6] Iz Beltagy, Matthew E. Peters, and Arman Cohan. 2020. Longformer: The Long-                   Embed. Comput. Syst. 22, 2, Article 33 (Jan. 2023), 21 pages. doi:10.1145/3555807
+     Document Transformer. https://arxiv.org/abs/2004.05150                                   [25] Albert Q. Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, De-
+ [7] Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin Choi. 2019.               vendra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna Lengyel,
+     PIQA: Reasoning about Physical Commonsense in Natural Language. arXiv                         Guillaume Lample, Lucile Saulnier, Lélio Renard Lavaud, Marie-Anne Lachaux,
+     preprint arXiv:1911.11641 (2019).                                                             Pierre Stock, Teven Le Scao, Thibaut Lavril, Thomas Wang, Timothée Lacroix,
+ [8] Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan,                       and William El Sayed. 2023. Mistral 7B. arXiv preprint arXiv:2310.06825 (2023).
+     Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda               [26] Albert Q. Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche
+     Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan,                 Savary, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou
+     Rewon Child, Aditya Ramesh, Daniel M. Ziegler, Jeffrey Wu, Clemens Winter,                    Hanna, Florian Bressand, Gianna Lengyel, Guillaume Bour, Guillaume Lample,
+     Christopher Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin               Lélio Renard Lavaud, Lucile Saulnier, Marie-Anne Lachaux, Pierre Stock, Sandeep
+     Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya                     Subramanian, Sophia Yang, Szymon Antoniak, Teven Le Scao, Théophile Gervet,
+     Sutskever, and Dario Amodei. 2020. Language Models are Few-Shot Learners.                     Thibaut Lavril, Thomas Wang, Timothée Lacroix, and William El Sayed. 2024.
+     arXiv preprint arXiv:2005.14165 (2020).                                                       Mixtral of Experts. https://arxiv.org/abs/2401.04088
+ [9] S. Chang, Y. Li, M. Sun, R. Shi, H. H. So, X. Qian, Y. Wang, and X. Lin. 2021. Mix and   [27] Qing Jin, Jian Ren, Richard Zhuang, Sumant Hanumante, Zhengang Li, Zhiyu
+     Match: A Novel FPGA-Centric Deep Neural Network Quantization Framework.                       Chen, Yanzhi Wang, Kaiyuan Yang, and Sergey Tulyakov. 2022. F8Net: Fixed-Point
+     In 2021 IEEE International Symposium on High-Performance Computer Architecture                8-bit Only Multiplication for Network Quantization. In International Conference
+     (HPCA). 208–220. doi:10.1109/HPCA51647.2021.00027                                             on Learning Representations. https://openreview.net/forum?id=_CfpJazzXT2
+[10] Jerry Chee, Yaohui Cai, Volodymyr Kuleshov, and Christopher De Sa. 2024. QuIP:           [28] Norman P. Jouppi, George Kurian, Sheng Li, Peter Ma, Rahul Nagarajan, Lifeng
+     2-bit ‘quantization of large language models with guarantees. In Proceedings of               Nai, Nishant Patil, Suvinay Subramanian, Andy Swing, Brian Towles, Cliff Young,
+     the 37th International Conference on Neural Information Processing Systems (New               Xiang Zhou, Zongwei Zhou, and David Patterson. 2023. TPU v4: An Optically
+     Orleans, LA, USA) (NIPS ’23). Curran Associates Inc., Red Hook, NY, USA, Article              Reconfigurable Supercomputer for Machine Learning with Hardware Support
+     196, 34 pages.                                                                                for Embeddings. arXiv preprint arXiv:2304.01433 (2023).
+[11] Wenhua Cheng, Weiwei Zhang, Haihao Shen, Yiyang Cai, Xin He, and Kaokao                  [29] Ben Keller, Rangharajan Venkatesan, Steve Dai, Stephen G. Tell, Brian Zimmer,
+     Lv. 2023. Optimize Weight Rounding via Signed Gradient Descent for the Quan-                  William J. Dally, C. Thomas Gray, and Brucek Khailany. 2022. A 17–95.6 TOPS/W
+     tization of LLMs. arXiv preprint arXiv:2309.05516 (2023).                                     Deep Learning Inference Accelerator with Per-Vector Scaled 4-bit Quantization
+[12] Zhoujun Cheng, Jungo Kasai, and Tao Yu. 2023. Batch Prompting: Efficient                      for Transformers in 5nm. In 2022 IEEE Symposium on VLSI Technology and Circuits
+     Inference with Large Language Model APIs. arXiv preprint arXiv:2301.08721                     (VLSI Technology and Circuits). 16–17. doi:10.1109/VLSITechnologyandCir46769.
+     (2023).                                                                                       2022.9830277
+[13] Brian Chmiel, Ron Banner, Elad Hoffer, Hilla Ben Yaacov, and Daniel Soudry.              [30] Sehoon Kim, Coleman Hooper, Amir Gholami, Zhen Dong, Xiuyu Li, Sheng Shen,
+     2024. Accurate Neural Training with 4-bit Matrix Multiplications at Standard                  Michael W Mahoney, and Kurt Keutzer. 2023. Squeezellm: Dense-and-sparse
+     Formats. https://arxiv.org/abs/2112.10769                                                     quantization. arXiv preprint arXiv:2306.07629 (2023).
+[14] Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022.              [31] Young Jin Kim, Rawn Henry, Raffy Fahim, and Hany Hassan Awadalla. 2023.
+     FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness.                  Finequant: Unlocking efficiency with fine-grained weight-only quantization for
+     arXiv preprint arXiv:2205.14135 (2022).                                                       llms. arXiv preprint arXiv:2308.09723 (2023).
+                                                                                              [32] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng,
+                                                                                                   Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. 2023. Efficient
+Oaken: Fast and Efficient LLM Serving with Online-Offline Hybrid KV Cache Quantization                                               ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+     Memory Management for Large Language Model Serving with PagedAttention.                  International Symposium on High-Performance Computer Architecture (HPCA).
+     In Proceedings of the 29th Symposium on Operating Systems Principles (SOSP ’23).         IEEE, 970–982.
+     611–626. doi:10.1145/3600006.3613165                                                [54] Pratyush Patel, Esha Choukse, Chaojie Zhang, Aashaka Shah, Inigo Goiri, Saeed
+[33] Changhun Lee, Jungyu Jin, Taesu Kim, Hyungjun Kim, and Eunhyeok Park.                    Maleki, and Ricardo Bianchini. 2024. Splitwise: Efficient generative LLM inference
+     2024. OWQ: Outlier-Aware Weight Quantization for Efficient Fine-Tuning and               using phase splitting. In ISCA. https://www.microsoft.com/en-us/research/
+     Inference of Large Language Models. In Proceedings of the AAAI Conference on             publication/splitwise-efficient-generative-llm-inference-using-phase-splitting
+     Artificial Intelligence, Vol. 38. 13355–13364.                                      [55] Yubin Qin, Yang Wang, Dazheng Deng, Zhiren Zhao, Xiaolong Yang, Leibo Liu,
+[34] Janghwan Lee, Minsoo Kim, Seungcheol Baek, Seok Hwang, Wonyong Sung, and                 Shaojun Wei, Yang Hu, and Shouyi Yin. 2023. FACT: FFN-attention Co-optimized
+     Jungwook Choi. 2023. Enhancing Computation Efficiency in Large Language                  transformer architecture with eager correlation prediction. In Proceedings of the
+     Models through Weight and Activation Quantization. In Proceedings of the 2023            50th Annual International Symposium on Computer Architecture. 1–14.
+     Conference on Empirical Methods in Natural Language Processing. doi:10.18653/       [56] Enrico Reggiani, Alessandro Pappalardo, Max Doblas, Miquel Moreto, Mauro
+     v1/2023.emnlp-main.910                                                                   Olivieri, Osman Sabri Unsal, and Adrián Cristal. 2023. Mix-GEMM: An effi-
+[35] Jungi Lee, Wonbeom Lee, and Jaewoong Sim. 2024. Tender: Accelerating Large               cient HW-SW Architecture for Mixed-Precision Quantized Deep Neural Net-
+     Language Models via Tensor Decomposition and Runtime Requantization. In                  works Inference on Edge Devices. In 2023 IEEE International Symposium on High-
+     Proceedings of the 51st Annual International Symposium on Computer Architecture.         Performance Computer Architecture (HPCA). 1085–1098. doi:10.1109/HPCA56546.
+[36] Jiamin Li, Yimin Jiang, Yibo Zhu, Cong Wang, and Hong Xu. 2023. Accelerating             2023.10071076
+     Distributed MoE Training and Inference with Lina. In 2023 USENIX Annual             [57] Minsoo Rhu, Mike O’Connor, Niladrish Chatterjee, Jeff Pool, Youngeun Kwon,
+     Technical Conference (USENIX ATC 23). 945–959.                                           and Stephen W Keckler. 2018. Compressing DMA engine: Leveraging activation
+[37] Liang Li, Qingyuan Li, Bo Zhang, and Xiangxiang Chu. 2024. Norm Tweaking:                sparsity for training deep neural networks. In 2018 IEEE International Symposium
+     High-Performance Low-Bit Quantization of Large Language Models. Proceedings              on High Performance Computer Architecture (HPCA). IEEE, 78–91.
+     of the AAAI Conference on Artificial Intelligence (Mar. 2024), 18536–18544.         [58] Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. 2019.
+[38] Wenjie Li, Aokun Hu, Ningyi Xu, and Guanghui He. 2024. Quantization and                  WinoGrande: An Adversarial Winograd Schema Challenge at Scale. arXiv preprint
+     Hardware Architecture Co-Design for Matrix-Vector Multiplications of Large               arXiv:1907.10641 (2019).
+     Language Models. IEEE Transactions on Circuits and Systems I: Regular Papers        [59] Minseok Seo, Xuan Truong Nguyen, Seok Joong Hwang, Yongkee Kwon, Guhyun
+     (2024).                                                                                  Kim, Chanwook Park, Ilkon Kim, Jaehan Park, Jeongbin Kim, Woojae Shin,
+[39] Haokun Lin, Haobo Xu, Yichen Wu, Jingzhi Cui, Yingtao Zhang, Linzhan Mou,                Jongsoon Won, Haerang Choi, Kyuyoung Kim, Daehan Kwon, Chunseok Jeong,
+     Linqi Song, Zhenan Sun, and Ying Wei. 2024. DuQuant: Distributing Out-                   Sangheon Lee, Yongseok Choi, Wooseok Byun, Seungcheol Baek, Hyuk-Jae Lee,
+     liers via Dual Transformation Makes Stronger Quantized LLMs. arXiv preprint              and John Kim. 2024. IANUS: Integrated Accelerator based on NPU-PIM Unified
+     arXiv:2406.01721 (2024). https://arxiv.org/abs/2406.01721                                Memory System. In Proceedings of the 29th ACM International Conference on
+[40] Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Xingyu Dang, and Song Han.               Architectural Support for Programming Languages and Operating Systems, Volume
+     2023. Awq: Activation-aware weight quantization for llm compression and                  3 (La Jolla, CA, USA) (ASPLOS ’24). Association for Computing Machinery, New
+     acceleration. arXiv preprint arXiv:2306.00978 (2023).                                    York, NY, USA, 545–560. doi:10.1145/3620666.3651324
+[41] Yujun Lin*, Haotian Tang*, Shang Yang*, Zhekai Zhang, Guangxuan Xiao, Chuang        [60] Wenqi Shao, Mengzhao Chen, Zhaoyang Zhang, Peng Xu, Lirui Zhao, Zhiqian
+     Gan, and Song Han. 2024. QServe: W4A8KV4 Quantization and System Co-design               Li, Kaipeng Zhang, Peng Gao, Yu Qiao, and Ping Luo. 2023. Omniquant: Omni-
+     for Efficient LLM Serving. arXiv preprint arXiv:2405.04532 (2024).                       directionally calibrated quantization for large language models. arXiv preprint
+[42] Jing Liu, Ruihao Gong, Xiuying Wei, Zhiwei Dong, Jianfei Cai, and Bohan Zhuang.          arXiv:2308.13137 (2023).
+     2023. Qllm: Accurate and efficient low-bitwidth quantization for large language     [61] Noam Shazeer. 2019. Fast Transformer Decoding: One Write-Head is All You
+     models. arXiv preprint arXiv:2310.08041 (2023).                                          Need. https://arxiv.org/abs/1911.02150
+[43] Zirui Liu, Jiayi Yuan, Hongye Jin, Shaochen Zhong, Zhaozhuo Xu, Vladimir            [62] Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le,
+     Braverman, Beidi Chen, and Xia Hu. 2024. KIVI: A Tuning-Free Asymmetric 2bit             Geoffrey Hinton, and Jeff Dean. 2017. Outrageously Large Neural Networks: The
+     Quantization for KV Cache. arXiv preprint arXiv:2402.02750 (2024).                       Sparsely-Gated Mixture-of-Experts Layer. https://arxiv.org/abs/1701.06538
+[44] Zechun Liu, Changsheng Zhao, Igor Fedorov, Bilge Soran, Dhruv Choudhary,            [63] Xuan Shen, Peiyan Dong, Lei Lu, Zhenglun Kong, Zhengang Li, Ming Lin, Chao
+     Raghuraman Krishnamoorthi, Vikas Chandra, Yuandong Tian, and Tijmen                      Wu, and Yanzhi Wang. 2024. Agile-Quant: Activation-Guided Quantization for
+     Blankevoort. 2025. SpinQuant: LLM quantization with learned rotations. (2025).           Faster Inference of LLMs on the Edge. Proceedings of the AAAI Conference on
+     arXiv:2405.16406 [cs.LG] https://arxiv.org/abs/2405.16406                                Artificial Intelligence (2024).
+[45] Eitan Medina and Eran Dagan. 2020. Habana Labs Purpose-Built AI Inference and       [64] Ying Sheng, Lianmin Zheng, Binhang Yuan, Zhuohan Li, Max Ryabinin, Beidi
+     Training Processor Architectures: Scaling AI Training Systems Using Standard             Chen, Percy Liang, Christopher Ré, Ion Stoica, and Ce Zhang. 2023. Flexgen:
+     Ethernet With Gaudi Processor. IEEE Micro 40 (2020), 17–24.                              High-throughput generative inference of large language models with a single
+[46] Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. 2016.                 gpu. In International Conference on Machine Learning. PMLR, 31094–31116.
+     Pointer Sentinel Mixture Models. arXiv preprint arXiv:1609.07843 (2016).            [65] Zhuoran Song, Bangqi Fu, Feiyang Wu, Zhaoming Jiang, Li Jiang, Naifeng Jing,
+[47] Microsoft. 2024.            AzurePublicDataset.        https://github.com/Azure/         and Xiaoyao Liang. 2020. DRQ: Dynamic Region-based Quantization for Deep
+     AzurePublicDataset.                                                                      Neural Network Acceleration. In 2020 ACM/IEEE 47th Annual International Sym-
+[48] Seungjae Moon, Junsoo Kim, Jung-Hoon Kim, Junseo Cha, Gyubin Choi, Seong-                posium on Computer Architecture (ISCA). 1010–1021. doi:10.1109/ISCA45697.2020.
+     min Hong, and Joo-Young Kim. 2023. HyperAccel Latency Processing Unit                    00086
+     (LPUTM) Accelerating Hyperscale Models for Generative AI . In 2023 IEEE Hot         [66] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yas-
+     Chips 35 Symposium (HCS). IEEE Computer Society, Los Alamitos, CA, USA, 1–1.             mine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhos-
+     doi:10.1109/HCS59251.2023.10254693                                                       ale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucu-
+[49] NVIDIA. 2020.              NVIDIA A100 Tensor Core GPU Architecture.                     rull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia
+     https://images.nvidia.com/aem-dam/en-zz/Solutions/data-center/nvidia-                    Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini,
+     ampere-architecture-whitepaper.pdf.                                                      Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel
+[50] NVIDIA. 2023. NVIDIA TensorRT-LLM. https://github.com/NVIDIA/TensorRT-                   Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut
+     LLM.                                                                                     Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet,
+[51] Gunho Park, Baeseong Park, Minsub Kim, Sungjae Lee, Jeonghoon Kim, Beom-                 Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton,
+     seok Kwon, Se Jung Kwon, Byeongwook Kim, Youngjoo Lee, and Dongsoo Lee.                  Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva,
+     2024. LUT-GEMM: Quantized Matrix Multiplication based on LUTs for Effi-                  Eric Michael Smith, Ranjan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross
+     cient Inference in Large-Scale Generative Language Models. In ICLR. https:               Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov,
+     //openreview.net/forum?id=gLARhFLE0F                                                     Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Ro-
+[52] Jaehyun Park, Jaewan Choi, Kwanhee Kyung, Michael Jaemin Kim, Yongsuk                    driguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. 2023. Llama 2:
+     Kwon, Nam Sung Kim, and Jung Ho Ahn. 2024. AttAcc! Unleashing the Power of               Open Foundation and Fine-Tuned Chat Models. arXiv preprint arXiv:2307.09288
+     PIM for Batched Transformer-based Generative Model Inference. In Proceedings of          (2023).
+     the 29th ACM International Conference on Architectural Support for Programming      [67] Hanrui Wang, Zhekai Zhang, and Song Han. 2021. Spatten: Efficient sparse atten-
+     Languages and Operating Systems, Volume 2 (La Jolla, CA, USA) (ASPLOS ’24).              tion architecture with cascade token and head pruning. In 2021 IEEE International
+     Association for Computing Machinery, New York, NY, USA, 103–119. doi:10.                 Symposium on High-Performance Computer Architecture (HPCA). IEEE, 97–110.
+     1145/3620665.3640422                                                                [68] Yuxin Wang, Yuhan Chen, Zeyu Li, Xueze Kang, Zhenheng Tang, Xin He,
+[53] Sang-Soo Park, KyungSoo Kim, Jinin So, Jin Jung, Jonggeon Lee, Kyoungwan                 Rui Guo, Xin Wang, Qiang Wang, Amelie Chi Zhou, and Xiaowen Chu. 2024.
+     Woo, Nayeon Kim, Younghyun Lee, Hyungyo Kim, Yongsuk Kwon, Jinhyun Kim,                  BurstGPT: A Real-world Workload Dataset to Optimize LLM Serving Systems.
+     Jieun Lee, YeonGon Cho, Yongmin Tai, Jeonghyeon Cho, Hoyoung Song, Jung Ho               arXiv:2401.17644 [cs.DC] https://arxiv.org/abs/2401.17644
+     Ahn, and Nam Sung Kim. 2024. An LPDDR-based CXL-PNM Platform for TCO-
+     efficient Inference of Transformer-based Large Language Models. In 2024 IEEE
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                       Kim, Hong, et al.
+
+
+[69] Xiuying Wei, Yunchen Zhang, Yuhang Li, Xiangguo Zhang, Ruihao Gong, Jinyang         [79] A. Zadeh, I. Edo, O. Awad, and A. Moshovos. 2020. GOBO: Quantizing Attention-
+     Guo, and Xianglong Liu. 2023. Outlier suppression+: Accurate quantization of             Based NLP Models for Low Latency and Energy Efficient Inference. In 2020
+     large language models by equivalent and optimal shifting and scaling. arXiv              53rd Annual IEEE/ACM International Symposium on Microarchitecture (MICRO).
+     preprint arXiv:2304.09145 (2023).                                                        811–824. doi:10.1109/MICRO50266.2020.00071
+[70] Xiuying Wei, Yunchen Zhang, Xiangguo Zhang, Ruihao Gong, Shanghang Zhang,           [80] Ali Hadi Zadeh, Mostafa Mahmoud, Ameer Abdelhadi, and Andreas Moshovos.
+     Qi Zhang, Fengwei Yu, and Xianglong Liu. 2022. Outlier suppression: Pushing              2022. Mokey: Enabling narrow fixed-point inference for out-of-the-box floating-
+     the limit of low-bit transformer language models. Advances in Neural Information         point transformer models. In Proceedings of the 49th Annual International Sympo-
+     Processing Systems 35 (2022), 17402–17414.                                               sium on Computer Architecture. 888–901.
+[71] Guangxuan Xiao, Ji Lin, Mickael Seznec, Hao Wu, Julien Demouth, and Song            [81] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. 2019.
+     Han. 2023. Smoothquant: Accurate and efficient post-training quantization for            HellaSwag: Can a Machine Really Finish Your Sentence? arXiv preprint
+     large language models. In International Conference on Machine Learning. PMLR,            arXiv:1905.07830 (2019).
+     38087–38099.                                                                        [82] Shulin Zeng, Jun Liu, Guohao Dai, Xinhao Yang, Tianyu Fu, Hongyi Wang,
+[72] Xinfeng Xie, Zheng Liang, Peng Gu, Abanti Basak, Lei Deng, Ling Liang, Xing Hu,          Wenheng Ma, Hanbo Sun, Shiyao Li, Zixiao Huang, Yadong Dai, Jintao Li, Zehao
+     and Yuan Xie. 2021. SpaceA: Sparse Matrix Vector Multiplication on Processing-in-        Wang, Ruoyu Zhang, Kairui Wen, Xuefei Ning, and Yu Wang. 2024. FlightLLM:
+     Memory Accelerator. In 2021 IEEE International Symposium on High-Performance             Efficient Large Language Model Inference with a Complete Mapping Flow on
+     Computer Architecture (HPCA). 570–583. doi:10.1109/HPCA51647.2021.00055                  FPGA. arXiv preprint arXiv:2401.03868 (2024).
+[73] Yuhui Xu, Lingxi Xie, Xiaotao Gu, Xin Chen, Heng Chang, Hengheng Zhang,             [83] Hengrui Zhang, August Ning, Rohan Baskar Prabhakar, and David Wentzlaff.
+     Zhengsu Chen, Xiaopeng Zhang, and Qi Tian. 2023. QA-LoRA: Quantization-                  2024. LLMCompass: Enabling Efficient Hardware Design for Large Language
+     Aware Low-Rank Adaptation of Large Language Models. arXiv preprint                       Model Inference. In Proceedings of the 51st Annual International Symposium on
+     arXiv:2309.14717 (2023).                                                                 Computer Architecture.
+[74] Jianxun Yang, Fengbin Tu, Yixuan Li, Yiqi Wang, Leibo Liu, Shaojun Wei, and         [84] Susan Zhang, Stephen Roller, Naman Goyal, Mikel Artetxe, Moya Chen, Shuohui
+     Shouyi Yin. 2022. GQNA: Generic Quantized DNN Accelerator With Weight-                   Chen, Christopher Dewan, Mona Diab, Xian Li, Xi Victoria Lin, Todor Mihaylov,
+     Repetition-Aware Activation Aggregating. IEEE Transactions on Circuits and               Myle Ott, Sam Shleifer, Kurt Shuster, Daniel Simig, Punit Singh Koura, Anjali
+     Systems I: Regular Papers (2022).                                                        Sridhar, Tianlu Wang, and Luke Zettlemoyer. 2022. OPT: Open Pre-trained
+[75] Zhewei Yao, Reza Yazdani Aminabadi, Minjia Zhang, Xiaoxia Wu, Conglong                   Transformer Language Models. arXiv preprint arXiv:2205.01068 (2022).
+     Li, and Yuxiong He. 2022. ZeroQuant: Efficient and Affordable Post-Training         [85] Zhekai Zhang, Hanrui Wang, Song Han, and William J. Dally. 2020. SpArch:
+     Quantization for Large-Scale Transformers. In Advances in Neural Information             Efficient Architecture for Sparse Matrix Multiplication. In 2020 IEEE International
+     Processing Systems.                                                                      Symposium on High Performance Computer Architecture (HPCA). 261–274. doi:10.
+[76] Yiran Ding and Li Lyna Zhang and Chengruidong Zhang and Yuanyuan Xu                      1109/HPCA47549.2020.00030
+     and Ning Shang and Jiahang Xu and Fan Yang and Mao Yang. 2024. LongRoPE:            [86] Yilong Zhao, Chien-Yu Lin, Kan Zhu, Zihao Ye, Lequn Chen, Size Zheng, Luis
+     Extending LLM Context Window Beyond 2 Million Tokens. In ICML.                           Ceze, Arvind Krishnamurthy, Tianqi Chen, and Baris Kasikci. 2024. Atom:
+[77] Gyeong-In Yu, Joo Seong Jeong, Geon-Woo Kim, Soojeong Kim, and Byung-                    Low-bit Quantization for Efficient and Accurate LLM Serving. arXiv preprint
+     Gon Chun. 2022. Orca: A distributed serving system for { Transformer-Based }             arXiv:2310.19102 (2024).
+     generative models. In 16th USENIX Symposium on Operating Systems Design and         [87] Youpeng Zhao, Di Wu, and Jun Wang. 2024. ALISA: Accelerating Large Language
+     Implementation (OSDI 22). 521–538.                                                       Model Inference via Sparsity-Aware KV Caching. arXiv preprint arXiv:2403.17312
+[78] Zhihang Yuan, Lin Niu, Jiawei Liu, Wenyu Liu, Xinggang Wang, Yuzhang Shang,              (2024).
+     Guangyu Sun, Qiang Wu, Jiaxiang Wu, and Bingzhe Wu. 2023. Rptq: Reorder-            [88] Minxuan Zhou, Weihong Xu, Jaeyoung Kang, and Tajana Rosing. 2022. TransPIM:
+     based post-training quantization for large language models. arXiv preprint               A Memory-based Acceleration via Software-Hardware Co-Design for Trans-
+     arXiv:2304.01089 (2023).                                                                 former. In 2022 IEEE International Symposium on High-Performance Computer
+                                                                                              Architecture (HPCA). 1071–1085. doi:10.1109/HPCA53966.2022.00082
+

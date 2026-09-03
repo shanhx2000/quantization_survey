@@ -1,0 +1,82 @@
+                     α1 α2 α3 ... αn                                                                               LUT Generation Unit
+                                                    α1 • A     α2 • A   - α3 • A         - αn • A
+                     1   1   0       0             +α1 • B   +α2 • B    - α3 • B         - αn • B
+                                                                                   ...                              Scaling Stage
+   A   B C D         1   1   0 ... 0         =     +α1 • C   - α2 • C   +α3 • C          - αn • C
+                     1   0   1     0               +α1 • D   +α2 • D    +α3 • D          +αn • D                                   A           B         C        D
+                                                                                                                                 αA          αB        αC       αD
+                     1   1   1     1
+                                             (a)
+
+                α1       1   1   0       0          α1 • A     α1 • A   - α1 • A         - α1 • A
+                α2       1   1   0 ... 0           +α2 • B   +α2 • B    - α2 • B         - α2 • B
+  A    B C D                                 =                                     ...                                               Add/Sub             Add/Sub
+                α3       1   0   1     0           +α3 • C   - α3 • C   +α3 • C          - α3 • C
+                α4       1   1   1     1           +α4 • D   +α4 • D    +α4 • D          +α4 • D
+
+                                             (b)                                                                      Add/Sub         Add/Sub          Add/Sub        Add/Sub
+                                                                                                                                                                                      +
+Fig. 7: Comparison of column-wise vs. row-wise scaling                                                               LUT     LUT     LUT      LUT
+factor. (a) Column-wise scaling factor. (b) Row-wise scaling                                                         [000]   [001]   [010]    [011]
+                                                                                                                                                      LUT     LUT     LUT     LUT
+factor.                                                                                                             Table Generation Stage            [100]   [101]   [110]   [111]
+
+
+
+                                                                                                                Fig. 8: Scale-aware LUT Generation Unit (LGU) of Omni-
+Token-Scale Estimator (TSE). The TSE computes the per-                                                          LUT.
+token scaling factors that are used to quantize Value activations
+with binary-coding uniform quantization (BC-UQ). Its core
+component is a pipelined reduction tree that processes all                                                      Runtime implication. In our implementation, the BQU width
+elements of an incoming value token in parallel to find                                                         is 128, which matches the maximum head dimension in
+the minimum (xmin ) and maximum (xmax ) values. From                                                            the evaluated models, including OPT [79], LLaMA2 [64],
+these extrema, the TSE calculates two uniform quantization                                                      LLaMA3 [25], Mistral [32], Mixtral [33], and Qwen3 [71].
+parameters—a zero-point (zpv ) and a step size (δv ):                                                           Therefore, one Key or Value head vector can be quantized
+                     xmax + xmin        xmax − xmin                                                             without splitting it into multiple passes. In other words, the
+          zpv =                  , δv =                                                             (6)         online KV quantization does not add extra cycles.
+                          2               2b − 1
+where b is the target bit width for the quantized Value activa-                                                 C. Scale-aware LUT Generation Unit (LGU)
+tion. A key aspect of our method is that the final BCQ scaling                                                     The LGU is a critical component that builds the lookup
+factors, {αi }, are directly derived from this uniform step size.                                               tables used by the PE array. It is responsible for pre-computing
+The TSE yields these factors by multiplying δv with a set of                                                    the scaled partial sums required for our BCQ-based dot
+pre-defined power-of-two base scales (e.g., {4, 2, 1, 0.5} for                                                  product. These generated LUT entries are then streamed to
+q = 4 bits). These token-specific scaling factors {αi } and                                                     the PEs and reused across many lookups. The design of our
+zero point zpv are then forwarded to the BCQ Encoder Array.                                                     LGU is fundamentally motivated by the need to support the
+BCQ Encoder Array (BEA). The BEA converts full-                                                                 accuracy-optimal quantization direction, which prior works do
+precision Key and Value vectors into their quantized binary-                                                    not address.
+coding representation. Given an input vector x, a zero-point                                                    Quantization direction and why it matters. Prior LUT-based
+vector zp, and scaling factors {αi }, the BEA produces a binary                                                 GEMM accelerators [52] utilize a single scale after the lookup,
+matrix B ∈ {−1, +1}q×d such that                                                                                which only supports column-wise scaling of the quantized
+                                             q                                                                  matrix (Fig. 7(a)). However, the accuracy-optimal direction
+                                                                                                                is row-wise (Fig. 7(b)):
+                                             X
+                         x ≈ zp +                  α i ⊙ Bi                                         (7)
+                                             i=1                                                                   • Weights: best with row-wise scaling, as reported by prior
+                                                                                                                      work [73];
+where d is the vector length and Bi is the i-th bit-plane.
+                                                                                                                   • Keys: best with per-channel scaling [46]; when used in
+   The BEA implements a greedy residual algorithm. It first
+                                                                                                                      QK T , this is equivalent to row-wise K;
+initializes the residual r(0) and then iteratively refines it for
+                                                                                                                   • Values: best with per-token scaling; in Attn × V , this is
+each bit-plane i = 1, . . . , q:
+                                                                                                                      again row-wise with respect to V.
+                       r(0) = x − zp,                                                               (8)         Post-lookup scaling cannot provide different scales for the four
+                                                                                                                elements in the group, so it fails to support the desired direc-
+         Bi = sign r(i−1) , r(i) = r(i−1) − Bi · αi ,
+                         
+                                                                                                    (9)
+                                                                                                                tion. To clarify terminology: We use an A × W formulation
+Each step decides whether to add or subtract αi to pull                                                         in this paper. Therefore, our “row-wise” scaling is equivalent
+the residual closer to zero; the remaining is handled by                                                        to what prior work using a W × A formulation might refer to
+subsequent, smaller αi . This greedy algorithm is unified for                                                   as “column-wise” scaling.
+both paths. The distinction lies in the source of its inputs: for                                                  Omni-LUT, therefore, performs scaling inside the LUT
+the Key Path, the per-channel zpk,c and αi,c are fetched from                                                   generator. For each bit-plane, the LGU first multiplies each
+offline-calibrated results; for the Value Path, the token-wise                                                  activation in the 4-element group by its own scaling factor
+zpv and αi are provided by the TSE.                                                                             (row-/channel-/token-specific) using floating-point multipliers.
+
+
+
+
+                                                                                                          327
+

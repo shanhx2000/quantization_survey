@@ -1,0 +1,55 @@
+Fig. 3: Memory bottlenecks across varying sequence lengths.                Fig. 4: Layer-wise singular value distributions of Llama2-7B,
+                                                                           showing rapid decay across rank components.
+projection, caching compressed intermediate states and recon-
+structing keys and values on the fly, and MatryoshkaKV [42]                through low-bit or saliency-aware quantization. GEAR [30]
+uses trainable orthogonal projections for adaptive KV com-                 further complements KV quantization with low-rank correc-
+pression. ReCalKV [32] further improves low-rank KV com-                   tion and sparse outlier compensation to reduce quantization
+pression through head reordering and offline calibration. How-             error. Other methods, such as PALU [31], MatryoshkaKV [42],
+ever, most existing methods exploit quantization and low-rank              and ReCalKV [32], explore low-rank or projection-based KV
+structure either separately or only for a single compression               compression.
+target, leaving their joint use across offline weight compression             Beyond these compression techniques, recent architecture-
+and online KV cache management underexplored.                              level works explore complementary directions, including
+                                                                           entropy-aware cache compression [43], prefill-decode overlap
+                      III. M OTIVATION
+                                                                           scheduling [17], CPU-GPU/CXL-based offloading [18], and
+   The Dual Memory Wall in LLM Inference. LLM infer-                       alternative execution substrates such as in-flash, chiplet-based,
+ence faces a growing memory bandwidth bottleneck as context                and PIM-enabled architectures [44]–[46]. However, they target
+length increases. As illustrated in Figure 3, this bottleneck              specific inference bottlenecks rather than jointly compressing
+arises from two major sources: weight access and KV cache                  weights and KV caches under a unified algorithm-hardware
+access. Weight access incurs a constant cost per generated                 framework.
+token, leading to O(N ) total memory traffic over N decoding                  The Key to Unified Compression: Synergy of SVD
+steps, since model weights are repeatedly fetched from off-                and Low-Bit Quantization. The key to unifying weight and
+chip memory during generation. In contrast, KV cache access                KV compression is to exploit the complementary strengths
+grows with sequence length, resulting in O(N 2 ) total memory              of low-rank approximation and quantization. Low-rank de-
+traffic over the decoding session. At moderate context lengths             composition reveals which rank components carry dominant
+up to 1K tokens, weight access dominates, accounting for over              information, while quantization provides a fine-grained mech-
+70% of total memory latency. However, as context lengths                   anism to compress each component according to its impor-
+extend to tens of thousands of tokens for reasoning and long-              tance. As shown in Figure 4, the singular values of Llama2-
+context applications, KV-cache traffic becomes the primary                 7B [21] decrease sharply across layers as rank increases,
+bottleneck. Addressing this dual memory wall therefore re-                 indicating that the leading rank components capture most of
+quires compressing both weights and KV caches, yet prior                   the representational capacity, while the long tail contributes
+approaches largely treat them separately.                                  much less to model outputs. This motivates a rank-aware
+   Limitations of Isolated Optimization. Existing LLM ac-                  mixed-precision strategy: components associated with larger
+celeration techniques typically optimize either weights or KV              singular values retain higher precision, whereas components
+caches, but not both under a unified compression framework.                associated with smaller singular values can be compressed
+As summarized in Table I, prior weight compression methods                 more aggressively to 1–2 bits. SingularBit applies this rank-
+primarily rely on either quantization or low-rank approxima-               aware mixed-precision principle to both static weights and
+tion. GPTQ [8], AWQ [9], and OmniQuant [25] reduce weight                  intermediate KV representations, and co-designs hardware to
+memory with low-bit representations, whereas SVD-LLM [40]                  execute it efficiently across the inference pipeline.
+and ASVD [39] reduce parameter redundancy through matrix
+decomposition. However, these methods target static weights                                 IV. P ROPOSED A LGORITHM
+and do not address the dynamically growing KV cache during                 A. SingularBit-W for Weight Compression
+decoding.
+                                                                             Unlike prior work based on coarse SVD truncation or
+   KV compression methods have also emerged along several
+                                                                           uniform quantization, SingularBit-W applies rank-aware fine-
+directions. Quantization-based approaches such as KIVI [11],
+                                                                           grained precision allocation to W. By assigning precision
+KVQuant [16], and ZipCache [33] reduce KV cache size
+                                                                           according to the singular-value importance of each rank
+
+
+
+
+                                                                    1004
+

@@ -1,0 +1,122 @@
+                                                                                                                                                  Weight
+                                                                               Weight FIFO
+                 HBM            Index             Exe
+                                                                                                                                                  4
+
+
+
+
+                                                                                                    →
+                                                                                    →
+                                                                          →
+                 Ctrl           Buffer            Ctrl
+                                                                      →   PE → PE → ... → PE                                    4
+                                                                                                                     Input                  ×                             Forwarded
+
+
+
+
+                                                         Input FIFO
+
+                                                                          →
+
+                                                                                    →
+
+
+
+                                                                                                    →
+        HBM2
+                                                                      → PE → PE → ... → PE                                                                                  Input
+                                                                                                                                            +              <<
+
+
+
+
+                                                                                                    → ... →
+                                                                          → ... →
+
+                                                                                    → ... →
+                   Scratchpad
+                                         Multi-Scale                                          ...                               1                                           1-bit
+                  Scratchpad              Systolic                                                                  Rescale
+                    Memory                                                                                                                    0 1                          shifter
+                   Memory
+                                           Array                      → PE → PE → ... → PE                                                    Acc                         Forwarded
+
+
+
+
+                                                                                                    →
+                                                                          →
+                                                                                    →
+                                                                                                                                                                           Rescale
+                                            VPU                                Output Buffer                                           Forwarded Weight
+
+
+                                (a)                                                    (b)                                                        (c)
+Figure 6: (a) Overview of Tender architecture. (b) Multi-Scale Systolic Array with FIFOs attached for skewing data. (c) Each PE is extended
+with a 1-bit shifter and a 1-bit control signal for rescaling. The PE updates an accumulated partial sum depending on the rescale signal.
+
+this can greatly improve the accuracy of our algorithm by                                                                               MAC                                Rescale
+taking the characteristics of each row chunk into account.                                                          W2
+                                                                                              Rescale
+Because matrix multiplication is typically performed in a                                     (1-cycle)                       Input           ×                  Input          ×
+                                                                                                      MAC           W1
+tiled manner (i.e., tile-by-tile), row chunking naturally fits the                                                                            +         <<                      +      <<
+execution model with almost no additional complexity. We use                                                                 Rescale                            Rescale
+                                                                                                                                0             0 1                  1             0 1
+256 as a row chunk size. We also apply per-column weight
+
+                                                                                               A2
+
+                                                                                                     A1
+                                                                                                                    MSA
+                                                                                                                                              Acc                                Acc
+quantization and per-head activation quantization, which also
+incur negligible calibration overhead.                                                                        (a)                                                 (b)
+   When optimizing with row chunking, channel grouping                                        Figure 7: Execution model of the MSA. (a) A 1-cycle bubble is
+is applied to each row chunk, and channel indices, biases,                                    inserted between the decomposed matrices. (b) Activated datapath
+and scale factors are calibrated independently for each chunk                                 inside PE during MAC and Rescale operation.
+offline. This makes the group size and compute ordering differ
+                                                                                              for computation. It also sends control signals to the systolic
+between row chunks. From the hardware perspective, the row
+                                                                                              array to manage its operations. The data is computed in the
+chunk size needs to be larger than the systolic array dimension;
+                                                                                              Multi-Scale Systolic Array (MSA) and Vector Processing Unit
+otherwise, there can be underutilization of the compute unit.
+                                                                                              (VPU). Figures 6(b) and 6(c) show our Multi-Scale Systolic
+This is because the systolic array computes rows and applies
+                                                                                              Array architecture, which follows conventional architectures
+runtime requantization at the granularity of the systolic array
+                                                                                              with minimal extensions of a 1-bit rescale signal and a 1-bit
+dimension. While the on-chip buffer reuse decreases, it has
+                                                                                              shifter inside the processing element (PE).
+a negligible impact on performance with a reasonably large
+chunk size. As mentioned, we choose 256 as a balance point,                                   B. Multi-Scale Systolic Array (MSA)
+where accuracy remains close to the baseline model due to                                        The main matrix multiplication operation occurs in our
+fine-grained row grouping, and it is also sufficiently larger                                 Multi-Scale Systolic Array (MSA). As illustrated in Fig-
+than the systolic array dimension.                                                            ure 6(b), the MSA is a 2-D mesh of PEs with FIFOs attached
+                                                                                              for skewing the inputs and weights. In Tender, we use a single
+               IV. H ARDWARE A RCHITECTURE
+                                                                                              64×64 systolic array with each PE executing a 4-bit MAC
+   We quantize the weights and activations in a Transformer                                   operation per cycle. When the model precision is INT8, 4
+block into INT4/INT8, adopting the systolic array as the                                      PEs are grouped to perform 8-bit multiplication, with each PE
+main computation module. The Tender architecture closely                                      handling either upper or lower 4 bits of inputs and weights.
+follows the conventional systolic design [28], [29] with a                                    Note that we can scale the number of systolic arrays similarly
+simpler hardware configuration for brevity. In this section, we                               to the commercial design.
+address how our proposed channel decomposition and runtime                                       MSA is an output stationary compute module where a par-
+requantization are implemented in hardware with a minimal                                     tial sum is accumulated in each PE, with an extension of the 1-
+extension to the existing design.                                                             bit shifter attached to the accumulator register. Figure 7 shows
+                                                                                              how our MSA works on a series of decomposed matrices
+A. Overview                                                                                   with different scale factors. During the computation of each
+   Figure 6(a) shows an overview of the Tender architecture.                                  decomposed matrix, PEs perform normal MAC operations,
+Memories are HBM2, Scratchpad Memory, Output Buffer,                                          and the accumulated value is stored in the internal 32-bit
+and Index Buffer. The HBM Controller manages data move-                                       register (Acc). When the PEs complete matrix reduction for
+ment between the on-chip buffers and HBM2. The Execution                                      a decomposed matrix (e.g., A1 × W1 ), a 1-cycle bubble is
+Controller sends an address to the Scratchpad Memory to                                       inserted for the input and weight with a rescale signal set
+bring data from the on-chip memory to the systolic array                                      (Figure 7(a)). During the rescale operation, it requantizes the
+
+
+
+                                                                                        7
+
