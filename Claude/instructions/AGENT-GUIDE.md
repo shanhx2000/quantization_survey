@@ -1,13 +1,15 @@
 # AGENT-GUIDE — rules for working in `quantization_survey/`
 
-For every Claude agent (and human) working in this repo. **Read this file and
-`ENVIRONMENT.md` before doing anything.** The conventions are adapted from
+For every Claude agent (and human) working in this repo. **Read this file,
+`ENVIRONMENT.md` and [`WRITING-STYLE.md`](WRITING-STYLE.md) before doing anything.** The conventions are adapted from
 `~/moe_ws/moe_placement/Claude/instructions/AGENT-GUIDE.md`, retuned for a project
 whose only deliverable is **a written survey paper**.
 
 **Language: everything in this folder is written in English** — files, commit
-messages, `ANALYSIS.md` bodies, notes, reports. (The sibling `moe_placement/`
-repo writes prose in Chinese; that convention stops at this folder boundary.)
+messages, `ANALYSIS.md` bodies, notes, reports. Code comments and technical terms are
+English too, and **every abbreviation is defined in the file that uses it**. Full rules
+in [`WRITING-STYLE.md`](WRITING-STYLE.md). (This used to be a local exception; as of
+2026-09-16 the sibling `moe_placement/` and `MobiQuant/` repos follow the same rule.)
 
 ---
 
