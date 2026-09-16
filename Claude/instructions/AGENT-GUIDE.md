@@ -246,3 +246,31 @@ name. **Never raise it on their behalf; that is their call, not the agent's.**
 `ENVIRONMENT.md`. This project is text-only, so in practice: do not write large files
 to `/home`, do not launch massively parallel jobs, do not touch system software.
 Read-only inspection (`df`, `ls`, `nvidia-smi`) is unrestricted.
+
+---
+
+## Shared GPU queue (all repos)
+
+**Before running anything on a GPU, read
+[`~/moe_ws/Claude/QUEUED_TASKS.md`](../../../Claude/QUEUED_TASKS.md).** All four repos in
+this workspace contend for the same 4 GPUs on `hl279-cmp-04`, and more than one agent is
+usually active, so GPUs are handed out by lease rather than by looking at `nvidia-smi`
+and hoping.
+
+```bash
+export MOE_AGENT=<name yourself>
+L=~/moe_ws/Claude/scripts/gpu_lease.sh
+bash $L status                       # who holds what, plus real VRAM
+G=$(bash $L free 12 50) || G=""      # a GPU with >=12 GB free and <=50% util
+bash $L claim $G 120 "$MOE_AGENT: <task>"
+CUDA_VISIBLE_DEVICES=$G <command> &  # long jobs: background + logfile
+bash $L attach $G $!                 # register the real PID
+bash $L release $G                   # always, when done
+```
+
+**If no GPU is free, do not poll and wait — take a task from section 3 of that file.**
+Those are all CPU-only and need no new weights. Add tasks there for your own repo so the
+next blocked agent has something to pick up.
+
+⚠️ The lease table is advisory: agents that skip the tool never appear in it, so
+**trust the VRAM column first**.
