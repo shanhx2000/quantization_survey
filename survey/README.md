@@ -4,7 +4,7 @@ The reading list and **current progress** for the quantization survey.
 One paper per directory under [`papers/`](papers/), each containing a fixed set:
 `extract.py` + `extracted/` (the extracted text, **committed to git**) + `ANALYSIS.md`.
 
-Last updated: **2026-09-03** ｜ Papers filed: **40** — **36 `brief ready`, 4 `pdf missing`**
+Last updated: **2026-09-14** ｜ Papers filed: **40** — **all 40 `note ready`**
 
 Source list: [`Quantization Architecture Survey - ISCA.csv`](Quantization%20Architecture%20Survey%20-%20ISCA.csv)
 (kept verbatim as received; every directory below traces back to one of its rows).
@@ -101,10 +101,10 @@ deleted under this rule, are in
 That rule is why 13 entries started at `pdf missing`: they have **no arXiv version**
 (checked by arXiv API title search on 2026-09-02), and both `dl.acm.org` and
 `ieeexplore.ieee.org` return **403 to scripts even on landing pages** — verified today, not
-assumed. **Nine of those 13 have since been downloaded by a human** and filed through
-[`uploads/`](uploads/); **4 remain queued**.
+assumed. **All 13 have since been downloaded by a human** and filed through
+[`uploads/`](uploads/) — the last four on **2026-09-09**. Nothing is queued.
 
-Of the nine, seven are the **published IEEE version** and carry their own DOI in the PDF
+Of the first nine, seven are the **published IEEE version** and carry their own DOI in the PDF
 text (grepped, which confirms the DOI independently of any third party). **Two —
 [`JPEG-ACT`](papers/JPEG-ACT/) and [`Gist`](papers/Gist/) — are author-hosted copies** with
 no IEEE banner and no DOI in the file; their DOI and page range are second-hand, and the
@@ -122,27 +122,22 @@ script that does it) is in
 
 ## Needs a human download
 
-**4 papers left.** None has an arXiv version. Download over the Duke subscription (campus
-network / VPN), drop the file in [`uploads/`](uploads/), and tell the agent — flow in
-[`uploads/README.md`](uploads/README.md). **Three of the four are ACM Open**, i.e. free to
-anyone with a browser; they need a human only because ACM DL blocks scripts.
+✅ **Nothing queued — the last four cleared 2026-09-09.**
 
-✅ **Cleared 2026-09-02**: `OLAccel`, `Gist`, `IBMCompressionAccelerator`, `JPEG-ACT`, `DRQ`,
-`CommutativeDataReordering`, `SamsungNPU`, `RaPiD`, `SpZip` — all nine downloaded by a human
-and filed.
+Every paper on the source list now has its full text. Should another paper need a
+hand-download, the flow is in [`uploads/README.md`](uploads/README.md): download over the
+Duke subscription, drop the file in [`uploads/`](uploads/), and tell the agent.
 
-| Title | Venue | DOI / record | Target directory | Why we want it |
-|---|---|---|---|---|
-| **Ten Lessons From Three Generations Shaped Google's TPUv4i** | ISCA 2021 | [10.1109/ISCA52012.2021.00010](https://doi.org/10.1109/ISCA52012.2021.00010)<br>[record](https://ieeexplore.ieee.org/document/9499913/) | [`papers/TPUv4i/`](papers/TPUv4i/) | Provide "Energy per Operation"; FP32 to 8-bit |
-| **AQB8: Energy-Efficient Ray Tracing Accelerator through Multi-Level Quantization** | ISCA 2025 | [10.1145/3695053.3731104](https://doi.org/10.1145/3695053.3731104)<br>[record](https://dl.acm.org/doi/10.1145/3695053.3731104) **(ACM Open — free, no subscription needed)** | [`papers/AQB8/`](papers/AQB8/) | on the source list |
-| **Cambricon-SR: An Accelerator for Neural Scene Representation with Sparse Encoding Table** | ISCA 2025 | [10.1145/3695053.3731018](https://doi.org/10.1145/3695053.3731018)<br>[record](https://dl.acm.org/doi/10.1145/3695053.3731018) **(ACM Open — free, no subscription needed)** | [`papers/Cambricon-SR/`](papers/Cambricon-SR/) | on the source list |
-| **FATE: Boosting the Performance of Hyper-Dimensional Computing Intelligence with Flexible Numerical DAta TypE** | ISCA 2025 | [10.1145/3695053.3731031](https://doi.org/10.1145/3695053.3731031)<br>[record](https://dl.acm.org/doi/10.1145/3695053.3731031) **(ACM Open — free, no subscription needed)** | [`papers/FATE/`](papers/FATE/) | on the source list |
+| Cleared | Papers |
+|---|---|
+| 2026-09-02 | `OLAccel` · `Gist` · `IBMCompressionAccelerator` · `JPEG-ACT` · `DRQ` · `CommutativeDataReordering` · `SamsungNPU` · `RaPiD` · `SpZip` |
+| **2026-09-09** | [`TPUv4i`](papers/TPUv4i/) (IEEE) · [`AQB8`](papers/AQB8/) · [`Cambricon-SR`](papers/Cambricon-SR/) · [`FATE`](papers/FATE/) (three ACM) |
 
 ---
 
 ## Status ladder
 
-Use these five, **do not invent new ones**. (Same ladder as
+Use these six, **do not invent new ones**. (Same ladder as
 [`AGENT-GUIDE.md`](../Claude/instructions/AGENT-GUIDE.md) §5.)
 
 | Status | Meaning | Test |
@@ -151,10 +146,25 @@ Use these five, **do not invent new ones**. (Same ladder as
 | `pdf ready` | Full text extracted and greppable, but **nobody has read it** | `extracted/` has content, `ANALYSIS.md` is metadata only |
 | `brief ready` | Above + metadata, verbatim abstract, why it is here, and the questions for a close read | conclusions rest on the abstract alone |
 | `analysis ready` | **Full text read**; method, key numbers **with their frame**, limitations | can answer "under what assumptions does this hold?" |
+| `note ready` | Above + **`paper-note.md` written** — the human's own note, ready to publish to the team repo | `paper-note.md` exists in the directory and §1 and §4 are filled |
 | `thorough ready` | Above + cross-checked against released code / reported data | can point out where paper and implementation disagree |
 
-⚠️ **Every filed entry is at `brief ready` or below.** 35 have briefs and tags; none has had
-its evaluation section read, and the `Key numbers` tables are all still empty.
+`note ready` is the rung that matters for the team repo: it is the one that says a paper is
+**done on this side**. `python3 Claude/scripts/sync_notes.py` publishes exactly the
+`note ready` entries — see [Publishing notes to the team
+repo](#publishing-notes-to-the-team-repo).
+
+It is a rung rather than a separate flag because in practice the order is fixed: the note is a
+compression of a finished `ANALYSIS.md`, so `note ready` always implies `analysis ready`. The
+one case it cannot express is a paper cross-checked against code but not yet written up —
+if that happens, `thorough ready` wins and the note is tracked by the file's presence.
+
+**Where the corpus stands (2026-09-14):** all 40 at `note ready`; **34 published**
+to the team repo, the other six withdrawn as out of scope (`Cambricon-SR`, `SpZip`,
+`IBMCompressionAccelerator`, `CommutativeDataReordering`, `ELSA`, `Phi`) — they stay filed
+here but are `EXCLUDED` in `sync_notes.py`. None at `thorough ready` — no entry has been cross-checked against released code.
+No `Key numbers` table has been filled for a `brief ready` entry, and no entry has reached
+`thorough ready`.
 
 ---
 
@@ -168,43 +178,43 @@ an `arXiv:NNNN.NNNNNvN` entry is **the preprint, not the published ISCA version*
 
 | # | Directory | Venue | Year | Status | Full text | Source-list comment |
 |---|---|---|---|---|---|---|
-| 1 | [`BitFusion/`](papers/BitFusion/) | ISCA | 2018 | **brief ready** | arXiv:1712.01507v2 |  |
+| 1 | [`BitFusion/`](papers/BitFusion/) | ISCA | 2018 | **note ready** | arXiv:1712.01507v2 |  |
 | 2 | [`Gist/`](papers/Gist/) | ISCA | 2018 | **brief ready** | **author copy** (human) | Less related |
-| 3 | [`OLAccel/`](papers/OLAccel/) | ISCA | 2018 | **brief ready** | IEEE PDF (human) |  |
+| 3 | [`OLAccel/`](papers/OLAccel/) | ISCA | 2018 | **note ready** | IEEE PDF (human) |  |
 | 4 | [`CommutativeDataReordering/`](papers/CommutativeDataReordering/) | ISCA | 2020 | **brief ready** | IEEE PDF (human) |  |
-| 5 | [`DRQ/`](papers/DRQ/) | ISCA | 2020 | **brief ready** | IEEE PDF (human) |  |
+| 5 | [`DRQ/`](papers/DRQ/) | ISCA | 2020 | **note ready** | IEEE PDF (human) |  |
 | 6 | [`IBMCompressionAccelerator/`](papers/IBMCompressionAccelerator/) | ISCA | 2020 | **brief ready** | IEEE PDF (human) | Less related |
 | 7 | [`JPEG-ACT/`](papers/JPEG-ACT/) | ISCA | 2020 | **brief ready** | **author copy** (human) | Compress Spatio Info instead of values |
 | 8 | [`SmartExchange/`](papers/SmartExchange/) | ISCA | 2020 | **brief ready** | arXiv:2005.03403v2 |  |
-| 9 | [`RaPiD/`](papers/RaPiD/) | ISCA | 2021 | **brief ready** | IEEE PDF (human) |  |
+| 9 | [`RaPiD/`](papers/RaPiD/) | ISCA | 2021 | **note ready** | IEEE PDF (human) |  |
 | 10 | [`RingCNN/`](papers/RingCNN/) | ISCA | 2021 | **brief ready** | arXiv:2104.09056v1 |  |
-| 11 | [`SamsungNPU/`](papers/SamsungNPU/) | ISCA | 2021 | **brief ready** | IEEE PDF (human) |  |
+| 11 | [`SamsungNPU/`](papers/SamsungNPU/) | ISCA | 2021 | **note ready** | IEEE PDF (human) |  |
 | 12 | [`SpZip/`](papers/SpZip/) | ISCA | 2021 | **brief ready** | IEEE PDF (human) |  |
-| 13 | [`TPUv4i/`](papers/TPUv4i/) | ISCA | 2021 | pdf missing | — |  |
-| 14 | [`Mokey/`](papers/Mokey/) | ISCA | 2022 | **brief ready** | arXiv:2203.12758v1 |  |
-| 15 | [`OliVe/`](papers/OliVe/) | ISCA | 2023 | **brief ready** | arXiv:2304.07493v1 |  |
+| 13 | [`TPUv4i/`](papers/TPUv4i/) | ISCA | 2021 | **brief ready** | IEEE PDF (human) | Provide "Energy per Operation"; FP32 to 8-bit |
+| 14 | [`Mokey/`](papers/Mokey/) | ISCA | 2022 | **note ready** | arXiv:2203.12758v1 |  |
+| 15 | [`OliVe/`](papers/OliVe/) | ISCA | 2023 | **note ready** | arXiv:2304.07493v1 |  |
 | 16 | [`RAELLA/`](papers/RAELLA/) | ISCA | 2023 | **brief ready** | arXiv:2304.07935v1 |  |
-| 17 | [`Tender/`](papers/Tender/) | ISCA | 2024 | **brief ready** | arXiv:2406.12930v1 |  |
-| 18 | [`AQB8/`](papers/AQB8/) | ISCA | 2025 | pdf missing | — | CSV link is a GitHub repo, not a paper |
-| 19 | [`Cambricon-SR/`](papers/Cambricon-SR/) | ISCA | 2025 | pdf missing | — |  |
-| 20 | [`Ecco/`](papers/Ecco/) | ISCA | 2025 | **brief ready** | arXiv:2505.06901v1 |  |
-| 21 | [`FATE/`](papers/FATE/) | ISCA | 2025 | pdf missing | — |  |
-| 22 | [`LightNobel/`](papers/LightNobel/) | ISCA | 2025 | **brief ready** | arXiv:2505.05893v1 |  |
-| 23 | [`LUTTensorCore/`](papers/LUTTensorCore/) | ISCA | 2025 | **brief ready** | arXiv:2408.06003v3 |  |
-| 24 | [`MicroScopiQ/`](papers/MicroScopiQ/) | ISCA | 2025 | **brief ready** | arXiv:2411.05282v4 |  |
-| 25 | [`Oaken/`](papers/Oaken/) | ISCA | 2025 | **brief ready** | arXiv:2503.18599v2 |  |
-| 26 | [`Phi/`](papers/Phi/) | ISCA | 2025 | **brief ready** | arXiv:2505.10909v1 |  |
-| 26b | [`TransitiveArray/`](papers/TransitiveArray/) | ISCA | 2025 | **brief ready** | arXiv:2504.16339v1 | ⭐ from the team repo's ISCA list, not the source CSV |
+| 17 | [`Tender/`](papers/Tender/) | ISCA | 2024 | **note ready** | arXiv:2406.12930v1 |  |
+| 18 | [`AQB8/`](papers/AQB8/) | ISCA | 2025 | **brief ready** | ACM PDF (human) | CSV link is a GitHub repo, not a paper |
+| 19 | [`Cambricon-SR/`](papers/Cambricon-SR/) | ISCA | 2025 | **brief ready** | ACM PDF (human) | ⚠ full text has **no quantization at all** |
+| 20 | [`Ecco/`](papers/Ecco/) | ISCA | 2025 | **note ready** | arXiv:2505.06901v1 |  |
+| 21 | [`FATE/`](papers/FATE/) | ISCA | 2025 | **brief ready** | ACM PDF (human) | FPGA; its "LUT" is an FPGA resource, not LUT-GEMM |
+| 22 | [`LightNobel/`](papers/LightNobel/) | ISCA | 2025 | **note ready** | arXiv:2505.05893v1 |  |
+| 23 | [`LUTTensorCore/`](papers/LUTTensorCore/) | ISCA | 2025 | **note ready** | arXiv:2408.06003v3 |  |
+| 24 | [`MicroScopiQ/`](papers/MicroScopiQ/) | ISCA | 2025 | **note ready** | arXiv:2411.05282v4 |  |
+| 25 | [`Oaken/`](papers/Oaken/) | ISCA | 2025 | **note ready** | arXiv:2503.18599v2 |  |
+| 26 | [`Phi/`](papers/Phi/) | ISCA | 2025 | **note ready** | arXiv:2505.10909v1 |  |
+| 26b | [`TransitiveArray/`](papers/TransitiveArray/) | ISCA | 2025 | **note ready** | arXiv:2504.16339v1 | ⭐ from the team repo's ISCA list, not the source CSV |
 | 27 | [`AQuant/`](papers/AQuant/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
 | 28 | [`ELSA/`](papers/ELSA/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
 | 29 | [`ENEC/`](papers/ENEC/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
-| 30 | [`EVA/`](papers/EVA/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
+| 30 | [`EVA/`](papers/EVA/) | ISCA | 2026 | **note ready** | proceedings PDF |  |
 | 31 | [`LoKA/`](papers/LoKA/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
 | 32 | [`MXFFP/`](papers/MXFFP/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
-| 33 | [`NDPLowBitFP/`](papers/NDPLowBitFP/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
-| 34 | [`OASIS/`](papers/OASIS/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
-| 35 | [`Omni-LUT/`](papers/Omni-LUT/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
-| 36 | [`P3-LLM/`](papers/P3-LLM/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
+| 33 | [`NDPLowBitFP/`](papers/NDPLowBitFP/) | ISCA | 2026 | **note ready** | proceedings PDF |  |
+| 34 | [`OASIS/`](papers/OASIS/) | ISCA | 2026 | **note ready** | proceedings PDF |  |
+| 35 | [`Omni-LUT/`](papers/Omni-LUT/) | ISCA | 2026 | **note ready** | proceedings PDF |  |
+| 36 | [`P3-LLM/`](papers/P3-LLM/) | ISCA | 2026 | **note ready** | proceedings PDF |  |
 | 37 | [`SingularBit/`](papers/SingularBit/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
 | 38 | [`UniCore/`](papers/UniCore/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
 | 39 | [`XtraMAC/`](papers/XtraMAC/) | ISCA | 2026 | **brief ready** | proceedings PDF |  |
@@ -219,8 +229,14 @@ independently verified**.
 
 ## Provisional placement in the taxonomy
 
-⚠️ **Assigned from titles and abstracts only — nothing here has been read.** Every cell is a
-guess to be confirmed or overturned on the close read. It is here to make the corpus
+⚠️ **Assigned from titles and abstracts only** — with the exception of cells corrected
+against a full text, which are marked. Every unmarked cell is a guess to be confirmed or
+overturned on the close read.
+
+**Corrected 2026-09-09 from the newly filed full texts:** `AQB8` moved 1.1 → 1.2 (it designs
+a custom FP14 and an anchor-plus-INT8-offset representation); `FATE` moved 1.2 → 1.1 (it
+assigns *existing* types per dimension rather than designing one); both gained a 2.2 cell;
+`Cambricon-SR` confirmed to contain no quantization. It is here to make the corpus
 navigable in the [scope taxonomy](#scope)'s own terms, **not** as a proposed section
 structure, and **not** as evidence for anything.
 
@@ -228,17 +244,17 @@ structure, and **not** as evidence for anything.
 
 | Box | Filed papers (provisional) |
 |---|---|
-| **1.1 Traditional** — uses Int/FP, novelty is elsewhere | [`BitFusion`](papers/BitFusion/) · [`OLAccel`](papers/OLAccel/) · [`DRQ`](papers/DRQ/) · [`SamsungNPU`](papers/SamsungNPU/) · [`RaPiD`](papers/RaPiD/) · [`TPUv4i`](papers/TPUv4i/) · [`Tender`](papers/Tender/) · [`XtraMAC`](papers/XtraMAC/) · [`UniCore`](papers/UniCore/) · [`LoKA`](papers/LoKA/) · [`LightNobel`](papers/LightNobel/) · [`AQB8`](papers/AQB8/) · [`AQuant`](papers/AQuant/) |
-| **1.2 New data type** — the format *is* the contribution | [`MXFFP`](papers/MXFFP/) · [`MicroScopiQ`](papers/MicroScopiQ/) · [`FATE`](papers/FATE/) · [`P3-LLM`](papers/P3-LLM/) · [`NDPLowBitFP`](papers/NDPLowBitFP/) · [`OliVe`](papers/OliVe/) · [`RingCNN`](papers/RingCNN/) · [`RAELLA`](papers/RAELLA/) |
+| **1.1 Traditional** — uses Int/FP, novelty is elsewhere | [`BitFusion`](papers/BitFusion/) · [`OLAccel`](papers/OLAccel/) · [`DRQ`](papers/DRQ/) · [`SamsungNPU`](papers/SamsungNPU/) · [`RaPiD`](papers/RaPiD/) · [`TPUv4i`](papers/TPUv4i/) · [`Tender`](papers/Tender/) · [`XtraMAC`](papers/XtraMAC/) · [`UniCore`](papers/UniCore/) · [`LoKA`](papers/LoKA/) · [`LightNobel`](papers/LightNobel/) · [`FATE`](papers/FATE/) · [`AQuant`](papers/AQuant/) |
+| **1.2 New data type** — the format *is* the contribution | [`MXFFP`](papers/MXFFP/) · [`MicroScopiQ`](papers/MicroScopiQ/) · [`AQB8`](papers/AQB8/) · [`P3-LLM`](papers/P3-LLM/) · [`NDPLowBitFP`](papers/NDPLowBitFP/) · [`OliVe`](papers/OliVe/) · [`RingCNN`](papers/RingCNN/) · [`RAELLA`](papers/RAELLA/) |
 | **1.3 Lookup table** — mapping, not encoding | [`LUTTensorCore`](papers/LUTTensorCore/) · [`OASIS`](papers/OASIS/) · [`Omni-LUT`](papers/Omni-LUT/) · [`EVA`](papers/EVA/) · [`Mokey`](papers/Mokey/) |
-| **unplaced** — no clear data-type claim | [`SmartExchange`](papers/SmartExchange/) · [`SingularBit`](papers/SingularBit/) · [`Phi`](papers/Phi/) · [`ELSA`](papers/ELSA/) · [`Cambricon-SR`](papers/Cambricon-SR/) |
+| **unplaced** — no clear data-type claim | [`SmartExchange`](papers/SmartExchange/) · [`SingularBit`](papers/SingularBit/) · [`Phi`](papers/Phi/) · [`ELSA`](papers/ELSA/) · [`Cambricon-SR`](papers/Cambricon-SR/) **(read: no quantization at all)** |
 
 ### 2. Quantization architecture
 
 | Box | Filed papers (provisional) |
 |---|---|
 | **2.1 Tensor-wise** — one precision per tensor/layer/op | [`BitFusion`](papers/BitFusion/) · [`SamsungNPU`](papers/SamsungNPU/) · [`RaPiD`](papers/RaPiD/) · [`UniCore`](papers/UniCore/) · [`XtraMAC`](papers/XtraMAC/) · [`LoKA`](papers/LoKA/) · [`TPUv4i`](papers/TPUv4i/) |
-| **2.2 Fine-grained** — channel / block / element-wise | [`DRQ`](papers/DRQ/) (region) · [`MXFFP`](papers/MXFFP/) · [`MicroScopiQ`](papers/MicroScopiQ/) (block/microscaling) · [`Tender`](papers/Tender/) · [`AQuant`](papers/AQuant/) · [`LightNobel`](papers/LightNobel/) · [`SingularBit`](papers/SingularBit/) |
+| **2.2 Fine-grained** — channel / block / element-wise | [`DRQ`](papers/DRQ/) (region) · [`MXFFP`](papers/MXFFP/) · [`MicroScopiQ`](papers/MicroScopiQ/) (block/microscaling) · [`Tender`](papers/Tender/) · [`AQuant`](papers/AQuant/) · [`LightNobel`](papers/LightNobel/) · [`SingularBit`](papers/SingularBit/) · [`FATE`](papers/FATE/) (per-dimension) · [`AQB8`](papers/AQB8/) (per-cluster) |
 | **2.2b Outlier compression** — sparse outliers only | [`OLAccel`](papers/OLAccel/) · [`OliVe`](papers/OliVe/) · [`MicroScopiQ`](papers/MicroScopiQ/) · [`OASIS`](papers/OASIS/) |
 
 ### Papers the taxonomy has no box for
@@ -289,6 +305,35 @@ in [`uploads/`](uploads/). Do not delete that archive without a replacement.
 bash Claude/scripts/check_survey.sh   # declared status vs. what is actually on disk
 ```
 
+## Publishing notes to the team repo
+
+`papers/<Name>/paper-note.md` is **the human's own writing** and is the only thing that ever
+goes into the shared [`QuantArchSurvey`](../QuantArchSurvey/) repo. Publish with:
+
+```bash
+python3 Claude/scripts/sync_notes.py --dry-run   # preview
+python3 Claude/scripts/sync_notes.py             # write
+```
+
+It publishes **only entries at `note ready`** — a drafted `paper-note.md` sitting at
+`analysis ready` is held back and reported, because the status is the human's statement that
+the note goes out under their name. It copies each note verbatim to
+`QuantArchSurvey/venues/ISCA/notes/<short-name>.md`, minus two publish-time removals:
+
+1. **`## 6. Claude notes`** and everything after it — the reading agent's suggestions, which
+   say so in their own first line.
+2. Inside **`## 5. Comment`**, blocks labelled `**Unadmitted.**` or `**Pair with …**`
+   (instruction of 2026-09-03). That material belongs in `ANALYSIS.md`.
+
+The script is idempotent, reports every change, and warns about a file in `notes/` with no
+source here. It writes nowhere else in that repo. **Everything else in `QuantArchSurvey/` is
+edited by hand and only with the owner's permission** — the script exists precisely so that
+publishing cannot quietly become "the agent wrote in the shared repo".
+
+| Published | Awaiting a `paper-note.md` |
+|---|---|
+| **34** published · 6 excluded as out of scope | 0 |
+
 ---
 
 ## Known gaps
@@ -302,8 +347,9 @@ bash Claude/scripts/check_survey.sh   # declared status vs. what is actually on 
   required by the scope**; which ones, and how far back, is the human's call.
 - **Seven filed papers have no box** (compression / data movement) and two more are SNN
   work — see [the end of the taxonomy placement section](#papers-the-taxonomy-has-no-box-for).
-- **4 papers still have no full text**: `TPUv4i`, `AQB8`, `Cambricon-SR`, `FATE`. Three are
-  ACM Open — free in a browser, blocked only to scripts.
+- ~~**4 papers still have no full text**~~ — **closed 2026-09-09**: `TPUv4i`, `AQB8`,
+  `Cambricon-SR` and `FATE` were hand-downloaded and filed. All 40 entries are now
+  `brief ready`.
 - **Version fidelity is unchecked across the board.** 13 entries are arXiv preprints (several
   say "to appear", so camera-ready-or-earlier), and 2 are author-hosted copies with no DOI in
   the file. **No entry has been compared against its published version.**

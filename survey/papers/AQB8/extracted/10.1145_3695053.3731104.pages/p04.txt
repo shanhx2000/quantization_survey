@@ -1,0 +1,83 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                         Yen-Chieh Huang, Chen-Pin Yang, and Tsung Tai Yeh
+
+
+      traversal path of FP32 BBs
+      traversal path of reduced-precision BBs                cluster of objects
+      the node associated with the blue BB in (a)
+                                                         global origin
+                         ray
+                                          A
+        FP32
+         BB          ×                B         C
+                              D
+                                                        empty space
+      reduced-                            D         E
+      precision    ×
+                   ×B     C
+                                  E
+         BB       ×A
+                         (a)              (b)                 (c)                                                                   (c)
+
+
+Figure 6: (a) Illustration of quantization error in BBs. (b) In-
+creased traversal steps due to quantization error. (c) Sparsity
+of a scene.                                                                                 (b)                                     (a)                   (d)
+
+
+                                                                                        Figure 7: Visualization of multi-level quantization. (a)
+   Figure 5 illustrates the breakdown of both L1D cache accesses                        Overview of the 3D scene. (b) Quantized BBs (green) shown
+and DRAM accesses for triangles, BBs, and other data (such as child                     within a large anchor BB (red), forming a coarse-level clus-
+indices and metadata) across various scenes, based on statistics                        ter. (c) A smaller anchor BB (red) establishing a finer-detail
+collected using Vulkan-Sim [56]. As shown, BB data constitutes the                      cluster. (d) An even smaller anchor BB (red) establishing a
+largest portion of memory traffic. It accounts for an average of 69%                    very fine-detail cluster.
+of L1D cache accesses, primarily because each ray typically inter-
+sects multiple BBs while traversing the BVH tree before reaching a
+leaf node. For DRAM accesses, BB data remains dominant, repre-                             We observe that typical computer graphics scenes exhibit spar-
+senting 74% of the total traffic. This breakdown clearly indicates                      sity, often containing large volumes of empty space interspersed
+that BBs are the primary contributor to the memory traffic of RT.                       with localized clusters of objects (Figure 6(c)). Standard world-space
+                                                                                        coordinates, defined relative to a single global origin, do not inher-
+3    Multi-Level Quantization                                                           ently exploit this characteristic. However, representing geometry
+                                                                                        relative to local reference points within these clusters offers a path
+As established in Section 2.3, bounding boxes (BBs) represented in
+                                                                                        to efficiency.
+the standard FP32 format are a primary source of memory traffic
+                                                                                           Motivated by this observation, we propose multi-level quantiza-
+in RT. Furthermore, conventional ray-box intersection tests rely
+                                                                                        tion. This technique restructures the BVH tree to enable compact
+on complex and energy-intensive FP32 arithmetic units. Reducing
+                                                                                        BB representation while strategically mitigating quantization er-
+the bitwidth of BBs appears promising for alleviating both memory
+                                                                                        rors. As illustrated in Figure 7, multi-level quantization organizes
+and computational costs.
+                                                                                        BVH nodes into clusters, each comprising:
+   However, naive precision reduction introduces significant chal-
+lenges. Simply using lower precision formats like FP16 for both                          • An anchor BB (shown in red): Defined using high-precision
+storage and computation leads to unacceptable performance degra-                           (FP32) world-space coordinates, establishing an accurate local
+dation. As demonstrated in Figure 1, this approach introduces se-                          reference frame for the cluster.
+vere quantization errors—inaccuracies stemming from the limited                          • Several quantized BBs (shown in green): Defined using compact,
+precision. When quantizing FP32 BBs to a lower precision format                            low-bit integer formats (e.g., INT8) within the local coordinate
+like FP16, the necessary rounding or truncation must be performed                          system defined by the anchor BB.
+carefully. Crucially, to ensure rendering correctness, the resulting                       During BVH traversal, when a ray enters a cluster (i.e., intersects
+quantized BB must fully enclose the original FP32 BB. If the quan-                      the FP32 anchor BB), subsequent ray-box tests against the quantized
+tized BB were smaller, a ray might intersect the original BB but miss                   BBs within that cluster operate directly on their low-bit integer
+the quantized one, leading to incorrect rendering. Therefore, the                       representations within the anchor’s local coordinate frame. This
+conversion process often slightly shifts the minimum and maximum                        avoids decompression and eliminates the need for complex FP32
+bounds outwards. This conservative enclosing effectively alters the                     arithmetic for a significant portion of the traversal process.
+BB’s size and position (illustrated in Figure 6(a)). While guarantee-                      Furthermore, the “multi-level” aspect strategically reduces quan-
+ing correctness, this potential expansion leads to numerous false                       tization error. Anchor BBs are used throughout the BVH tree across
+positive intersections (rays incorrectly reported as intersecting the                   multiple levels (Figure 7). Larger anchors represent coarse scene
+reduced-precision BB when they would miss the original FP32 BB).                        structures (Figure 7(b)), while progressively smaller anchors han-
+Such false positives increase unnecessary BVH traversal steps (Fig-                     dle finer-scale features (Figure 7(c)(d)), ensuring that the low-bit
+ure 6(b)), ultimately hindering performance. Moreover, existing BB                      quantized BB coordinates, representing offsets within these pro-
+compression techniques [7, 23, 32, 37, 69, 77] also fall short, often                   gressively smaller anchor BBs, maintain sufficient precision even
+requiring decompression back to FP32 for ray-box intersection tests,                    for detailed geometry. This hierarchical structure allows the quan-
+thus failing to eliminate the reliance on complex FP32 arithmetic                       tization to adapt to varying scene scales and densities, preserving
+during BVH traversal. Therefore, a solution is needed that not only                     accuracy where needed while maximizing the benefits of low-bit
+compresses BB but also leverages simpler low-bit arithmetic to truly                    integer operations in localized regions. By enabling direct low-bit
+harness efficiency benefits without prohibitive overheads.                              integer traversal within these localized, relatively encoded BBs,
+
+
+
+
+                                                                                  377
+

@@ -14,6 +14,7 @@ Fixed contents:
 | `<stem>.html` | a web resource's raw snapshot — the only way back to the original | **yes** |
 | `extracted/` | the extracted text, greppable without downloading the PDF | yes |
 | `ANALYSIS.md` | the actual reading notes; header carries venue, DOI, status and how far it was read | yes |
+| `paper-note.md` | **the human's own note**, in the team repo's template. Written after the close read, and the only file published to `QuantArchSurvey/venues/ISCA/notes/` — see [`../README.md`](../README.md#publishing-notes-to-the-team-repo) | yes |
 
 Create one with:
 

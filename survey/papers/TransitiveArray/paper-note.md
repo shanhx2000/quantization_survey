@@ -59,3 +59,17 @@ Tile size exploration to decide what's a number of vector length (log2(Tiling Ro
 ## 5. Comment
 
 .
+## 6. Claude notes
+
+*Suggestions from the reading agent. **Strip this section before copying into
+`QuantArchSurvey/venues/ISCA/notes/`.***
+
+- **§5 is empty.** The two items I'd put there: the **eager/lazy** contrast with
+  `LUTTensorCore` (it precomputes the whole table; this builds only the entries that occur),
+  and **why G3** — codebook + weight-only threads both, though the paper never uses the word
+  "lookup" or "codebook" in 15 pages.
+- **§4 — two frames worth naming.** Every LLaMA number is **one Transformer block at prefill
+  2048**; decode is never evaluated. And only TransArray and ANT got group-wise quantization,
+  so 7.46× over OliVe is architecture *plus* algorithm.
+- **Best citation for**: that a lookup table need not be built up front — it can be
+  constructed by the GEMM itself, one addition per entry, in popcount order.

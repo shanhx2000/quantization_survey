@@ -1,0 +1,223 @@
+AQB8: Energy-Efficient Ray Tracing Accelerator through Multi-Level Quantization                                                                            ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                                                                                                                          Warp Scheduler                     Warp Buffer
+                                                                                                                                      Tensor Accelerator                          Buffer
+                                                                                                           SM       SM     SM
+                                                                                                                                          RT Accelerator
+                                                                                                                                                                      TRV        TRV         TRV
+                                                                                                               Interconnect            FP      DP         SFU         Unit       Unit        Unit
+                                                                                                                                      Unit     Unit       Unit
+                                                                                                                L2 Cache                                                          Buffer
+                                                                                                                                             Registers
+                                                                                                                  DRAM                                                BOX        BOX         BOX
+                                                                                                                                           Interconnect               Unit       Unit        Unit
+                                                                                                                                      Texture     Constant
+                                                                                                                                       Cache       Cache                  TRIG              TRIG
+                                                                                                                                                                          Unit              Unit
+                                                                                                                                           L1D Cache /
+                                                                                                                                          Shared Memory                          L0 Cache
+Figure 3: (a) Ray-box and (b) ray-triangle intersection test.
+
+                                                                                                         Figure 4: GPU RT accelerator architecture [56].
+2.1.3 Ray-Box Intersection Test. The ray-box intersection test is a
+fundamental step while traversing BVH trees, where RT checks if a
+ray intersects the BB associated with a node. This test determines
+                                                                                         units, and ray-triangle intersection (TRIG) units [11], along with a
+whether to traverse deeper into the node’s children or skip the
+                                                                                         small on-chip L0 cache that stores frequently accessed BVH tree
+node entirely. As shown in Figure 3(a), a BB is defined by two
+                                                                                         nodes and triangles. The TRV unit handles the BVH traversal logic,
+corner points: (𝑥𝑚𝑖𝑛 , 𝑦𝑚𝑖𝑛 , 𝑧𝑚𝑖𝑛 ) and (𝑥𝑚𝑎𝑥 , 𝑦𝑚𝑎𝑥 , 𝑧𝑚𝑎𝑥 ). A ray is
+                                                                                         maintaining stack memory to store ray-intersected nodes that have
+represented parametrically as:
+                                                                                         yet to be visited. The BOX unit performs ray-box intersection tests
+                               p(𝑡) = o + 𝑡 d,                                           to check whether a ray intersects a BB. The TRIG unit performs
+where o = (𝑜 𝑥 , 𝑜 𝑦 , 𝑜𝑧 )𝑇 is the ray’s origin, d = (𝑑𝑥 , 𝑑 𝑦 , 𝑑𝑧 )𝑇 is its           ray-triangle intersection tests for triangles located in the leaf nodes,
+direction, and 𝑡 is a scalar parameter that specifies the distance                       calculating exact intersection points for graphic rendering.
+along the ray. For any 𝑡, p(𝑡) yields the coordinates of the corre-                         Programmers can use the Vulkan ray tracing API [67], which
+sponding point along the ray. To find the parameter 𝑡𝑥 ′ where the                       translates high-level ray tracing calls into specialized instructions
+ray intersects a plane 𝑥 = 𝑥 ′ , the following equation is used:                         executed by the RT accelerator. When a warp issues a ray tracing
+                                                                                         instruction, the GPU warp scheduler dispatches the instruction to
+                            𝑡𝑥 ′ = (𝑥 ′ − 𝑜 𝑥 )/𝑑𝑥                                       the warp buffer in the RT accelerator during the GPU pipeline’s
+  This can be reformulated for computational efficiency by intro-                        execution stage. Each cycle, the RT accelerator selects a warp from
+ducing:                                                                                  the buffer to perform ray tracing operations and issues memory
+                                                                                         requests to its L1 memory access queue [10, 56].
+               w = (𝑤 𝑥 , 𝑤 𝑦 , 𝑤𝑧 )𝑇 = (1/𝑑𝑥 , 1/𝑑 𝑦 , 1/𝑑𝑧 )𝑇
+           b = (𝑏𝑥 , 𝑏 𝑦 , 𝑏𝑧 )𝑇 = (−𝑜 𝑥 /𝑑𝑥 , −𝑜 𝑦 /𝑑 𝑦 , −𝑜𝑧 /𝑑𝑧 )𝑇                    2.3             RT Memory Traffic Breakdown
+where w and b are precomputed values based on the ray’s direction                        RT generates a significant amount of memory traffic during ren-
+and origin. Preprocessing rays into w and b eliminates the need for                      dering. This is because high-quality rendering requires many rays
+repeated division operations during traversal, which are computa-                        per pixel, and each ray often makes frequent, irregular memory
+tionally expensive. By replacing divisions with multiplications and                      requests as it traverses the BVH tree [10]. For instance, profiling
+additions, the ray-box intersection tests can be performed more                          indicates trace ray instructions can account for roughly 60% of
+efficiently. This yields:                                                                memory accesses [56], making RT workloads frequently memory-
+                                                                                         bound [34, 56]. Consequently, RT performance often becomes lim-
+                              𝑡𝑥 ′ = 𝑤 𝑥 𝑥 ′ + 𝑏 𝑥                           (1)         ited by memory bandwidth, as the sheer volume and irregular pat-
+   Using Equation 1 as the building block, we can find where the                         tern of data requests can overwhelm the memory system, even with
+ray intersects a BB based on the Slab method [22] as shown in                            specialized RT accelerator units designed to speed up computations.
+Figure 3(a). If we end up with 𝑡𝑚𝑎𝑥 > 𝑡𝑚𝑖𝑛 , there is an intersection                    This bottleneck is particularly acute in mobile GPU environments
+between a ray and a BB, and vice versa.                                                  where DRAM bandwidth is typically more constrained [56].
+2.1.4 Ray-Triangle Intersection Test. At the leaf nodes of the BVH
+tree, RT performs ray-triangle intersection tests to determine if the                                                                     Other       Bounding Box        Triangle
+                                                                                                                    (a) L1D Accesses (In Bytes)                  (b) DRAM Accesses (In Bytes)
+ray intersects any of the triangles within the node and calculates                                      100%
+                                                                                                                                                                                                         % 2%
+                                                                                                                                                        %
+                                                                                                                                                      20
+
+
+
+
+                                                                                                                                                                                                           1
+
+
+
+
+the intersection points if they exist. As shown in Figure 3(b), a ray
+                                                                                           Percentage
+
+
+
+
+                                                                                                        75%
+                                                                                                                                                                                                         74
+                                                                                                                                                       %
+                                                                                                                                                      69
+
+
+
+
+originating at 𝑂 with direction 𝐷 intersects a triangle defined by
+                                                                                                        50%
+vertices 𝐴, 𝐵, and 𝐶 at point 𝑄.
+                                                                                                        25%
+
+2.2     GPU RT Accelerator Architecture                                                                  0%
+                                                                                                                                                         N
+
+
+
+
+                                                                                                                                                                                                           N
+                                                                                                                           W
+
+
+
+
+                                                                                                                                                                           W
+                                                                                                                                         U
+
+
+
+
+                                                                                                                                                                                     U
+
+
+
+
+Modern GPUs feature various dedicated hardware accelerators [50],
+                                                                                                                                A
+
+
+
+
+                                                                                                                                                  A
+
+
+
+
+                                                                                                                                                                                    A
+
+
+
+
+                                                                                                                                                                                                     A
+                                                                                                                                         R
+
+
+
+
+                                                                                                                                                                                    R
+                                                                                                                T
+
+
+
+
+                                                                                                                                                                 T
+                                                                                                                                                      EA
+
+
+
+
+                                                                                                                                                                                                         EA
+                                                                                                                    BA
+
+
+
+
+                                                                                                                                                                     BA
+                                                                                                                                      O
+
+
+
+
+                                                                                                                                                                                   O
+                                                                                                                         BM
+
+
+
+
+                                                                                                                                                                          BM
+                                                                                                                                CL
+
+
+
+
+                                                                                                                                                TE
+
+
+
+
+                                                                                                                                                                                 CL
+
+
+
+
+                                                                                                                                                                                                   TE
+                                                                                                                                      ST
+
+
+
+
+                                                                                                                                                                                 ST
+                                                                                                               KI
+
+
+
+
+                                                                                                                                                             KI
+                                                                                                                                     H
+
+
+
+
+                                                                                                                                                                                 H
+                                                                                                                                                      M
+
+
+
+
+                                                                                                                                                                                                     M
+
+
+
+
+such as tensor and RT accelerators within each streaming multipro-                                                                                     Scenes
+cessor (SM), as illustrated in Figure 4. The RT accelerator typically
+consists of tree traversal (TRV) units, ray-box intersection (BOX)                               Figure 5: RT accelerator memory traffic breakdown.
+
+
+
+
+                                                                                   376
+

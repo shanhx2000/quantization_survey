@@ -1,0 +1,84 @@
+AQB8: Energy-Efficient Ray Tracing Accelerator through Multi-Level Quantization                                                                  ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+4.4.1 Details on Ray Quantization. For clarity in the following                            Next, represent 𝑞 𝑤 in floating-point form as:
+derivations, we will use 𝑤 and 𝑏 to refer to the individual scalar
+                                                                                                                             𝑞 𝑤 = 𝑖 𝑤 2𝑟 𝑤 𝑚 𝑤 ,
+components (e.g., 𝑤 𝑥 , 𝑏𝑥 ) of the vectors w and b. To quantize these
+components, we introduce scaling factors 𝑆 𝑤 and 𝑆𝑥 for quantiza-                       where 𝑖 𝑤 is the sign bit, 𝑟 𝑤 is the exponent, and 𝑚 𝑤 is the mantissa.
+tion. The scaling factor 𝑆 𝑤 is fixed at 2 −7 , while 𝑆𝑥 varies depending               Substituting this into the quantized equation yields:
+on the cluster. Each cluster has its specific 𝑆𝑥 , which is defined as:
+                                                                                                             𝑆 𝑤 𝑆𝑥 𝑞𝑡 = 𝑆 𝑤 𝑖 𝑤 2𝑟 𝑤 𝑚 𝑤 𝑆𝑥 𝑞𝑥 + 𝑆 𝑤 𝑆𝑥 𝑞𝑏
+                         𝑆𝑥 = max(𝑙𝑥 , 𝑙 𝑦 , 𝑙𝑧 )/255,
+                                                                                           By canceling the common factor 𝑆 𝑤 𝑆𝑥 , we derive the final equa-
+where 𝑙𝑥 , 𝑙 𝑦 , and 𝑙𝑧 are the length of the anchor BB along the 𝑥, 𝑦,                 tion for the quantized ray-box intersection:
+and 𝑧 axes for the cluster.
+    Using these scaling factors, 𝑤 is quantized by dividing it by 𝑆 𝑤                                                    𝑞𝑡 = 𝑖 𝑤 2𝑟 𝑤 𝑚 𝑤 𝑞𝑥 +𝑞𝑏
+                                                                                                                                       |{z}
+(𝑞 𝑤 = 𝑤/𝑆 𝑤 ), where 𝑞 𝑤 is represented in a custom 14-bit floating-                                                                             INT8
+point (FP14) format with 1 sign bit, 8 mantissa bits, and 5 exponent                                                                   | {z }
+bits. 𝑏 is quantized using both scaling factors (𝑞𝑏 = 𝑏/(𝑆 𝑤 𝑆𝑥 )),                                                                       left shift
+which is represented as a 32-bit integer (INT32). Since each cluster
+                                                                                                                                 |         {z          }
+                                                                                                                                 2’s complement
+has its own 𝑆𝑥 , 𝑏 must be re-quantized when transitioning to a new                                                              |               {z              }
+cluster.                                                                                                                                      INT32
+4.4.2 Custom Floating-Point Representation of 𝑞 𝑤 . We represent                            This quantized ray-box intersection algorithm can be computed
+𝑞 𝑤 using a custom FP14 format. This choice is motivated by the                         efficiently in hardware using integer arithmetic, left shifts, and 2’s
+distribution characteristics of the inverse direction component 𝑤.                      complement operations. The steps are: (1) Multiply 𝑚 𝑤 by 𝑞𝑥 using
+When the ray direction is a uniformly distributed unit vector, the                      INT8 arithmetic. (2) Perform a left shift of the result by 𝑟 𝑤 bits. (3)
+inverse direction component 𝑤 follow a probability density function                     If 𝑖 𝑤 equals 1, negate the result using 2’s complement. (4) Add the
+given by:                   (                                                           final value to 𝑞𝑏 using INT32 arithmetic.
+                                1 , if |𝑤 | ≥ 1,                                            This approach eliminates the need for costly FP32 arithmetic
+                    𝑓 (𝑤) = 2𝑤 2                                                        (originally, 𝑡, 𝑤, 𝑥, and 𝑏 are all represented in FP32). By leveraging
+                              0,      otherwise.
+                                                                                        low-bit integer arithmetic, the proposed quantized ray-box intersec-
+   This distribution indicates that smaller values of 𝑤 occur with
+                                                                                        tion algorithm reduces computational cost and minimizes hardware
+higher frequency compared to larger values, leading to a non-
+                                                                                        complexity.
+uniform density that favors lower magnitudes.
+   If 𝑤 were quantized using uniform intervals, the resulting 𝑞 𝑤
+                                                                                        4.6         Memory Layout
+values would be unevenly distributed, with a higher density at lower
+values. Hence, to better capture this distribution, we first apply                      The quantized BVH tree introduces the concept of clusters and
+quantization to 𝑤 and then represent 𝑞 𝑤 in the custom FP14 format.                     redefines how nodes are represented in memory to enhance encod-
+Since floating-point representation provides finer granularity for                      ing efficiency. Figure 10 illustrates the memory layouts for both
+values near zero, it aligns well with the distribution characteristics                  the standard BVH tree (Figure 10(a)) and our quantized BVH tree
+of 𝑤.                                                                                   (Figure 10(b)).
+                                                                                           A cluster in the quantized BVH tree consists of several compo-
+4.5     The Quantized Ray-Box Intersection                                              nents: the bounds of the anchor BB, 𝑆 𝑤 𝑆𝑥 , the node base index,
+                                                                                        and the triangle base index. The anchor BB is encoded using six
+In our quantized BVH tree, the original ray-box intersection for-
+                                                                                        FP32 numbers, occupying a total of 24 bytes. The 𝑆 𝑤 𝑆𝑥 value is
+mulation cannot be applied directly due to the use of quantized
+                                                                                        used to quantize rays when they enter a new cluster. The node base
+ray and BB representations. This necessitates the development of
+                                                                                        index and triangle base index are offsets used to adjust the indices
+a quantized ray-box intersection algorithm. Below, we derive the
+                                                                                        of nodes and triangles within the cluster.
+formula for quantized ray-box intersection step by step.
+   As described in Section 2.1.3, the ray-box intersection test can
+be formulated as:                                                                          Node           Left Box Bounds                Right Box Bounds             Left Child Right Child
+                              𝑡 = 𝑤𝑥 + 𝑏                                                 (56 Bytes)           24 Bytes                           24 Bytes               4 Bytes        4 Bytes
+                                                                                                                                                       # of Triangles     Child Index
+where 𝑡 is the parameter indicating the intersection point along the                     (a)                                                                3 bits           29 bits
+ray, 𝑤 and 𝑏 are the preprocessed ray components, and 𝑥 represents
+the coordinates of the BB.                                                                Cluster        Anchor Box Bounds             SwSx       Node Base Index Triangle Base Index
+   To adapt this equation for quantized representations, we linearly                     (36 Bytes)           24 Bytes               4 Bytes           4 Bytes               4 Bytes
+
+quantize 𝑡, 𝑤, 𝑥, and 𝑏 using scaling factors 𝑆 𝑤 𝑆𝑥 , 𝑆 𝑤 , 𝑆𝑥 , and 𝑆 𝑤 𝑆𝑥 ,             Node       Left Box Bounds Right Box Bounds Left Child Right Child
+                                                                                         (16 Bytes)       6 Bytes            6 Bytes             2 Bytes    2 Bytes
+respectively. Substituting these quantized variables into the original
+                                                                                                                            Field A Field B            Field C
+equation gives:                                                                          (b)                                 1 bit      3 bits         12 bits
+
+                     𝑆 𝑤 𝑆𝑥 𝑞𝑡 = 𝑆 𝑤 𝑞 𝑤 𝑆𝑥 𝑞𝑥 + 𝑆 𝑤 𝑆𝑥 𝑞𝑏
+where 𝑞𝑡 , 𝑞 𝑤 , 𝑞𝑥 , and 𝑞𝑏 are the quantized counterparts of 𝑡, 𝑤, 𝑥,                 Figure 10: Memory layout for (a) standard BVH tree and (b)
+and 𝑏.                                                                                  our quantized BVH tree.
+
+
+
+
+                                                                                  380
+

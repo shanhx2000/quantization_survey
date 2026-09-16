@@ -69,20 +69,29 @@ onto this; building the mapping is an open task.
 
 The human set this out on 2026-09-03. **Papers are done one at a time.**
 
+**Revised 2026-09-03.** The original arrangement had the agent stop at `ANALYSIS.md` and the
+human author `paper-note.md` from scratch. After two papers the human changed it: **the agent
+now drafts the note as well**, and the human rewrites it. Both files live under
+`survey/papers/<Name>/`.
+
 | Step | Who | Output |
 |---|---|---|
-| **1. Reading assistance** | **agent** | `survey/papers/<Name>/ANALYSIS.md` — brief summary, tags, key numbers with frames, fairness assessment. This exists to help the human read the paper faster. |
-| **2. The note** | **human** | `survey/papers/<Name>/paper-note.md` — **their own writing**, in `QuantArchSurvey/templates/paper-note.md` form |
-| **3. Hand-off** | **human** | renames and copies it into `QuantArchSurvey/venues/ISCA/notes/` |
+| **1. Reading assistance** | **agent** | `survey/papers/<Name>/ANALYSIS.md` — brief summary, tags, key numbers with frames, fairness assessment, and a `For the note` section |
+| **2. Note draft** | **agent** | `survey/papers/<Name>/paper-note.md` — a **draft** in `QuantArchSurvey/templates/paper-note.md` form, written terse (see [`PAPER-READING.md`](PAPER-READING.md) §6a), plus a `## 6. Claude notes` section of short suggestions |
+| **3. The note** | **human** | rewrites that draft into their own writing — in practice cutting it by about half |
+| **4. Hand-off** | **human** | renames and copies it into `QuantArchSurvey/venues/ISCA/notes/` |
 
-**The agent never writes `paper-note.md`.** That file is the human's authored note, and the
-whole point of the arrangement is that the survey's prose is genuinely theirs. An agent that
-drafts it — however good the draft — has taken the human's step 2 away from them.
+**What has not changed: the agent still writes nothing into `QuantArchSurvey/`.** The draft
+note goes in `survey/papers/<Name>/`; carrying it across into `venues/ISCA/notes/`, and
+editing `venues/ISCA/README.md`, remain the human's steps. Propose the venue-list row inside
+`ANALYSIS.md` as a fenced block for them to paste.
 
-So the agent's deliverable is **step 1 only**: a good `ANALYSIS.md`. Everything an agent
-learns goes there. It may additionally *propose* values for their four axes and a venue-list
-row **inside `ANALYSIS.md`**, as material for the human to weigh — never as a file shaped
-like their note, and never by editing `venues/ISCA/README.md`.
+**The draft is a draft.** The survey's prose has to end up genuinely the human's, so an agent
+report must say the note is theirs to rewrite, and must never present it as finished.
+
+**`## 6. Claude notes` is ours and stops here.** The agent's suggestions go in that section
+rather than inside the human's §1–§5. It is stripped at step 4 and never reaches
+`QuantArchSurvey/`.
 
 **There are no experiments in this project.** If we ever need to run or reproduce
 a quantization method, that is a new stage and a new top-level directory — ask the
@@ -207,7 +216,7 @@ Read it instead of improvising. Ready-made prompts for launching such agents are
 
 ## 5. Status ladder
 
-Use these five, **do not invent new ones**. The test is "what can someone else do
+Use these six, **do not invent new ones**. The test is "what can someone else do
 with this material?"
 
 | Status | Meaning | Test |
@@ -216,11 +225,18 @@ with this material?"
 | `pdf ready` | Full text downloaded and extracted, greppable, but **nobody has read it** | `extracted/` has content, `ANALYSIS.md` is metadata only |
 | `brief ready` | Above + `ANALYSIS.md` has metadata, the verbatim abstract, a first-pass "why it is here", and the questions to resolve on a close read | conclusions rest on the abstract alone |
 | `analysis ready` | **Full text read.** `ANALYSIS.md` states the method, the key numbers **with their frame**, and the limitations | can answer "under what assumptions does this hold?" |
+| `note ready` | Above + **`paper-note.md` written** — the human's own note in the team repo's template, ready to publish | `paper-note.md` exists in the directory and its §1 and §4 are filled |
 | `thorough ready` | Above + cross-checked against the released code / the reported data | can point out where the paper and the implementation disagree |
 
 Every file at `analysis ready` or above carries a **"How far it was read"** line
 naming which sections were read closely and which were skimmed — so the next agent
 does not redo the work, and so nobody cites a section nobody read.
+
+`note ready` is the rung that says a paper is **finished on this side**:
+`python3 Claude/scripts/sync_notes.py` publishes exactly those entries into
+`QuantArchSurvey/venues/ISCA/notes/`. Do not set it because a `paper-note.md` file
+exists — set it when the note is one the human is willing to publish under their own
+name. **Never raise it on their behalf; that is their call, not the agent's.**
 
 ## 6. Shared-server red lines (violating these affects other people)
 

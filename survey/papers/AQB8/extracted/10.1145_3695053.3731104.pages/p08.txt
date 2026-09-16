@@ -1,0 +1,72 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                Yen-Chieh Huang, Chen-Pin Yang, and Tsung Tai Yeh
+
+
+  To reduce memory usage, the quantized BVH tree uses a signifi-             Algorithm 1 Quantized BVH Tree Traversal Algorithm
+cantly compressed memory layout for nodes by:                                 1: inputs: ray, rootNode
+                                                                              2: initialize: qRay ← null; stack ← empty; intersectionPoint ← null
+ • Reducing BB size by a quarter. BBs are encoded using INT8
+                                                                              3: stack.push(rootNode)
+   instead of FP32 as in the standard BVH tree, reducing the node
+                                                                              4: while stack is not empty do
+   size from 56 bytes to just 16 bytes.                                       5:    curNode ← stack.pop()
+ • Redesigning the bitfield for child data. In the quantized BVH              6:    re-quantize ray if needed
+   tree, each child data is represented using 2 bytes, divided into           7:    if type(curNode) = SWITCH then
+   three fields (Field A, B, and C), whereas the standard BVH tree            8:       hit, qRay ← RayBoxTest(ray, curNode.cluster.anchorBox)
+   uses 4 bytes with two fields (number of triangles and child                9:       if hit then
+   index).                                                                   10:          for childNode in curNode do
+                                                                             11:             if qRayBoxTest(qRay, childNode.qBox) then
+    Although the quantized BVH tree introduces an additional “clus-
+                                                                             12:                stack.push(childNode)
+ter” structure, which incurs extra memory overhead, the size of              13:    else if type(curNode) = STAY then
+a cluster is small (36 bytes). Moreover, the number of clusters is           14:       for childNode in curNode do
+significantly smaller than the number of nodes (Table 1). Conse-             15:          if qRayBoxTest(qRay, childNode.qBox) then
+quently, the overall memory footprint of the quantized BVH tree              16:             stack.push(childNode)
+is significantly reduced, making it far more memory-efficient than           17:    else if type(curNode) = LEAF then
+the standard BVH tree.                                                       18:       for triangle in curNode do
+    Children of each quantized BVH tree node are categorized into            19:          hit, tmpPoint ← RayTriangleTest(ray, triangle)
+three types: SWITCH, STAY, and LEAF. Each type is uniquely identi-           20:          if hit then
+                                                                             21:             intersectionPoint ← tmpPoint
+fied by examining the values of Field A and Field B:
+                                                                             22: return intersectionPoint
+ • SWITCH: The child is an internal node and traversing to this
+   node necessitates a cluster switch. Field A is set to 0, while
+   Fields B and C together represent the index of the new cluster.
+ • STAY: The child is an internal node and no cluster switch is
+   necessary to traverse this node. Field A is set to 1, Field B is                during which the quantized ray is also computed (line 8). If the
+   set to 000, and Field C stores the index offset of the child node               ray intersects the anchor BB (line 9), quantized ray-box tests
+   relative to the cluster’s node base index.                                      are conducted on the quantized ray and the quantized BBs of
+ • LEAF: The child is a leaf node. Field A is set to 1, Field B stores             the child nodes (lines 10-11). Intersected child nodes are pushed
+   the number of triangles (at least 1), and Field C holds the starting            onto the stack (line 12).
+   index offset of the triangles relative to the cluster’s triangle base         • STAY node (lines 13-16): For each child node, a quantized ray-
+   index.                                                                          box test is conducted (lines 14-15). Nodes that are intersected
+                                                                                   are pushed onto the stack (line 16).
+   Nodes and triangles within the same cluster are stored contigu-               • LEAF node (lines 17-21): For each triangle in the current node, a
+ously in memory, with the base indices encoded in the cluster data.                ray-triangle test is performed (line 18-19). If the ray intersects
+This ensures that child nodes and triangles can be efficiently ad-                 that triangle (line 20), the closest intersection point is updated
+dressed using smaller offsets rather than larger absolute indices.                 (line 21).
+Moreover, fetching one node brings in its neighboring nodes in the
+same cluster into cache, improving memory access efficiency. As                 In certain scenarios, the ray must be re-quantized (line 6). Specif-
+nodes in the same cluster are likely to be accessed in sequence dur-         ically, when “jumping back” to a node that was previously placed
+ing traversal, this spatial locality reduces cache misses and DRAM           onto the stack, if the cluster of the node being popped from the
+accesses, further alleviating memory bottlenecks and enhancing               stack differs from the current cluster, the ray must be re-quantized
+overall RT efficiency.                                                       to align with the local coordinate system of the cluster associated
+                                                                             with the node being processed. This step ensures that the ray can
+4.7     Tree Traversal                                                       correctly interact with the quantized BBs in the associated cluster.
+Algorithm 1 outlines the tree traversal algorithm for the quantized          After the traversal loop concludes, it returns the closest intersection
+BVH tree, which aims to efficiently find the closest intersection            point (line 22) for further processing.
+point between a ray and triangles. For compactness in typesetting,
+we use “q” to denote “quantized” in variable and function names.             5      Quantized Ray Tracing Accelerator
+For instance, “qRay” refers to the quantized ray, and “qRayBoxTest”          RT accelerators play a pivotal role in speeding up ray tracing oper-
+refers to the quantized ray-box intersection test.                           ations. To fully exploit the benefits of the quantized BVH tree, we
+   The algorithm begins by initializing a stack with the BVH tree’s          propose the quantized RT accelerator, which builds upon a baseline
+root node (line 3). The main traversal loop continues until the stack        RT accelerator—with key architectural modifications highlighted in
+is empty (lines 4-21). In each iteration, the node at the top of the         bold in Figure 11—to efficiently handle the traversal of quantized
+stack is popped (line 5), and its type determines subsequent actions:        BVH trees. Due to the lack of publicly available details on the inter-
+ • SWITCH node (lines 7-12): A ray-box test is performed on the ray          nal design of RT accelerators in commercial GPUs, we design our
+   and the anchor BB associated with the current node’s cluster,             baseline RT accelerator similar to the RT Unit described in [56].
+
+
+
+
+                                                                       381
+

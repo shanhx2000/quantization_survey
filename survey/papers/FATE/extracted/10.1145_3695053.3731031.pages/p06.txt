@@ -1,0 +1,91 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                              Haomin Li, Fangxin Liu, Yichi Chen, Zongwu Wang, et al.
+
+
+
+                         Encode                     Associative Search         correct computing result. Therefore, we propose a redundant stor-
+     Sample                      Base Hypervector                              age method to handle potential problems caused by the permutation
+                                     Memory                 Qi
+                     lookup
+                                  0 1 1     0 1
+                                                                               operation. For each base hypervector, we precompute all possible
+                                  1 0 1     0 0       Mixed Bit-Width          permuted results, prune the dimensions suggested by FATE, and
+                         read out 0 1 0     1 1         Multiplier
+  1 0          1 0 0        1                                                  then store them to ensure the correctness of the encoding. For ex-
+                                  0 0 1     0 1                                ample, when dealing with the N-Gram algorithm configured with
+                                                           Shift
+                                  Segment Buffer
+                                           Q1
+                                                                               𝑁 = 4, we will store the pruned versions of the four hypervectors
+        1 0          0
+                                           Q2          Adder Tree              𝑠, 𝜌 (𝑠), 𝜌 2 (𝑠), 𝜌 3 (𝑠) for each possible character 𝑠. As 𝑁 is generally
+        12 8        39                     …
+                  update                   Qi
+                                                                               not large in HDC and the base hypervectors are all binary, the extra
+                           segment         …                                   storage overhead is acceptable. This redundant storage strategy
+         Encoded HV                        QD/d         Similarity
+                                                                               ensures the correctness of the encoding while avoiding complicated
+                 Figure 6: FATE architecture overview.                         permutations.
+
+                                                                               3.5    Efficient Online Inference
+                                                                               In the FATE framework, the online inference process, as depicted
+the corresponding segments of the class vectors in AM one by one.              in Figure 4, is straightforward and clear, even with the presence
+According to the relative order of the original dimensions, it is very         of mixed bit-widths. When a sample is input into the model, it is
+likely to encounter the situation that different segments require              first mapped and encoded by IM and CIM. As both IM and CIM
+different computational resources, which makes the resource sched-             have been rearranged, the sample hypervector aligns with the class
+uling and workload extremely complicated. Therefore, we reorder                hypervectors in AM. This alignment ensures a relatively stable
+the dimensions in AM: let each bit-width occur as equally as possi-            workload during the iterative computation of dividing and process-
+ble in different segments, given the known dimensionality of the               ing the hypervectors in segments. Consequently, computational
+segments. In this way, resource scheduling can be circumvented as              resources can be fully utilized. Additionally, the use of different bit-
+much as possible, and workloads become stable.                                 width quantization introduces distinct scaling in each dimension
+    Consider an HDC model with 1, 000 dimensions and the com-                  during element-wise multiplication. As a result, the multiplication
+pression requirements are 50% INT8 values and 50% INT4 values.                 result undergoes appropriate shifting to ensure correctness. By
+Additionally, the hardware resources only support the computation              leveraging these techniques, including rearrangement, workload
+of a 100-dimensional vector multiplication per clock cycle. Thus,              stabilization, and proper scaling, the FATE framework achieves
+we need to divide the class vector into 10 segments, each containing           an efficient and effective online inference process. This approach
+a 100-dimensional vector, and compute them sequentially. Without               allows for smooth handling of mixed bit-widths, enabling accurate
+rearrangement, one segmented vector might have 80 INT8 elements                and quick computations during inference.
+and 20 INT4 elements, while another segmented vector might have
+10 INT8 elements and 90 INT4 elements. This situation leads to an              3.6    Adjustment Mechanism
+unbalanced workload and requires complex resource scheduling. In
+                                                                               To enhance performance, we introduce an adaptive adjustment
+contrast, after rearrangement, each segmented vector will have 50
+                                                                               mechanism aimed at improving the accuracy of the compressed
+INT8 and 50 INT4 elements. This balanced distribution greatly sim-
+                                                                               model through iterative rounds of compression and updating. The
+plifies the control logic and resource allocation, reducing workload
+                                                                               process involves the following steps: (i) Compression and Storage:
+variation and enabling more efficient computation.
+                                                                               Initially, the model is compressed as per the specified criteria, and
+    After processing AM, we perform similar processing for IM and
+                                                                               an uncompressed copy is retained; (ii) Inference and Update: The
+CIM to ensure the correctness of the association search after encod-
+                                                                               compressed model is utilized for inference on the training set. Mis-
+ing. Notably, in our framework, we avoid using the permutation
+                                                                               classified samples are identified, and the original uncompressed
+operation to simplify the post-quantization computation and en-
+                                                                               model is updated using the retraining approach outlined in the
+sure the correctness of the dimensionality reduction operation. The
+                                                                               preceding section; (iii) Subsequent Rounds: In the subsequent itera-
+permutation operation in HDC is typically employed to encode po-
+                                                                               tion, the previously updated uncompressed model is subjected to
+sition information, such as the HDC N-Gram algorithm [49]. Since
+                                                                               compression. This iteration is repeated for several rounds.
+our approach involves offline dimensionality reduction, the permu-
+tation operations during encoding may lead to bit errors. We use
+the example in Figure 5 to illustrate our design, where the base hy-
+                                                                               4     FPGA Implementation: Design and
+pervector corresponding to character 𝑎 is initially [0, 1, 0, 1, 1]. The             Optimization
+FATE framework prunes the 3rd dimension (0) before deployment,                 Our proposed FATE significantly improves the efficiency of FPGA
+resulting in a transformed base hypervector in IM, now [0, 1, 1, 1]. If        deployment by assembling various numeric data type quantization
+an 𝜌 (𝑎) operation occurs during encoding, the correct permutation             schemes. Specifically, FATE leverages inter-dimension adaptive
+result should be 𝜌 (𝑎) = 𝜌 ([0, 1, 0, 1, 1]) = [1, 0, 1, 0, 1]. Following      opportunities in a hardware-friendly manner, offering two clear
+proper pruning of the 3rd dimension, 𝜌 (𝑎) should be [1, 0, 0, 1].             advantages: (i) low-precision quantized values(binary and ternary
+However, due to our storage approach that retains the pruned                   formats) are processed using logic operations through LUTs for mul-
+version of the unpermuted base hypervector [0, 1, 1, 1], the per-              tiplication instead of conventional multipliers [56], and (ii) FPGA
+mutation result becomes 𝜌 (𝑎) = [1, 0, 1, 1], which mismatches the             components like DSP and LUT are optimally utilized, with LUTs
+
+
+
+
+                                                                        1274
+

@@ -1,0 +1,68 @@
+Cambricon-SR: An Accelerator for Neural Scene Representation with Sparse Encoding Table                                                  ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+   In the update stage of ST-NSR, a dense table must be maintained                                   Cambricon-SR achieves 1259× and 4.12× speedup, and re-
+to accumulate gradients. Due to the large size of the dense table,                                   duces the energy consumption by 1139× and 2.98× for each
+it must be stored off-chip. As a result, the large amount of off-                                    training iteration of NSR, respectively.
+chip memory access to this table in the update stage becomes a
+performance bottleneck. To address this challenge, we propose                             2 Background and motivation
+sparse update unit that efficiently updates the sparse table on-chip
+with sparse storage format, thus avoiding off-chip memory access
+                                                                                          2.1 NSR Algorithms
+to the dense table and reducing the memory access volume by 83.5%                         NSR algorithms are primarily divided into two main categories:
+compared to the straightforward approach.                                                 NeRF-based [33] and 3DGS-based [19]. In this paper, we focus
+   Efficient memory access to the on-chip sparse table is challenging.                    on NeRF-based NSR algorithms. 3DGS-based algorithms explicitly
+During the forward stage, many invalid memory requests occur for                          represent the scene using millions of discrete Gaussians in 3D space.
+pruned entries. Efficiently eliminating these requests before access-                     In contrast, NeRF-based algorithms learn implicit representation of
+ing the sparse table is difficult due to the irregular access patterns of                 a scene by sampling points in 3D space and using MLPs to learn
+the sparse structure bitmap. We propose a Sparse Index Unit (SIU)                         the mapping between spatial position of points and their color and
+based on sequential SRAM accessing and parallel address matching                          volume density. However, due to the large size of the MLP, the
+to address this challenge. With an additional area overhead of 8.59%,                     modeling speed is exceedingly slow, making it difficult to meet the
+SIU achieves high throughput filtering of memory access requests,                         demands of applications.
+thereby increasing the throughput of encoding stage by 7.54×.                                 To improve modeling efficiency, optimized NSR algorithms com-
+   After improving the throughput of the encoding stage, the MLP                          bine encoding table with small MLPs. Each point is obtained through
+stage becomes a new bottleneck of ST-NSR algorithm. However,                              a lookup table to get encoded features, which are then processed
+due to the large local buffer used by each MLP unit, increasing the                       by small MLPs. This method significantly reduces the computa-
+MLP units by 4× would require an additional total buffer capacity                         tional workload for each point. Currently, many mainstream NSR
+of 144 MB, significantly raising the cost of the chip. We propose                         algorithms [4, 9, 12, 36, 46, 49] adopt this technique of combin-
+a design with dynamic shared buffers that reduces the average                             ing encoding table with small MLPs. A training iteration of the
+buffer capacity required per MLP unit by 85.3%. As a result, we can                       algorithms consists of following stages, as illustrased in Figure 2:
+increase the number of MLP units by 4× to improve performance                                 (1) Sampling. In the sampling stage, pixels are randomly sam-
+with acceptable size of buffer requirement.                                               pled from the training images. The coordinates and the RGB color
+   We conduct experimental evaluations on 8 typical scenes. The                           of sampled pixels are the input and the ground truth of the NSR
+results show that, compared with A100 GPU and the state-of-the-                           process, respectively. To compute the color of pixels, each pixel is
+art NSR training accelerator Cambricon-R, Cambricon-SR achieves                           mapped to a ray [33, 36] or a cone [3, 4], which starts from the cam-
+1259× and 4.12× speedup, and reduces the energy consumption by                            era viewpoint through the corresponding pixel along the viewing
+1139× and 2.98× for each training iteration of NSR, respectively.                         direction. Then, points are randomly sampled along each ray or
+Thus, we improve both the performance and quality of NSR. As                              cone. The coordinates (𝑥, 𝑦, 𝑧) and view direction (𝜃, 𝜙) of these
+shown in Figure 1, under the same modeling speed, the quality                             sampled points are computed and transmitted to the next stage.
+improvement comes from more iterations of training.                                           (2) Encoding. Hash grid [36] and Multi-planes [12] are two
+   The contributions of this paper are summarized below:                                  mainstream encoding methods of NSR. The process of hash grid
+                                                                                          is shown in the middle part of Figure 2. Step ○     1 hash encoding
+     • We propose the first NSR algorithm with sparse encoding                            of vertices: Specifically, For a given sampled point 𝑠, the voxel
+       table (ST-NSR). It achieves more than 80% sparsity of the                          that encloses the point is determined, and its 8 corner vertices
+       encoding table and its gradients. We implement ST-NSR on                           are identified. Through the hash function given in Equation 1, the
+       GPU and it achieves a 1.55× speedup in the encoding stage                          vertices’ coordinate (𝑥𝑖 , 𝑦𝑖 , 𝑧𝑖 ) is mapped to the hash table index
+       and a 1.19× overall speedup.                                                       ℎ𝑖 . Step ○2 encoding table lookup: Using the index ℎ𝑖 , an 𝐹 -
+     • We propose the Sparse Update Unit to reduce 83.5% of the                           dimensional feature vector is retrieved for each vertex of the voxel
+       off-chip memory accesses in the update stage. It decreases                         from a compact encoding table containing 𝑇 entries. Step ○     3 inter-
+       the execution time for the update stage by 5.28×.                                  polation & concatenation: Linear interpolation of the 8 vertices’
+     • We propose the Sparse Index Unit (SIU) based on sequential                         𝐹 -dimensional feature vectors yields an 𝐹 -dimensional feature vec-
+       SRAM access to address the challenge of irregular memory                           tor. This process is repeated across 𝐿 different grid resolutions using
+       access to the bitmap. It achieves a throughput increase of                         the corresponding hash tables. The feature vectors from all levels
+       7.54× during the encoding stage with an additional area                            are then concatenated to construct an input vector of size 𝐹 × 𝐿 for
+       overhead of 8.59%.                                                                 the MLP.
+     • We propose the dynamic shared buffer for the MLP units to
+       reduce the buffer usage by 85.3% so that we can increase the                                   ℎ𝑖 = 𝐻 (𝑥𝑖 , 𝑦𝑖 , 𝑧𝑖 ) = (𝜋 1𝑥𝑖 ⊕ 𝜋2𝑦𝑖 ⊕ 𝜋3𝑧𝑖 )        mod 𝑇 1         (1)
+       number of the MLP units by 4× with acceptable capacity of
+       on-chip buffers.                                                                     Note that each resolution level has an independent hash table,
+     • We conduct thorough experimental evaluation of Cambricon-                          where each hash table consists of 𝑇 entries, and each entry stores
+       SR. The results show that, compared with A100 GPU and
+       the state-of-the-art NSR training accelerator Cambricon-R,                         1𝜋
+                                                                                               1 = 1; 𝜋 2 = 2 654 435 761; 𝜋 3 = 805 459 861
+
+
+
+
+                                                                              1256
+

@@ -1,0 +1,60 @@
+hazards. TPUv4i has support for synchronizing partial                          Logic improved the most in the more advanced technology
+completion progress of DMAs with the TensorCore to help                        node, ①, so we could afford more MXUs. Equally
+hide DMA ramp-up and ramp-down latency in case it                              important, the new CMEM could feed them (§5 and §7.A).
+becomes useful for future compiler optimizations ②, larger                           The VLIW instruction needed extra fields to handle the
+DNNs ⑨, and/or tighter workload latency constraints ⑩.                         four MXUs and the CMEM scratchpad memory, which were
+     Custom on-chip interconnect (OCI). Rapidly growing                        easy to add given no need for binary compatibility. The
+and evolving DNN workloads ⑧, ⑨ have driven the TPU                            TPUv4i instruction is 25% wider than TPUv3.
+uncore towards greater flexibility each generation. Each                            We also wanted to reduce the latency through the
+component of past TPUs designs were connected                                  systolic array of the MXU while minimizing area and
+point-to-point (Figure 1). As memory bandwidth increases                       power. Rather than sequentially adding each floating-point
+and the number of components grows, a point-to-point                           multiplication result to the previous partial sum with a series
+approach becomes too expensive, requiring significant                          of 128 two-input adders, TPUv4i first sums groups of four
+routing resources and die area. It also requires up-front                      multiplication results together, and then adds them to the
+choices about which communication patterns to support. For                     previous partial sum with a series of 32 two-input adders.
+example, in TPUv3, a TensorCore can only access half of                        This optimized addition cuts the critical path through the
+HBM as a local memory [30]: it must go through the ICI to                      systolic array to ¼ the latency of the baseline approach.
+access the other half of HBM. This split imposes limits on                          Once we decided to adopt a four-input sum, we
+how software can use the chip in the future ⑧.                                 recognized the opportunity to optimize that component by
+     In TPUv4i, we added a shared On-Chip Interconnect                         building a custom four-input floating point adder that
+(OCI) that connects all components on the die and we can                       eliminates the rounding and normalization logic for the
+scale its topology based on the components that are present.                   intermediate results. Although the new results are not
+OCI was particularly important with the addition of CMEM;                      numerically equivalent, eliminating rounding steps increases
+the choice of how to allocate and transfer data between                        accuracy over the old summation logic. Fortunately, the
+HBM, CMEM, and VMEM continues to evolve ⑧.                                     differences from a four- versus two-input adder are small
+     We designed for much wider datapaths compared with a                      enough to not affect ML results meaningfully ④.
+typical SoC—512B native access size instead of 64B cache                       Moreover, the four-input adder saved 40% area and 25%
+lines. HBM bandwidth per core also increased by 1.3X over                      power relative to a series of 128 two-input adders. It also
+TPUv3 (and we expect similarly significant increases in the                    reduced overall MXU peak power by 12%, which directly
+future). To handle this scale, we were inspired by NUMA                        impacts the TDP and cooling system design ⑤ because the
+memory systems—take advantage of spatial locality of                           MXUs are the most power-dense components of the chip.
+accesses to minimize latency and bisection bandwidth—but                            Clock Rate and TDP. Air cooling for inference ⑤ and
+rather than putting the NUMA boundary between cores, we                        reducing TCO ③ led to a clock rate of 1.05 GHz and chip
+put it between parts inside the same core. While the entire                    TDP of 175W, once again closer to TPUv1 (75W) than to
+512B memory word is accessible to any component, the                           TPUv3 (450W).
+larger high-bandwidth memories (HBM, CMEM, and                                      ICI scaling. To provide headroom for future DNN
+VMEM) are each physically partitioned into four                                growth ⑧, TPUv4i has 2 ICI links so that the 4 chips per
+128B-wide groups to optimize HBM accesses. The                                 board can access nearby chip memory quickly (Figure 7) via
+corresponding group for each memory is connected to a                          model partitioning [7]. (TPUv3 uses 4 ICI links.) Apps may
+segment of the OCI with minimal overlap to other groups,                       use it as the software stack matures and as DNNs grow ⑧.
+effectively creating four non-overlapping networks with
+each serving 153 GB/s of HBM bandwidth rather than a
+single network serving all 614 GB/s. This grouping provides
+locality that reduces latency and wiring resources, and
+simplifies interconnect arbitration. This four-way split is
+essential, as wiring resources don’t scale as well as logic ①.
+     Arithmetic improvements. Another big decision is the
+arithmetic unit. The danger of requiring quantization ⑥ and
+the importance of backwards ML compatibility ④ meant
+retaining bfloat16 and fp32 from TPUv3 despite aiming at                       Figure 7. TPUv4i board with 4 chips that are connected by ICI.
+inference. As we also wanted applications quantized for                            Workload analysis features. Building upon lessons
+TPUv1 to port easily to TPUv4i, TPUv4i also supports int8.                     from TPUv1 [21], TPUv4i includes extensive tracing and
+     Our XLA colleagues suggested that they could handle                       performance counter hardware features, particularly in the
+twice as many MXUs in TPUv4i as they did for TPUv3 ②.                          uncore. They are used by the software stack to measure and
+
+
+
+                                                                           8
+
+       Authorized licensed use limited to: Duke University. Downloaded on September 09,2026 at 19:38:50 UTC from IEEE Xplore. Restrictions apply.
+

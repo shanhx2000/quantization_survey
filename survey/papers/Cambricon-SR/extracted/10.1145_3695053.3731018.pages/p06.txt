@@ -1,0 +1,84 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                               Liu et al.
+
+
+impact on PSNR is less than 0.5. Figure 4b illustrates the impact                                          NSR(Other stages)               ST-NSR(Other stages)
+                                                                                                           NSR(Encoding stage)             ST-NSR(Encoding stage)
+                                                                                          30
+
+
+
+
+                                                                            Runtime(ms)
+of sparsity in the backward stage on the modeling quality, with
+the forward stage sparsity set according to the results mentioned                         20
+above. The results demonstrate that when the sparsity rates for 8                         10
+typical scenes are set to 80%, 85%, 95%, 85%, 85%, 90%, 95%, and                          0
+85%, respectively, the impact on PSNR is less than 0.5. As shown in                              Fx            Fc   Hd   Mc        Bs        Rm        Ct      Kc    Geo
+Figure 5, a PSNR reduction of around 0.5 has little impact on the
+                                                                           Figure 6: Comparison of NSR and ST-NSR runtime on GPU.
+visual quality. The remainder of this paper will be based on these
+sparsity results.
+                                                                                   Forward & Backward                                                 Update
+                                                                               Ray 1               Ray 𝑛
+                                                                           Sampling        ······                              MLP
+3.3     GPU Optimization                                                                                                      weights
+                                                                           Encoding                   ······
+According to our evaluation of Instant-NGP [37], a representa-             MLP                        ······                            Dense Table            Sparse Table
+tive NSR algorithm, the encoding stage is most time-consuming,
+                                                                           Threshold Update(last iteration)
+accounting for 46% of the total runtime. This is due to massive fine-
+grained irregular memory accesses to encoding tables during the
+                                                                           Figure 7: Dataflow of Cambricon-SR for one iteration of NSR
+encoding stage. In this section, we implement ST-NSR algorithm on
+                                                                           training.
+NVIDIA A100 GPU using CUDA to reduce the volume of memory
+accesses and improve the performance of the encoding stage.
+   We first attempt to leverage the structured sparsity hard-
+                                                                           concurrently access the bitmap in shared memory, as the access
+ware of the A100 to support ST-NSR, but find it to be com-
+                                                                           addresses are irregular indexes computed by hash functions. The in-
+pletely ineffective. The structured sparsity in the A100’s Tensor
+                                                                           efficiency motivates our design of a dedicated hardware accelerator
+Cores, such as 2:4 sparsity, is designed to accelerate matrix mul-
+                                                                           (Section 4) to address these limitations.
+tiplications in NNs by reducing MAC operation overhead [34]. In
+contrast, ST-NSR leverages sparsity to reduce memory access in the
+                                                                           4              Cambricon-SR
+encoding stage, which does not involve any matrix multiplication
+operations, making structured sparsity hardware ineffective for ST-        In this section, we present Cambricon-SR, a hardware architecture
+NSR. Moreover, applying the structured sparsity algorithm to               developed to efficiently execute the ST-NSR algorithm proposed in
+sparse encoding table is also ineffective. We apply structured             Section 3. We first introduce the dataflow and overall architecture
+sparsity to the encoding table with the same sparsity rate as ST-NSR.      of Cambricon-SR in Section 4.1 and Section 4.2. Subsequently, we
+Experiments show that it not only fails to improve performance             detail the optimizations applied to the update stage, the encoding
+but also degrades quality, reducing PSNR by 1.5 dB. This is because        stage, and the MLP stage, which include Sparse Update Unit in
+structured sparsity (e.g., 2:4) requires accessing four consecutive        Section 4.3, Sparse Index Unit in Section 4.4, and Dynamic Shared
+entries as a group to gain performance benefits. However, accesses         Buffer in Section 4.5, respectively.
+to the encoding table are irregular single-entry lookups, resulting in
+no performance gain. Moreover, the fixed sparsity pattern further          4.1                 Overall Dataflow of Cambricon-SR
+degrades modeling quality.                                                 Figure 7 shows the high-level execution flow of Cambricon-SR
+   In our GPU implementation of ST-NSR, sparse table (ST) is kept          for one iteration of NSR training. We divide the entire execution
+resident in the L2 cache to reduce off-chip memory accesses, as its        process into two stages: the forward & backward stage, and the
+size is less than 40 MB. To further filter out invalid ST accesses, a      update stage.
+bitmap stored in shared memory is utilized to track the sparsity              Forward & Backward Stage. In this stage, by storing all in-
+state of each table entry. Since each block in our CUDA kernel             volved parameters and intermediate data on-chip, off-chip memory
+only processes one level of encoding table, we only load the bitmap        accesses are nearly eliminated. Weights and gradients of MLP are
+corresponding to that level into shared memory. However, shared            small and stored on-chip. For parameters of encoding tables, due
+memory on A100 (164 KB per block) cannot accommodate the com-              to ST-NSR algorithm, the total size of the sparse table and table
+plete bitmap of one level (256 KB). To address this issue, we employ       gradients does not exceed 40 MB. Therefore, it is feasible to store
+a hash table, which saves storage to 128 KB through hash mapping           them on-chip. The size of the intermediate data depends on the
+at the cost of hash collisions that may cause a small number of            number of rays or sampled points processed in parallel. To reduce
+pruned entries to be misidentified as valid.                               the size of intermediate data and store those data on-chip, sam-
+   We evaluate the performance of NSR and ST-NSR on GPU across             pling, encoding, and MLP processes of one ray are executed in a
+8 datasets. Figure 6 shows the runtime of one training iteration           fine-grained pipelined manner, with a granularity of 32 sampled
+of NSR and ST-NSR on GPU. ST-NSR achieves a 1.55× speedup in               points.
+the encoding stage and a 1.19× overall speedup compared to the                Update Stage. During the update stage, three types of model
+baseline GPU implementation. However, there remains a significant          parameters need to be updated: MLP weights, sparse table (ST), and
+performance gap between the achieved speedup and the theoret-              dense table (DT). The MLP weights and gradients are stored on-chip
+ical reduction in memory accesses (at least 5×). This is primarily         and are updated directly on-chip. Simultaneously, the off-chip DT
+attributed to bank conflicts issues when threads within a block            is updated by using the on-chip table gradients generated at the
+
+
+
+
+                                                                    1259
+

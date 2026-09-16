@@ -18,22 +18,27 @@ and produce a note that the human can hand to a shared team repo. Read this file
    `**inferred / not verified**`. Never restate a hedged claim as a firm one, and never
    promote a number without its frame (§3).
 
-## 1. What you are producing — exactly one file
+## 1. What you are producing — two files
 
-**`survey/papers/<Name>/ANALYSIS.md`.** That is your whole deliverable. Update the file
-that is already there.
+**Changed 2026-09-03 by the human.** Agents previously produced `ANALYSIS.md` only and were
+forbidden from drafting the note. That rule is lifted: **draft the note too.** The human then
+edits it into their own writing and hands it on — in practice they cut it by roughly half.
 
-Its purpose is **to help the human read the paper faster** — not to replace their reading.
-They then write `survey/papers/<Name>/paper-note.md` themselves and copy it into the shared
-repo. See [`AGENT-GUIDE.md`](AGENT-GUIDE.md) §0b for the three steps and who owns each.
+1. **`survey/papers/<Name>/ANALYSIS.md`** — the working record. Update the file that is
+   already there. Full evidence apparatus lives here: `**verified**` markers, page numbers,
+   number frames, disagreements.
+2. **`survey/papers/<Name>/paper-note.md`** — a **draft** in
+   `QuantArchSurvey/templates/paper-note.md` form, for the human to rewrite. See §6a for the
+   register it must be written in.
 
-**Do not create `paper-note.md`.** Do not create a file shaped like
-`QuantArchSurvey/templates/paper-note.md`. That is the human's authored note, and drafting
-it takes their step away from them. Read their template to know *what they will need from
-you* — then put those things in `ANALYSIS.md`.
+**Still forbidden: writing anything into `QuantArchSurvey/`.** The draft note goes in
+`survey/papers/<Name>/`, never in `QuantArchSurvey/venues/ISCA/notes/`. Copying it across is
+the human's step and needs their explicit permission for that specific file (§0 rule 1,
+[`AGENT-GUIDE.md`](AGENT-GUIDE.md) §0b).
 
-Inside `ANALYSIS.md`, add a **"For the note"** section carrying the material their template
-asks for that our format does not already hold:
+Inside `ANALYSIS.md`, keep the **"For the note"** section carrying the material their template
+asks for that our format does not already hold. It is the bridge between the two files — write
+it first, then compress it into `paper-note.md`:
 
 - **proposed values on their four axes**, each with one line of evidence
 - a **proposed venue-list row** for `venues/ISCA/README.md`, as a fenced block they can
@@ -61,6 +66,9 @@ So:
 3. **Then §2 (data type)** — the densest and most important section. Then §4's fairness
    line. Then §3, then §5. Then the tags. Then the venue row.
 4. **Leave a field empty rather than guessing**, and say in §5 what you left and why.
+5. **Write `ANALYSIS.md` first, `paper-note.md` second.** The note is a compression of the
+   analysis, not a parallel effort. If a claim is not in `ANALYSIS.md` with its evidence, it
+   does not belong in the note.
 
 ## 3. §2 — data type: what "be specific" means here
 
@@ -76,6 +84,11 @@ paper does not say:
   accumulators, the first and last layer, softmax, a fraction of values. **Find it.** A
   paper claiming 4 bits while holding 3% of values at FP16 has an effective bitwidth well
   above 4, and that is the comparison that matters.
+- **Accumulator bitwidth, always, as its own line.** It has been load-bearing in most papers
+  read so far: Tender's 32-bit `Acc` is left-shifted once per channel band, so it bounds the
+  band count; TransitiveArray splits a 12-bit PPE / 24-bit APE for 4-bit activations; LUT
+  Tensor Core's headline density is measured **"No Psum"**, i.e. with accumulator cost
+  excluded. Record the width, and whether the reported area/energy includes it.
 - **Retraining requirement** — PTQ off an off-the-shelf checkpoint, or QAT? This is an
   *architectural* constraint, not an accuracy footnote: hardware that cannot consume a
   stock checkpoint cannot be deployed.
@@ -110,6 +123,11 @@ The traps:
   **deliberately** tags several pre-2023 papers `G3` — OLAccel (ISCA'18), GOBO (MICRO'20),
   Mokey (ISCA'22) — as early instances of the outlier and codebook threads. **Do not
   "correct" those.** If a paper genuinely bridges, write `G2→G3` and justify it in §5.
+- **A shipped software stack counts toward `SYS`** (their ruling, 2026-09-09, on RaPiD).
+  A compiler, an ISA, framework plug-ins, a runtime — if the paper builds the thing that
+  *drives* the hardware and treats it as a contribution rather than an implementation note,
+  the Level is `ARCH+SYS`, not `ARCH`. Do not reserve `SYS` for papers with no hardware.
+  Check for this explicitly: an ISA section or a "software stack" figure is the tell.
 - **Data type is multi-valued and wants the bitwidth**: `INT4` beats `INT`. Tag `MIXED`
   *alongside* the underlying formats. If the paper says microscaling, tag `MX`, not `BFP`.
 - The venue list's existing tags are **seeds**, not answers. Their workflow says to
@@ -130,6 +148,87 @@ applies) written from an abstract-level read. On a close read:
 - Add cross-links to related entries under `Relation to other entries`.
 - Add the **"For the note"** section described in §1.
 
+## 6a. `paper-note.md` — the register to write it in
+
+The human's own notes are **far terser than an agent's default**. Measured on
+`TransitiveArray` (2026-09-03): the agent draft ran 128 lines for §2–§5; the human's rewrite
+was 56. Write the draft closer to their length, not to yours.
+
+**Keep at full care** — these landed unchanged and are what the note is for:
+
+- the **tags table**
+- the **§1 one-line summary**
+- the **§4 results table**
+
+**Compress hard** — §2 through §5. **Budgets, set by the human 2026-09-09 after two rounds of
+"shorter":**
+
+| Section | Budget |
+|---|---|
+| §2 Data type | **one point per line, keyword-dense.** No line wraps into a paragraph; if a point needs two sentences it is two points or it belongs in `ANALYSIS.md` |
+| §3 Optimization | **room to breathe** — a short labelled paragraph per mechanism, plus what the hardware costs. This is "what was actually built"; detail earns its place here and nowhere else in the note |
+| §4 Results | **the table only** — no prose under it |
+| §5 Comment | **LEAVE EMPTY.** Heading and nothing else |
+
+Outside §3, one line means one line: a bold label and a sentence or two, wrapped. If it does
+not fit, the material belongs in `ANALYSIS.md`, not in a longer note.
+
+**§5 is the human's, and you leave it blank** (their instruction, 2026-09-09). It carries survey
+placement, the claim the paper is the best citation for, and the generation justification —
+the judgments that are the point of them writing the note themselves. Write the heading, leave
+it empty, and put what you *would* have said in `## 6. Claude notes` under a "§5 material, if
+you want it" bullet, where they can take it or ignore it.
+
+**The §4 fairness verdict is not dropped — it becomes the table's last row.** Their README calls
+that line worth more than a fully filled template, so keep it as a
+`| **Is the comparison fair?** | … |` row: iso-what, the one number not to quote, and the
+disclosed operating range. That satisfies "just a table" without losing the most valuable
+sentence in the note.
+
+**Keep that row short — verdicts, not discussion** (their instruction, 2026-09-09, restated
+2026-09-09 after DRQ). **Target ~50-60 words; hard ceiling ~70.** Name what is iso, what is not,
+and the number that must not be quoted — nothing else. Do not explain *why* each holds, do not
+name the section a concession appears in, do not give the mechanism behind an elision: all of that
+lives in `ANALYSIS.md`'s fairness section, and the note is a pointer to it. Prefer parentheses to
+clauses (`**not iso-training** (DRQ QAT vs OLAccel PTQ)`) and a semicolon list to sentences. If a
+verdict needs a "because", it is `ANALYSIS.md` material.
+
+- **Fragments and arrows are the register**, not paragraphs. *"GEMM -> Sparse LUT
+  construction + Lookups."* No topic sentences. Bold lead-ins only for the template's own
+  field names (Formats, Granularity, Escape hatch, Retraining).
+- **A bold label plus one line is a complete entry.** *"**Outliers.** Isolated but not
+  high-precision — 5-bit, one above inliers. Cost is metadata, not precision."* That is the
+  target density: the claim and its consequence, nothing else.
+- **Numbers instead of description.** *"4 + 10%×8 = 4.8"* beats a sentence explaining the
+  encoding. Put the derivation in `ANALYSIS.md`; put the result in the note.
+- **Cut the evidence apparatus entirely.** No `**verified**` markers, no page or section
+  citations except where a fact is meaningless without one, no commentary about how the paper
+  frames itself. All of that stays in `ANALYSIS.md`.
+- **State the verdict, drop the case.** A multi-paragraph fairness analysis becomes *"Fair.
+  Iso-node and iso-area yes; iso-algorithm no."* Keep the exceptions that change a decision;
+  cut the reasoning that led to them.
+- **Generalize to what the design constrains**, not what the paper happened to report. "Can
+  be extended to arbitrary activation precisions if the LUT/adder bit-width is modified"
+  beats reciting the two widths the paper synthesized.
+
+§2 must still carry, however briefly, the five things §3 above demands — format per tensor
+class, granularity **with group size**, outlier mechanism, the **escape hatch**, and PTQ vs
+QAT. Terseness is not licence to drop a required field.
+
+**Add a `## 6. Claude notes` section** — the template stops at §5; this one is ours. Put your
+suggestions there rather than pushing them into the human's §1–§5: things you would argue for
+but they may not want, cross-paper observations, a number you think should be excluded, an
+empty section you would fill. **Keep it short** — bullets, a few lines each, not a second
+essay. Open it with:
+
+```
+*Suggestions from the reading agent. **Strip this section before copying into
+`QuantArchSurvey/venues/ISCA/notes/`.***
+```
+
+**§6 never goes into `QuantArchSurvey/`.** It is scaffolding for the human's rewrite, not part
+of the note they hand to the team repo. Say so in the section itself, every time.
+
 ## 7. Before you finish
 
 ```bash
@@ -137,8 +236,9 @@ bash Claude/scripts/check_survey.sh          # declared status vs. what is on di
 cd QuantArchSurvey && git status --short     # MUST be empty
 ```
 
-Also confirm you did **not** create `paper-note.md` — that file is the human's.
+Confirm `paper-note.md` exists in `survey/papers/<Name>/` and **nowhere inside
+`QuantArchSurvey/`**.
 
 Then report to the human: the §1 sentence, your four proposed tags with one line of
 justification each, anything you left blank and why, and any disagreement with the seed tags
-in `venues/ISCA/README.md`.
+in `venues/ISCA/README.md`. Say plainly that the note is a **draft for them to rewrite**.

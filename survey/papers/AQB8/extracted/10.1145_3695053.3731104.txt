@@ -1,0 +1,1304 @@
+            AQB8: Energy-Efficient Ray Tracing Accelerator through
+                          Multi-Level Quantization
+                 Yen-Chieh Huang                                                   Chen-Pin Yang                                         Tsung Tai Yeh
+        National Yang Ming Chiao Tung                                   National Yang Ming Chiao Tung                           National Yang Ming Chiao Tung
+                  University                                                      University                                               University
+               Hsinchu, Taiwan                                                 Hsinchu, Taiwan                                          Hsinchu, Taiwan
+          lashhw.cs09@nycu.edu.tw                                          ycpin.cs12@nycu.edu.tw                                    ttyeh@cs.nycu.edu.tw
+
+Abstract                                                                                              ACM Reference Format:
+Ray tracing (RT) is a rendering technique that produces high-fidelity                                 Yen-Chieh Huang, Chen-Pin Yang, and Tsung Tai Yeh. 2025. AQB8: Energy-
+                                                                                                      Efficient Ray Tracing Accelerator through Multi-Level Quantization. In
+images by simulating how light physically interacts with objects
+                                                                                                      Proceedings of the 52nd Annual International Symposium on Computer Ar-
+in a scene. This realism comes at a high computational and mem-                                       chitecture (ISCA ’25), June 21–25, 2025, Tokyo, Japan. ACM, New York, NY,
+ory cost, largely driven by the need to find numerous ray-object                                      USA, 14 pages. https://doi.org/10.1145/3695053.3731104
+intersections. To accelerate this process, scenes are typically struc-
+tured using bounding volume hierarchy (BVH) trees, where objects                                      1    Introduction
+are grouped within bounding boxes to minimize the number of
+                                                                                                      Ray tracing (RT) is a computer graphics rendering technique that
+required intersection tests. Specialized hardware, known as RT
+                                                                                                      simulates the physical behavior of light as it interacts with objects
+accelerators, accelerates BVH processing to boost computational
+                                                                                                      in a scene to generate high-fidelity images. Although images gener-
+speed, yet memory traffic persists as a major bottleneck, largely
+                                                                                                      ated through RT are intricately detailed, its adoption in computer
+due to the bandwidth consumed by standard 32-bit floating-point
+                                                                                                      graphics applications such as video gaming and film production
+(FP32) bounding boxes. Consequently, previous work has aimed to
+                                                                                                      was historically restricted due to its high computational demand.
+reduce memory traffic by compressing these boxes into low-bit (e.g.,
+                                                                                                      Modern GPUs, such as those made by NVIDIA [50], AMD [1], and
+8-bit) representations. However, existing compression techniques
+                                                                                                      Intel [21], have addressed this issue by incorporating dedicated
+typically require decompressing bounding boxes back to FP32 for in-
+                                                                                                      RT hardware accelerators. These accelerators enable real-time RT,
+tersection tests, thus failing to eliminate the computational burden
+                                                                                                      improving the visual effects of computer graphics applications.
+and energy cost associated with complex FP32 arithmetic during
+                                                                                                         RT functions by sending out rays (e.g., from a camera viewpoint)
+BVH traversal. This work introduces AQB8, an RT accelerator de-
+                                                                                                      that then intersect with objects in the scene (termed ray-object inter-
+signed to operate on a quantized BVH tree constructed using a novel
+                                                                                                      sections), aiming to determine visibility and simulate light transport.
+multi-level quantization technique. This approach enables RT to
+                                                                                                      Since generating a detailed image requires tracing numerous rays
+operate directly on low-bit integers using simpler, area-efficient
+                                                                                                      per pixel, managing the cost of potentially billions of these inter-
+hardware units, thereby drastically reducing the need for FP32 arith-
+                                                                                                      section tests is crucial. A key technique used by accelerators to
+metic during BVH traversal while mitigating overheads associated
+                                                                                                      optimize this process involves structuring the scene geometry us-
+with reduced precision. As a result, across various scenes, AQB8
+                                                                                                      ing a bounding volume hierarchy (BVH) tree. Since complex scenes
+achieves a 70% reduction in DRAM accesses, a 49% reduction in
+                                                                                                      are often represented by millions of individual triangles, BVHs work
+energy consumption, a 27% hardware area reduction, and a 1.82x
+                                                                                                      by grouping these triangles within nested bounding boxes (BBs).
+performance speedup over modern GPU RT accelerators. Our code
+                                                                                                      Instead of testing intersections against every triangle, rays first test
+is publicly available at https://github.com/nycu-caslab/AQB8.
+                                                                                                      against these BBs (termed ray-box intersection tests), allowing most
+                                                                                                      of the triangles to be quickly skipped. This drastically reduces the
+CCS Concepts                                                                                          number of expensive ray-triangle intersection tests required.
+• Computing methodologies → Ray tracing; Graphics proces-                                                However, while accelerators improve throughput, significant
+sors; Modeling and simulation.                                                                        efficiency challenges remain, stemming from how BVH trees are
+                                                                                                      conventionally implemented. Usually, the BBs and ray-box inter-
+Keywords                                                                                              section tests rely on the standard 32-bit floating-point (FP32) data
+Ray Tracing, Domain-Specific Accelerator, GPU                                                         format for accuracy. While precise, representing BBs in FP32 format
+                                                                                                      leads to significant memory traffic due to the large data size. More-
+                                                                                                      over, the computations performed during BVH traversal require
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed                 intricate FP arithmetic hardware units, which consume consider-
+for profit or commercial advantage and that copies bear this notice and the full citation             able energy and contribute to hardware complexity. These factors
+on the first page. Copyrights for components of this work owned by others than the                    combine to limit the overall system efficiency and energy savings,
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission         even with hardware acceleration.
+and/or a fee. Request permissions from permissions@acm.org.                                              Recognizing the memory issue caused by FP32 BBs, past research
+ISCA ’25, Tokyo, Japan                                                                                has explored compressing BBs into low-bit data formats [7, 23, 26,
+© 2025 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 979-8-4007-1261-6/25/06                                                                      32, 37, 69, 77]. However, these methods typically require converting
+https://doi.org/10.1145/3695053.3731104                                                               the compressed BBs back into the FP32 format for RT accelerators
+
+
+
+
+                                                                                                374
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                        Yen-Chieh Huang, Chen-Pin Yang, and Tsung Tai Yeh
+
+                                                       FP32    FP16
+                     (a) Ray−Box Intersection Test            (b) Ray−Triangle Intersection Test
+                                                              19.6x
+               5   2.7x
+
+               4
+ Normalized
+ Test Counts
+
+
+
+
+                          1.7x 2.0x 1.3x
+                                                       2.2x                  5.8x
+               3                                                      8.1x                                5.7x
+                                           2.3x 1.3x                                       10.3x
+               2                                                                                   2.4x
+                                                                                    3.4x
+               1
+
+               0
+                   KIT    BA BMW CLA HOU STR TEA              KIT     BA BMW CLA HOU STR TEA
+                                                       Scenes
+                                                                                                                       Figure 2: (a) Ray tracing. (b) Bounding boxes. (c) BVH tree.
+      Figure 1: Impact of reduced-precision BVH traversal.
+
+                                                                                                                        • We propose a novel multi-level quantization technique that
+                                                                                                                          creates a quantized BVH tree to enable using low-bit INT arith-
+to perform ray-box intersection tests. Consequently, while memory
+                                                                                                                          metic during BVH traversal.
+traffic might decrease, the computational workload during BVH
+                                                                                                                        • We present AQB8, an efficient RT accelerator for GPUs specifi-
+traversal still relies heavily on energy-intensive FP32 hardware
+                                                                                                                          cally designed to process quantized BVH trees.
+units. This motivates exploring whether BVH traversal can be per-
+                                                                                                                        • We demonstrate that AQB8 reduces memory traffic by 70%,
+formed using low-bit arithmetic directly, thereby eliminating the
+                                                                                                                          energy consumption by 49%, and hardware area by 27%, which
+reliance on FP32 computations. To investigate the viability of this
+                                                                                                                          collectively yield a geometric mean of 1.82x speedup in realistic
+approach, we simulated a scenario where both the BBs were rep-
+                                                                                                                          RT workloads.
+resented and the ray-box intersection tests were calculated using
+16-bit floating-point (FP16), instead of the standard FP32 format.
+As shown in Figure 1 (obtained by inserting counters into the RT                                                       2 Background
+program across different scenes), this direct use of FP16 arithmetic                                                   2.1 Ray Tracing & BVH Tree
+for BVH traversal can cause a 2.7x increase in ray-box intersection                                                    2.1.1 Ray Tracing. RT generates 3D graphics by simulating the
+tests and a staggering 19.6x increase in ray-triangle intersection                                                     interaction of light rays with objects in a scene, which are typically
+tests compared to standard FP32 BVH traversal. This occurs be-                                                         represented as triangle meshes—collections of interconnected tri-
+cause the reduced precision alters the effective size and position                                                     angles that approximate 3D surfaces. As illustrated in Figure 2(a),
+of BBs (an effect referred to as quantization errors), leading to sub-                                                 primary rays emitted from a camera intersect objects in the scene,
+stantially more unnecessary tree traversal steps. This demonstrates                                                    spawning secondary rays to simulate effects such as reflection, re-
+that naively using low-bit formats for BVH traversal is infeasible.                                                    fraction, and shadows. To enhance graphic rendering quality, RT
+    The main challenge, therefore, is to leverage the efficiency bene-                                                 emits multiple rays per image pixel, sampling more light sources
+fits of low-bit BB while minimizing the penalty of increased BVH                                                       and producing realistic visual effects. However, processing such a
+traversal steps. To address this challenge, this work proposes multi-                                                  large number of rays is challenging because it requires performing
+level quantization, a novel technique for constructing a quantized                                                     an enormous number of ray-triangle intersection tests. To address
+BVH tree. This technique structures the BVH tree into clusters, each                                                   this, RT utilizes a BVH tree [40], which organizes the triangles
+containing a high-precision FP32 anchor BB. Other bounding boxes                                                       in a scene into nested bounding boxes (BBs) (Figure 2(b)(c)). This
+within the cluster, termed as quantized BBs, are then represented                                                      hierarchical structure allows rays to bypass intersection tests with
+using low-bit integers relative to this anchor. This organization                                                      triangles in regions they do not intersect, significantly improving
+allows for compact data representation and direct operation us-                                                        computational efficiency.
+ing simpler integer (INT) arithmetic, while the relative encoding
+scheme anchored to a high-precision reference mitigates the tra-                                                       2.1.2 BVH Traversal. The BVH tree organizes scene geometry into
+versal step increase typically caused by low-bit quantization errors.                                                  a tree structure for efficient RT. As illustrated in Figure 2(b), the
+By enabling the direct use of simpler INT operations, this approach                                                    scene’s triangles are grouped into BBs, with each BB representing
+provides a foundation for building more efficient RT accelerators.                                                     a spatial region. Figure 2(c) demonstrates the corresponding BVH
+    Specifically, we present AQB8 (Accelerator for Quantized BVH                                                       tree, where each node contains a BB, and the leaf nodes store the
+with 8-bit Traversal), an RT accelerator designed to process the                                                       triangles enclosed within their respective BBs.
+quantized BVH tree. In AQB8, anchor BBs are maintained at full                                                            RT begins by testing whether an emitted ray intersects the BB at
+FP32 precision, while quantized BBs are encoded as 8-bit integers                                                      the root of the BVH tree. A ray then continues to visit child nodes
+(INT8). This design allows AQB8 to perform a large portion of the                                                      of the BVH tree until it reaches a leaf node containing triangles. At
+BVH traversal using simple INT8 arithmetic, minimizing reliance                                                        the leaf node, ray-triangle intersection tests are performed to deter-
+on complex FP32 units and avoiding frequent format conversions                                                         mine the intersection point on the triangle. Structuring RT as BVH
+during traversal. As a result, AQB8 achieves significant improve-                                                      traversal significantly improves RT performance by avoiding the
+ments in terms of memory traffic, energy consumption, hardware                                                         need to examine all triangles in a scene. For example, in Figure 2(b),
+area, and performance speedup. The contributions of this work are                                                      the ray only intersects bounding boxes A and B, and hence does
+summarized below.                                                                                                      not pass node C and its descendants.
+
+
+
+
+                                                                                                                 375
+AQB8: Energy-Efficient Ray Tracing Accelerator through Multi-Level Quantization                                                                            ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                                                                                                                          Warp Scheduler                     Warp Buffer
+                                                                                                                                      Tensor Accelerator                          Buffer
+                                                                                                           SM       SM     SM
+                                                                                                                                          RT Accelerator
+                                                                                                                                                                      TRV        TRV         TRV
+                                                                                                               Interconnect            FP      DP         SFU         Unit       Unit        Unit
+                                                                                                                                      Unit     Unit       Unit
+                                                                                                                L2 Cache                                                          Buffer
+                                                                                                                                             Registers
+                                                                                                                  DRAM                                                BOX        BOX         BOX
+                                                                                                                                           Interconnect               Unit       Unit        Unit
+                                                                                                                                      Texture     Constant
+                                                                                                                                       Cache       Cache                  TRIG              TRIG
+                                                                                                                                                                          Unit              Unit
+                                                                                                                                           L1D Cache /
+                                                                                                                                          Shared Memory                          L0 Cache
+Figure 3: (a) Ray-box and (b) ray-triangle intersection test.
+
+                                                                                                         Figure 4: GPU RT accelerator architecture [56].
+2.1.3 Ray-Box Intersection Test. The ray-box intersection test is a
+fundamental step while traversing BVH trees, where RT checks if a
+ray intersects the BB associated with a node. This test determines
+                                                                                         units, and ray-triangle intersection (TRIG) units [11], along with a
+whether to traverse deeper into the node’s children or skip the
+                                                                                         small on-chip L0 cache that stores frequently accessed BVH tree
+node entirely. As shown in Figure 3(a), a BB is defined by two
+                                                                                         nodes and triangles. The TRV unit handles the BVH traversal logic,
+corner points: (𝑥𝑚𝑖𝑛 , 𝑦𝑚𝑖𝑛 , 𝑧𝑚𝑖𝑛 ) and (𝑥𝑚𝑎𝑥 , 𝑦𝑚𝑎𝑥 , 𝑧𝑚𝑎𝑥 ). A ray is
+                                                                                         maintaining stack memory to store ray-intersected nodes that have
+represented parametrically as:
+                                                                                         yet to be visited. The BOX unit performs ray-box intersection tests
+                               p(𝑡) = o + 𝑡 d,                                           to check whether a ray intersects a BB. The TRIG unit performs
+where o = (𝑜 𝑥 , 𝑜 𝑦 , 𝑜𝑧 )𝑇 is the ray’s origin, d = (𝑑𝑥 , 𝑑 𝑦 , 𝑑𝑧 )𝑇 is its           ray-triangle intersection tests for triangles located in the leaf nodes,
+direction, and 𝑡 is a scalar parameter that specifies the distance                       calculating exact intersection points for graphic rendering.
+along the ray. For any 𝑡, p(𝑡) yields the coordinates of the corre-                         Programmers can use the Vulkan ray tracing API [67], which
+sponding point along the ray. To find the parameter 𝑡𝑥 ′ where the                       translates high-level ray tracing calls into specialized instructions
+ray intersects a plane 𝑥 = 𝑥 ′ , the following equation is used:                         executed by the RT accelerator. When a warp issues a ray tracing
+                                                                                         instruction, the GPU warp scheduler dispatches the instruction to
+                            𝑡𝑥 ′ = (𝑥 ′ − 𝑜 𝑥 )/𝑑𝑥                                       the warp buffer in the RT accelerator during the GPU pipeline’s
+  This can be reformulated for computational efficiency by intro-                        execution stage. Each cycle, the RT accelerator selects a warp from
+ducing:                                                                                  the buffer to perform ray tracing operations and issues memory
+                                                                                         requests to its L1 memory access queue [10, 56].
+               w = (𝑤 𝑥 , 𝑤 𝑦 , 𝑤𝑧 )𝑇 = (1/𝑑𝑥 , 1/𝑑 𝑦 , 1/𝑑𝑧 )𝑇
+           b = (𝑏𝑥 , 𝑏 𝑦 , 𝑏𝑧 )𝑇 = (−𝑜 𝑥 /𝑑𝑥 , −𝑜 𝑦 /𝑑 𝑦 , −𝑜𝑧 /𝑑𝑧 )𝑇                    2.3             RT Memory Traffic Breakdown
+where w and b are precomputed values based on the ray’s direction                        RT generates a significant amount of memory traffic during ren-
+and origin. Preprocessing rays into w and b eliminates the need for                      dering. This is because high-quality rendering requires many rays
+repeated division operations during traversal, which are computa-                        per pixel, and each ray often makes frequent, irregular memory
+tionally expensive. By replacing divisions with multiplications and                      requests as it traverses the BVH tree [10]. For instance, profiling
+additions, the ray-box intersection tests can be performed more                          indicates trace ray instructions can account for roughly 60% of
+efficiently. This yields:                                                                memory accesses [56], making RT workloads frequently memory-
+                                                                                         bound [34, 56]. Consequently, RT performance often becomes lim-
+                              𝑡𝑥 ′ = 𝑤 𝑥 𝑥 ′ + 𝑏 𝑥                           (1)         ited by memory bandwidth, as the sheer volume and irregular pat-
+   Using Equation 1 as the building block, we can find where the                         tern of data requests can overwhelm the memory system, even with
+ray intersects a BB based on the Slab method [22] as shown in                            specialized RT accelerator units designed to speed up computations.
+Figure 3(a). If we end up with 𝑡𝑚𝑎𝑥 > 𝑡𝑚𝑖𝑛 , there is an intersection                    This bottleneck is particularly acute in mobile GPU environments
+between a ray and a BB, and vice versa.                                                  where DRAM bandwidth is typically more constrained [56].
+2.1.4 Ray-Triangle Intersection Test. At the leaf nodes of the BVH
+tree, RT performs ray-triangle intersection tests to determine if the                                                                     Other       Bounding Box        Triangle
+                                                                                                                    (a) L1D Accesses (In Bytes)                  (b) DRAM Accesses (In Bytes)
+ray intersects any of the triangles within the node and calculates                                      100%
+                                                                                                                                                                                                         % 2%
+                                                                                                                                                        %
+                                                                                                                                                      20
+
+
+
+
+                                                                                                                                                                                                           1
+
+
+
+
+the intersection points if they exist. As shown in Figure 3(b), a ray
+                                                                                           Percentage
+
+
+
+
+                                                                                                        75%
+                                                                                                                                                                                                         74
+                                                                                                                                                       %
+                                                                                                                                                      69
+
+
+
+
+originating at 𝑂 with direction 𝐷 intersects a triangle defined by
+                                                                                                        50%
+vertices 𝐴, 𝐵, and 𝐶 at point 𝑄.
+                                                                                                        25%
+
+2.2     GPU RT Accelerator Architecture                                                                  0%
+                                                                                                                                                         N
+
+
+
+
+                                                                                                                                                                                                           N
+                                                                                                                           W
+
+
+
+
+                                                                                                                                                                           W
+                                                                                                                                         U
+
+
+
+
+                                                                                                                                                                                     U
+
+
+
+
+Modern GPUs feature various dedicated hardware accelerators [50],
+                                                                                                                                A
+
+
+
+
+                                                                                                                                                  A
+
+
+
+
+                                                                                                                                                                                    A
+
+
+
+
+                                                                                                                                                                                                     A
+                                                                                                                                         R
+
+
+
+
+                                                                                                                                                                                    R
+                                                                                                                T
+
+
+
+
+                                                                                                                                                                 T
+                                                                                                                                                      EA
+
+
+
+
+                                                                                                                                                                                                         EA
+                                                                                                                    BA
+
+
+
+
+                                                                                                                                                                     BA
+                                                                                                                                      O
+
+
+
+
+                                                                                                                                                                                   O
+                                                                                                                         BM
+
+
+
+
+                                                                                                                                                                          BM
+                                                                                                                                CL
+
+
+
+
+                                                                                                                                                TE
+
+
+
+
+                                                                                                                                                                                 CL
+
+
+
+
+                                                                                                                                                                                                   TE
+                                                                                                                                      ST
+
+
+
+
+                                                                                                                                                                                 ST
+                                                                                                               KI
+
+
+
+
+                                                                                                                                                             KI
+                                                                                                                                     H
+
+
+
+
+                                                                                                                                                                                 H
+                                                                                                                                                      M
+
+
+
+
+                                                                                                                                                                                                     M
+
+
+
+
+such as tensor and RT accelerators within each streaming multipro-                                                                                     Scenes
+cessor (SM), as illustrated in Figure 4. The RT accelerator typically
+consists of tree traversal (TRV) units, ray-box intersection (BOX)                               Figure 5: RT accelerator memory traffic breakdown.
+
+
+
+
+                                                                                   376
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                         Yen-Chieh Huang, Chen-Pin Yang, and Tsung Tai Yeh
+
+
+      traversal path of FP32 BBs
+      traversal path of reduced-precision BBs                cluster of objects
+      the node associated with the blue BB in (a)
+                                                         global origin
+                         ray
+                                          A
+        FP32
+         BB          ×                B         C
+                              D
+                                                        empty space
+      reduced-                            D         E
+      precision    ×
+                   ×B     C
+                                  E
+         BB       ×A
+                         (a)              (b)                 (c)                                                                   (c)
+
+
+Figure 6: (a) Illustration of quantization error in BBs. (b) In-
+creased traversal steps due to quantization error. (c) Sparsity
+of a scene.                                                                                 (b)                                     (a)                   (d)
+
+
+                                                                                        Figure 7: Visualization of multi-level quantization. (a)
+   Figure 5 illustrates the breakdown of both L1D cache accesses                        Overview of the 3D scene. (b) Quantized BBs (green) shown
+and DRAM accesses for triangles, BBs, and other data (such as child                     within a large anchor BB (red), forming a coarse-level clus-
+indices and metadata) across various scenes, based on statistics                        ter. (c) A smaller anchor BB (red) establishing a finer-detail
+collected using Vulkan-Sim [56]. As shown, BB data constitutes the                      cluster. (d) An even smaller anchor BB (red) establishing a
+largest portion of memory traffic. It accounts for an average of 69%                    very fine-detail cluster.
+of L1D cache accesses, primarily because each ray typically inter-
+sects multiple BBs while traversing the BVH tree before reaching a
+leaf node. For DRAM accesses, BB data remains dominant, repre-                             We observe that typical computer graphics scenes exhibit spar-
+senting 74% of the total traffic. This breakdown clearly indicates                      sity, often containing large volumes of empty space interspersed
+that BBs are the primary contributor to the memory traffic of RT.                       with localized clusters of objects (Figure 6(c)). Standard world-space
+                                                                                        coordinates, defined relative to a single global origin, do not inher-
+3    Multi-Level Quantization                                                           ently exploit this characteristic. However, representing geometry
+                                                                                        relative to local reference points within these clusters offers a path
+As established in Section 2.3, bounding boxes (BBs) represented in
+                                                                                        to efficiency.
+the standard FP32 format are a primary source of memory traffic
+                                                                                           Motivated by this observation, we propose multi-level quantiza-
+in RT. Furthermore, conventional ray-box intersection tests rely
+                                                                                        tion. This technique restructures the BVH tree to enable compact
+on complex and energy-intensive FP32 arithmetic units. Reducing
+                                                                                        BB representation while strategically mitigating quantization er-
+the bitwidth of BBs appears promising for alleviating both memory
+                                                                                        rors. As illustrated in Figure 7, multi-level quantization organizes
+and computational costs.
+                                                                                        BVH nodes into clusters, each comprising:
+   However, naive precision reduction introduces significant chal-
+lenges. Simply using lower precision formats like FP16 for both                          • An anchor BB (shown in red): Defined using high-precision
+storage and computation leads to unacceptable performance degra-                           (FP32) world-space coordinates, establishing an accurate local
+dation. As demonstrated in Figure 1, this approach introduces se-                          reference frame for the cluster.
+vere quantization errors—inaccuracies stemming from the limited                          • Several quantized BBs (shown in green): Defined using compact,
+precision. When quantizing FP32 BBs to a lower precision format                            low-bit integer formats (e.g., INT8) within the local coordinate
+like FP16, the necessary rounding or truncation must be performed                          system defined by the anchor BB.
+carefully. Crucially, to ensure rendering correctness, the resulting                       During BVH traversal, when a ray enters a cluster (i.e., intersects
+quantized BB must fully enclose the original FP32 BB. If the quan-                      the FP32 anchor BB), subsequent ray-box tests against the quantized
+tized BB were smaller, a ray might intersect the original BB but miss                   BBs within that cluster operate directly on their low-bit integer
+the quantized one, leading to incorrect rendering. Therefore, the                       representations within the anchor’s local coordinate frame. This
+conversion process often slightly shifts the minimum and maximum                        avoids decompression and eliminates the need for complex FP32
+bounds outwards. This conservative enclosing effectively alters the                     arithmetic for a significant portion of the traversal process.
+BB’s size and position (illustrated in Figure 6(a)). While guarantee-                      Furthermore, the “multi-level” aspect strategically reduces quan-
+ing correctness, this potential expansion leads to numerous false                       tization error. Anchor BBs are used throughout the BVH tree across
+positive intersections (rays incorrectly reported as intersecting the                   multiple levels (Figure 7). Larger anchors represent coarse scene
+reduced-precision BB when they would miss the original FP32 BB).                        structures (Figure 7(b)), while progressively smaller anchors han-
+Such false positives increase unnecessary BVH traversal steps (Fig-                     dle finer-scale features (Figure 7(c)(d)), ensuring that the low-bit
+ure 6(b)), ultimately hindering performance. Moreover, existing BB                      quantized BB coordinates, representing offsets within these pro-
+compression techniques [7, 23, 32, 37, 69, 77] also fall short, often                   gressively smaller anchor BBs, maintain sufficient precision even
+requiring decompression back to FP32 for ray-box intersection tests,                    for detailed geometry. This hierarchical structure allows the quan-
+thus failing to eliminate the reliance on complex FP32 arithmetic                       tization to adapt to varying scene scales and densities, preserving
+during BVH traversal. Therefore, a solution is needed that not only                     accuracy where needed while maximizing the benefits of low-bit
+compresses BB but also leverages simpler low-bit arithmetic to truly                    integer operations in localized regions. By enabling direct low-bit
+harness efficiency benefits without prohibitive overheads.                              integer traversal within these localized, relatively encoded BBs,
+
+
+
+
+                                                                                  377
+AQB8: Energy-Efficient Ray Tracing Accelerator through Multi-Level Quantization                                                        ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+multi-level quantization offers a promising direction for reducing                                      A                                         A
+                                                                                                     (0.66, 1.64, 0.69)                           (0.66, 1.64, 0.69)
+memory traffic and computational complexity, effectively leverag-                                                                 U1
+                                                                                                                                                             (254, 126, 194)
+                                                                                                B             C                           B           C
+ing scene sparsity and mitigating the pitfalls of precision reduction.                                                                                       (0.66, 0.82, 0.68)
+                                                                                                          (0.66, 0.82, 0.68)
+                                                                                              D E                G                     D E                G    (61, 32, 200)
+4     Quantized BVH Tree                                                                                     (0.51, 0.82, 0.31)
+
+In the previous section, we introduced multi-level quantization as
+                                                                                                                                  U2       U3          U4
+a technique to mitigate the memory bandwidth and computational                                      (a)                                         (b)
+costs associated with traditional FP32-based BVH traversal. This
+technique results in a specialized data structure, termed quantized                     Figure 8: (a) The standard BVH tree. (b) The proposed quan-
+BVH tree, which is specifically designed to be processed efficiently                    tized BVH tree. Non-bold coordinates represent FP32 values,
+by hardware accelerators like AQB8 (detailed in Section 5). This                        while bold coordinates indicate quantized INT8 values.
+section describes the structure of this quantized BVH tree, covering
+its quantization approach, data layout, and traversal algorithm.
+                                                                                           A quantized BB is constructed as the smallest BB within the [0,
+4.1     Overview                                                                        255] coordinate system that fully encloses the corresponding FP32
+Recall from Section 3 that multi-level quantization leverages scene                     BB. To ensure complete coverage, the minimum and maximum
+sparsity by organizing BVH nodes into clusters established by high-                     coordinates of the quantized BB are adjusted outwards, which may
+precision anchor BBs. Building upon this concept, the quantized                         result in a slightly larger volume compared to the original FP32 BB
+BVH tree structure differs significantly from a standard BVH tree                       due to quantization error. Building upon this quantization scheme,
+where all BBs are stored using FP32 precision (as depicted in Fig-                      the following section details the algorithm used to construct the
+ure 8(a)). For example, in a standard BVH tree, node A might have                       complete quantized BVH tree.
+its BB stored as (0.66, 1.64, 0.69), node C as (0.66, 0.82, 0.68), and
+node G as (0.51, 0.82, 0.31), all in FP32.                                              4.3    Tree Construction
+    In contrast, our quantized BVH tree (Figure 8(b)) organizes nodes                   4.3.1 Overview. The construction of a quantized BVH tree involves
+into clusters (e.g., U1-U4). Each cluster contains:                                     two steps. First, a standard BVH tree is constructed using any exist-
+  • An anchor BB, retained in FP32, serving as the high-precision                       ing BVH tree construction algorithm. Next, a clustering algorithm
+     reference frame for that cluster.                                                  is applied to partition the BVH tree into multiple clusters. Notably,
+  • Multiple quantized BBs, stored in INT8, whose coordinates are                       our quantized BVH construction method is agnostic to the specific
+     encoded relative to the anchor BB.                                                 BVH construction algorithm employed in the first step, offering
+                                                                                        flexibility to substitute it with alternative algorithms as needed.
+    For instance, consider cluster U1 in Figure 8(b) (purple dotted
+line). Its anchor BB is derived from node A (colored purple), using its                 4.3.2 The Cost Function. The clustering strategy for the quantized
+FP32 coordinates (0.66, 1.64, 0.69). Nodes B, C, D, and E all belong                    BVH tree is guided by a cost function derived from the Surface
+to U1, and thus have their quantized BBs stored in INT8 relative to                     Area Heuristic (SAH) [73]. The SAH models the geometric proba-
+the anchor BB of U1. Specifically, node C’s BB representation within                    bility of traversing a child node 𝑁𝑐 given that its parent node 𝑁 is
+U1 is the quantized INT8 coordinate (254 , 126 , 194), interpreted                      intersected. This probability is expressed as:
+relative to the anchor BB of U1.                                                                                                 𝑆 (𝑁𝑐 )
+    Now, consider cluster U4 (blue dotted line). Its anchor BB is                                               𝑃 (𝑁𝑐 |𝑁 ) SAH =         ,
+                                                                                                                                 𝑆 (𝑁 )
+derived from node C (colored blue), using its FP32 coordinates
+                                                                                        where 𝑆 (𝑁 ) represents the surface area of the BB for node 𝑁 . Using
+(0.66 , 0.82 , 0.68). Nodes within U4, such as G, have their quantized
+                                                                                        this principle, the total cost of a BVH tree rooted at node 𝑁 is
+BBs stored in INT8 relative to the anchor BB of U4. Specifically, node
+                                                                                        defined recursively as:
+G’s BB representation within U4 is the quantized INT8 coordinate                                      (      Í 𝑆 (𝑁 )
+(61 , 32 , 200), interpreted relative to the anchor BB of U4.                                          𝑐𝑡 + 𝑁𝑐 𝑆 (𝑁𝑐) 𝐶 (𝑁𝑐 ), if 𝑁 is an internal node,
+    The specifics of how these anchor and quantized BBs are repre-                          𝐶 (𝑁 ) =
+                                                                                                       𝑐𝑖 |𝑁 |,                   otherwise.
+sented are detailed next.
+                                                                                        Here, 𝑁𝑐 refers to the children of node 𝑁 , and 𝑐𝑡 and 𝑐𝑖 are the costs
+4.2     Bounding Box Quantization                                                       of a traversal step and a ray-triangle intersection, respectively. |𝑁 |
+                                                                                        denotes the number of triangles in the leaf node 𝑁 . By expanding
+In our quantized BVH tree, each anchor BB is defined by its min-
+                                                                                        this recurrence relation, the total cost of a BVH tree can be unrolled
+imum and maximum coordinates, represented using six 32-bit
+                                                                                        into:
+floating-point (FP32) values, consistent with the approach used
+in standard BVH trees. Each cluster contains a single anchor BB,
+                                                                                                                                                         
+                                                                                                               1  ∑︁                    ∑︁              
+which serves as the spatial reference for all quantized BBs within                                𝐶 (𝑁 ) =           𝑐 𝑡   𝑆 (𝑁 𝑖 ) + 𝑐 𝑖    𝑆 (𝑁𝑙 )|𝑁𝑙 | ,
+                                                                                                            𝑆 (𝑁 )                                      
+that cluster. The cluster operates within its own local coordinate                                                   𝑁𝑖                  𝑁𝑙              
+                                                                                                                                                          
+                                                                                                Í                                                Í
+system, spanning the range [0, 255] for the 𝑥, 𝑦, and 𝑧 axes, with                      where 𝑁𝑖 iterates over all internal nodes, and 𝑁𝑙 iterates over
+256 evenly spaced values. Quantized BBs are encoded using six                           all leaf nodes in the subtree rooted at 𝑁 .
+8-bit integers (INT8), with their coordinates expressed in this [0,                         To incorporate the concept of clusters into the cost function, the
+255] coordinate system.                                                                 cost of a traversal step (𝑐𝑡 ) is modified as a function of the node 𝑁𝑖 .
+
+
+
+
+                                                                                  378
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                         Yen-Chieh Huang, Chen-Pin Yang, and Tsung Tai Yeh
+
+
+                                         π(A)=SW
+    (b)                                      A                                (b)                          SW                                                              SW
+
+                C(BA)=2.5 π(BA)=ST                     C(CA)=3.1 π(CA)=SW
+                                                                                                                          SW                         SW       L       ST         L       L        SW
+        C(DA)=1.1 π(DA)=SW
+                                     B             C      C(GA)=1.9 π(GA)=SW
+                                                                                             ST
+       C(DB)=1.2 π(DB)=ST                                   C(GC)=2.1 π(GC)=ST                                                              ST       L    L       L        L                      L    L   L
+                                                                                                                                                                                         SW
+                  C(HA)=0.7    D                         G                              SW        SW                 ST        ST
+                                                              C(OA)=0.6
+                 C(HB)=0.6                                     C(OC)=0.3                                                                L        L                         L         L   L    L        L
+                C(HD)=0.5 H                                  O C(OG)=0.2            L   L     L        L         L    L        L    L
+
+          (a)                                                               (a)                            (c)                                                             (d)
+
+
+          Figure 9: Constructing a Quantized Binary (b) and 6-Wide (c) BVH tree with (SW: SWITCH, ST: STAY, L: LEAF) States.
+
+
+Specifically, the cost of the quantized BVH tree rooted at 𝑁 is:                                            node. As illustrated in Figure 9(a), consider the node D with its an-
+                                                                                                            cestor nodes A and B. The node D has two associated costs—𝐶 (𝐷𝐴 ),
+                                                                                                            and 𝐶 (𝐷 𝐵 )—and two corresponding clustering policies—𝜋 (𝐷𝐴 ) and
+                                                                          
+                            1 ∑︁                          ∑︁             
+          𝐶 (𝑁 ) =                   𝑇 (𝑁 𝑖 )𝑆 (𝑁 𝑖 ) + 𝑐 𝑖    𝑆 (𝑁𝑙 )|𝑁 |
+                                                                        𝑙 ,
+                                                                           
+                                                                                                            𝜋 (𝐷 𝐵 ). Here, 𝐶 (𝑋𝑌 ) and 𝜋 (𝑋𝑌 ) represent the cost and clustering
+                         𝑆 (𝑁 ) 
+                                
+                                 𝑁𝑖                        𝑁𝑙             
+                                                                                                           policy of the cost-optimal subtree rooted at 𝑋 when the BB of 𝑋 is
+where 𝑇 (𝑁𝑖 ) is defined as:                                                                                quantized with respect to the BB of 𝑌 .
+                        (                                                                                       These costs and clustering policies are computed in a bottom-up
+                         𝑐𝑡 + 𝑐𝑠 ,                 if 𝜋 (𝑁𝑖 ) = SWITCH,                                     manner (Figure 9(a)). Once all costs and clustering policies have
+              𝑇 (𝑁𝑖 ) =                                                                                     been determined, the optimal quantized BVH tree can be iden-
+                         𝑐𝑡 ,                      if 𝜋 (𝑁𝑖 ) = STAY.
+                                                                                                            tified by backtracking through the tree in a top-down approach
+Here, 𝑐𝑠 represents the cost of switching clusters, and 𝜋 (𝑁𝑖 ) denotes                                     (Figure 9(b)). The constructed quantized BVH tree is illustrated in
+the clustering policy for node 𝑁𝑖 , which can be either SWITCH or                                           Figure 9(c), where each node is identified as a SWITCH, STAY, or
+STAY. When 𝜋 (𝑁𝑖 ) = SWITCH, traversing 𝑁𝑖 involves switching                                               LEAF node (the specific definitions of these node types are elabo-
+clusters; otherwise, 𝜋 (𝑁𝑖 ) = STAY.                                                                        rated in Section 4.6). Our clustering algorithm runs in 𝑂 (𝑛(log 𝑛) 2 ),
+   For instance, in Figure 8(b), the clustering policies for nodes A, C,                                    which is similar to the 𝑂 (𝑛 log 𝑛) complexity of standard BVH con-
+D, and E are SWITCH, as traversing to these nodes requires a cluster                                        struction algorithms [66]. Consequently, this algorithm does not
+change. In contrast, all other internal nodes follow the STAY policy.                                       introduce significant overhead to the quantized BVH construction
+   The parameters 𝑐𝑡 , 𝑐𝑖 , and 𝑐𝑠 play a crucial role in shaping the                                       process.
+structure of the quantized BVH tree, as they directly influence the
+                                                                                                            4.3.4 Generalizability. While Figures 9(a)-(c) illustrate the con-
+cost function guiding the clustering process. Empirically, we set
+                                                                                                            struction algorithm in the context of a binary BVH tree, the ap-
+[𝑐𝑡 , 𝑐𝑖 , 𝑐𝑠 ] to [0.5, 1, 1], respectively. However, these values are not
+                                                                                                            proach generalizes naturally to other tree topologies. For example,
+fixed and can be adjusted by the programmer to generate different
+                                                                                                            Figure 9(d) demonstrates an example of the quantized 6-wide BVH
+quantized BVH trees. For example, lowering 𝑐𝑠 reduces the cost
+                                                                                                            tree. The clustering strategy remains fundamentally the same, with
+for switching clusters, encouraging the formation of more clusters.
+                                                                                                            the key difference being that the cost function now considers a
+Similarly, modifying 𝑐𝑡 or 𝑐𝑖 alters the balance between traversal
+                                                                                                            wider set of possible child policy assignments. For 6-wide BVH tree,
+steps and ray-triangle intersection tests, providing further flexibil-
+                                                                                                            we empirically set [𝑐𝑡 , 𝑐𝑖 , 𝑐𝑠 ] to [0.5, 1, 0.6], respectively.
+ity in optimizing the BVH tree for specific hardware or graphic
+rendering workloads.
+                                                                                                            4.4            Ray Quantization
+4.3.3 The Clustering Algorithm. After modeling the quality of a                                             As described in Section 2.1.3, before performing ray-box intersec-
+quantized BVH tree into a cost value, the optimal quantized BVH                                             tion tests, rays are preprocessed into two 3-dimensional vectors, w
+tree can be selected by choosing the tree with the minimum cost.                                            and b. In most RT implementations, these six numbers are repre-
+The clustering algorithm determines the clustering policy 𝜋 (𝑁𝑖 )                                           sented using FP32 values. However, since our quantized BBs are
+for every internal node 𝑁𝑖 . Once every 𝜋 (𝑁𝑖 ) is defined, the cluster                                     encoded with 8-bit integers in a cluster-specific local coordinate
+scheme is established, and the quantized BVH tree is fully deter-                                           system, the original ray-box intersection equation cannot be ap-
+mined.                                                                                                      plied directly. To address this, we quantize the rays to align with
+   The clustering policy 𝜋 (𝑁𝑖 ) can, in theory, be determined by                                           the coordinate system of the quantized BBs.
+enumerating all possible configurations and selecting the one that                                             Our approach differs from prior works on BB compression [7,
+minimizes the cost of the quantized BVH tree. However, this brute-                                          23, 32, 37, 69, 77], which typically transform quantized BBs into a
+force approach is computationally infeasible due to its complexity of                                       data format compatible with rays for ray-box intersection tests. In
+𝑂 (2𝑛 ), where 𝑛 represents the number of internal nodes—a typically                                        contrast, we take a reverse approach: we transform the ray to fit
+large number in practical applications. To address this challenge,                                          the quantized BBs. Although this requires re-quantizing rays when
+we take advantage of the insight that finding the quantized BVH                                             traversing into a different cluster, we found that the number of
+tree with minimum cost possesses the property of optimal substruc-                                          clusters is significantly fewer than the number of BBs. As a result,
+ture, allowing us to solve the problem efficiently using dynamic                                            the re-quantization of ray data introduces negligible performance
+programming. Specifically, we associate multiple costs with each                                            overhead while simplifying the overall ray-box intersection process.
+
+
+
+
+                                                                                             379
+AQB8: Energy-Efficient Ray Tracing Accelerator through Multi-Level Quantization                                                                  ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+4.4.1 Details on Ray Quantization. For clarity in the following                            Next, represent 𝑞 𝑤 in floating-point form as:
+derivations, we will use 𝑤 and 𝑏 to refer to the individual scalar
+                                                                                                                             𝑞 𝑤 = 𝑖 𝑤 2𝑟 𝑤 𝑚 𝑤 ,
+components (e.g., 𝑤 𝑥 , 𝑏𝑥 ) of the vectors w and b. To quantize these
+components, we introduce scaling factors 𝑆 𝑤 and 𝑆𝑥 for quantiza-                       where 𝑖 𝑤 is the sign bit, 𝑟 𝑤 is the exponent, and 𝑚 𝑤 is the mantissa.
+tion. The scaling factor 𝑆 𝑤 is fixed at 2 −7 , while 𝑆𝑥 varies depending               Substituting this into the quantized equation yields:
+on the cluster. Each cluster has its specific 𝑆𝑥 , which is defined as:
+                                                                                                             𝑆 𝑤 𝑆𝑥 𝑞𝑡 = 𝑆 𝑤 𝑖 𝑤 2𝑟 𝑤 𝑚 𝑤 𝑆𝑥 𝑞𝑥 + 𝑆 𝑤 𝑆𝑥 𝑞𝑏
+                         𝑆𝑥 = max(𝑙𝑥 , 𝑙 𝑦 , 𝑙𝑧 )/255,
+                                                                                           By canceling the common factor 𝑆 𝑤 𝑆𝑥 , we derive the final equa-
+where 𝑙𝑥 , 𝑙 𝑦 , and 𝑙𝑧 are the length of the anchor BB along the 𝑥, 𝑦,                 tion for the quantized ray-box intersection:
+and 𝑧 axes for the cluster.
+    Using these scaling factors, 𝑤 is quantized by dividing it by 𝑆 𝑤                                                    𝑞𝑡 = 𝑖 𝑤 2𝑟 𝑤 𝑚 𝑤 𝑞𝑥 +𝑞𝑏
+                                                                                                                                       |{z}
+(𝑞 𝑤 = 𝑤/𝑆 𝑤 ), where 𝑞 𝑤 is represented in a custom 14-bit floating-                                                                             INT8
+point (FP14) format with 1 sign bit, 8 mantissa bits, and 5 exponent                                                                   | {z }
+bits. 𝑏 is quantized using both scaling factors (𝑞𝑏 = 𝑏/(𝑆 𝑤 𝑆𝑥 )),                                                                       left shift
+which is represented as a 32-bit integer (INT32). Since each cluster
+                                                                                                                                 |         {z          }
+                                                                                                                                 2’s complement
+has its own 𝑆𝑥 , 𝑏 must be re-quantized when transitioning to a new                                                              |               {z              }
+cluster.                                                                                                                                      INT32
+4.4.2 Custom Floating-Point Representation of 𝑞 𝑤 . We represent                            This quantized ray-box intersection algorithm can be computed
+𝑞 𝑤 using a custom FP14 format. This choice is motivated by the                         efficiently in hardware using integer arithmetic, left shifts, and 2’s
+distribution characteristics of the inverse direction component 𝑤.                      complement operations. The steps are: (1) Multiply 𝑚 𝑤 by 𝑞𝑥 using
+When the ray direction is a uniformly distributed unit vector, the                      INT8 arithmetic. (2) Perform a left shift of the result by 𝑟 𝑤 bits. (3)
+inverse direction component 𝑤 follow a probability density function                     If 𝑖 𝑤 equals 1, negate the result using 2’s complement. (4) Add the
+given by:                   (                                                           final value to 𝑞𝑏 using INT32 arithmetic.
+                                1 , if |𝑤 | ≥ 1,                                            This approach eliminates the need for costly FP32 arithmetic
+                    𝑓 (𝑤) = 2𝑤 2                                                        (originally, 𝑡, 𝑤, 𝑥, and 𝑏 are all represented in FP32). By leveraging
+                              0,      otherwise.
+                                                                                        low-bit integer arithmetic, the proposed quantized ray-box intersec-
+   This distribution indicates that smaller values of 𝑤 occur with
+                                                                                        tion algorithm reduces computational cost and minimizes hardware
+higher frequency compared to larger values, leading to a non-
+                                                                                        complexity.
+uniform density that favors lower magnitudes.
+   If 𝑤 were quantized using uniform intervals, the resulting 𝑞 𝑤
+                                                                                        4.6         Memory Layout
+values would be unevenly distributed, with a higher density at lower
+values. Hence, to better capture this distribution, we first apply                      The quantized BVH tree introduces the concept of clusters and
+quantization to 𝑤 and then represent 𝑞 𝑤 in the custom FP14 format.                     redefines how nodes are represented in memory to enhance encod-
+Since floating-point representation provides finer granularity for                      ing efficiency. Figure 10 illustrates the memory layouts for both
+values near zero, it aligns well with the distribution characteristics                  the standard BVH tree (Figure 10(a)) and our quantized BVH tree
+of 𝑤.                                                                                   (Figure 10(b)).
+                                                                                           A cluster in the quantized BVH tree consists of several compo-
+4.5     The Quantized Ray-Box Intersection                                              nents: the bounds of the anchor BB, 𝑆 𝑤 𝑆𝑥 , the node base index,
+                                                                                        and the triangle base index. The anchor BB is encoded using six
+In our quantized BVH tree, the original ray-box intersection for-
+                                                                                        FP32 numbers, occupying a total of 24 bytes. The 𝑆 𝑤 𝑆𝑥 value is
+mulation cannot be applied directly due to the use of quantized
+                                                                                        used to quantize rays when they enter a new cluster. The node base
+ray and BB representations. This necessitates the development of
+                                                                                        index and triangle base index are offsets used to adjust the indices
+a quantized ray-box intersection algorithm. Below, we derive the
+                                                                                        of nodes and triangles within the cluster.
+formula for quantized ray-box intersection step by step.
+   As described in Section 2.1.3, the ray-box intersection test can
+be formulated as:                                                                          Node           Left Box Bounds                Right Box Bounds             Left Child Right Child
+                              𝑡 = 𝑤𝑥 + 𝑏                                                 (56 Bytes)           24 Bytes                           24 Bytes               4 Bytes        4 Bytes
+                                                                                                                                                       # of Triangles     Child Index
+where 𝑡 is the parameter indicating the intersection point along the                     (a)                                                                3 bits           29 bits
+ray, 𝑤 and 𝑏 are the preprocessed ray components, and 𝑥 represents
+the coordinates of the BB.                                                                Cluster        Anchor Box Bounds             SwSx       Node Base Index Triangle Base Index
+   To adapt this equation for quantized representations, we linearly                     (36 Bytes)           24 Bytes               4 Bytes           4 Bytes               4 Bytes
+
+quantize 𝑡, 𝑤, 𝑥, and 𝑏 using scaling factors 𝑆 𝑤 𝑆𝑥 , 𝑆 𝑤 , 𝑆𝑥 , and 𝑆 𝑤 𝑆𝑥 ,             Node       Left Box Bounds Right Box Bounds Left Child Right Child
+                                                                                         (16 Bytes)       6 Bytes            6 Bytes             2 Bytes    2 Bytes
+respectively. Substituting these quantized variables into the original
+                                                                                                                            Field A Field B            Field C
+equation gives:                                                                          (b)                                 1 bit      3 bits         12 bits
+
+                     𝑆 𝑤 𝑆𝑥 𝑞𝑡 = 𝑆 𝑤 𝑞 𝑤 𝑆𝑥 𝑞𝑥 + 𝑆 𝑤 𝑆𝑥 𝑞𝑏
+where 𝑞𝑡 , 𝑞 𝑤 , 𝑞𝑥 , and 𝑞𝑏 are the quantized counterparts of 𝑡, 𝑤, 𝑥,                 Figure 10: Memory layout for (a) standard BVH tree and (b)
+and 𝑏.                                                                                  our quantized BVH tree.
+
+
+
+
+                                                                                  380
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                Yen-Chieh Huang, Chen-Pin Yang, and Tsung Tai Yeh
+
+
+  To reduce memory usage, the quantized BVH tree uses a signifi-             Algorithm 1 Quantized BVH Tree Traversal Algorithm
+cantly compressed memory layout for nodes by:                                 1: inputs: ray, rootNode
+                                                                              2: initialize: qRay ← null; stack ← empty; intersectionPoint ← null
+ • Reducing BB size by a quarter. BBs are encoded using INT8
+                                                                              3: stack.push(rootNode)
+   instead of FP32 as in the standard BVH tree, reducing the node
+                                                                              4: while stack is not empty do
+   size from 56 bytes to just 16 bytes.                                       5:    curNode ← stack.pop()
+ • Redesigning the bitfield for child data. In the quantized BVH              6:    re-quantize ray if needed
+   tree, each child data is represented using 2 bytes, divided into           7:    if type(curNode) = SWITCH then
+   three fields (Field A, B, and C), whereas the standard BVH tree            8:       hit, qRay ← RayBoxTest(ray, curNode.cluster.anchorBox)
+   uses 4 bytes with two fields (number of triangles and child                9:       if hit then
+   index).                                                                   10:          for childNode in curNode do
+                                                                             11:             if qRayBoxTest(qRay, childNode.qBox) then
+    Although the quantized BVH tree introduces an additional “clus-
+                                                                             12:                stack.push(childNode)
+ter” structure, which incurs extra memory overhead, the size of              13:    else if type(curNode) = STAY then
+a cluster is small (36 bytes). Moreover, the number of clusters is           14:       for childNode in curNode do
+significantly smaller than the number of nodes (Table 1). Conse-             15:          if qRayBoxTest(qRay, childNode.qBox) then
+quently, the overall memory footprint of the quantized BVH tree              16:             stack.push(childNode)
+is significantly reduced, making it far more memory-efficient than           17:    else if type(curNode) = LEAF then
+the standard BVH tree.                                                       18:       for triangle in curNode do
+    Children of each quantized BVH tree node are categorized into            19:          hit, tmpPoint ← RayTriangleTest(ray, triangle)
+three types: SWITCH, STAY, and LEAF. Each type is uniquely identi-           20:          if hit then
+                                                                             21:             intersectionPoint ← tmpPoint
+fied by examining the values of Field A and Field B:
+                                                                             22: return intersectionPoint
+ • SWITCH: The child is an internal node and traversing to this
+   node necessitates a cluster switch. Field A is set to 0, while
+   Fields B and C together represent the index of the new cluster.
+ • STAY: The child is an internal node and no cluster switch is
+   necessary to traverse this node. Field A is set to 1, Field B is                during which the quantized ray is also computed (line 8). If the
+   set to 000, and Field C stores the index offset of the child node               ray intersects the anchor BB (line 9), quantized ray-box tests
+   relative to the cluster’s node base index.                                      are conducted on the quantized ray and the quantized BBs of
+ • LEAF: The child is a leaf node. Field A is set to 1, Field B stores             the child nodes (lines 10-11). Intersected child nodes are pushed
+   the number of triangles (at least 1), and Field C holds the starting            onto the stack (line 12).
+   index offset of the triangles relative to the cluster’s triangle base         • STAY node (lines 13-16): For each child node, a quantized ray-
+   index.                                                                          box test is conducted (lines 14-15). Nodes that are intersected
+                                                                                   are pushed onto the stack (line 16).
+   Nodes and triangles within the same cluster are stored contigu-               • LEAF node (lines 17-21): For each triangle in the current node, a
+ously in memory, with the base indices encoded in the cluster data.                ray-triangle test is performed (line 18-19). If the ray intersects
+This ensures that child nodes and triangles can be efficiently ad-                 that triangle (line 20), the closest intersection point is updated
+dressed using smaller offsets rather than larger absolute indices.                 (line 21).
+Moreover, fetching one node brings in its neighboring nodes in the
+same cluster into cache, improving memory access efficiency. As                 In certain scenarios, the ray must be re-quantized (line 6). Specif-
+nodes in the same cluster are likely to be accessed in sequence dur-         ically, when “jumping back” to a node that was previously placed
+ing traversal, this spatial locality reduces cache misses and DRAM           onto the stack, if the cluster of the node being popped from the
+accesses, further alleviating memory bottlenecks and enhancing               stack differs from the current cluster, the ray must be re-quantized
+overall RT efficiency.                                                       to align with the local coordinate system of the cluster associated
+                                                                             with the node being processed. This step ensures that the ray can
+4.7     Tree Traversal                                                       correctly interact with the quantized BBs in the associated cluster.
+Algorithm 1 outlines the tree traversal algorithm for the quantized          After the traversal loop concludes, it returns the closest intersection
+BVH tree, which aims to efficiently find the closest intersection            point (line 22) for further processing.
+point between a ray and triangles. For compactness in typesetting,
+we use “q” to denote “quantized” in variable and function names.             5      Quantized Ray Tracing Accelerator
+For instance, “qRay” refers to the quantized ray, and “qRayBoxTest”          RT accelerators play a pivotal role in speeding up ray tracing oper-
+refers to the quantized ray-box intersection test.                           ations. To fully exploit the benefits of the quantized BVH tree, we
+   The algorithm begins by initializing a stack with the BVH tree’s          propose the quantized RT accelerator, which builds upon a baseline
+root node (line 3). The main traversal loop continues until the stack        RT accelerator—with key architectural modifications highlighted in
+is empty (lines 4-21). In each iteration, the node at the top of the         bold in Figure 11—to efficiently handle the traversal of quantized
+stack is popped (line 5), and its type determines subsequent actions:        BVH trees. Due to the lack of publicly available details on the inter-
+ • SWITCH node (lines 7-12): A ray-box test is performed on the ray          nal design of RT accelerators in commercial GPUs, we design our
+   and the anchor BB associated with the current node’s cluster,             baseline RT accelerator similar to the RT Unit described in [56].
+
+
+
+
+                                                                       381
+AQB8: Energy-Efficient Ray Tracing Accelerator through Multi-Level Quantization                                            ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+
+
+Figure 11: Architectural modifications from a (a) baseline RT accelerator to our (b) quantized RT accelerator. The hardware
+block diagrams for the BOX and QBOX units are detailed in (c) and (d), respectively.
+
+
+5.1     Architectural Modifications                                                     are now primarily reserved for processing the relatively small num-
+The baseline RT accelerator (Figure 11(a)) consists of four core                        ber of anchor BBs. As a result, most of the BOX units in the baseline
+components:                                                                             design are replaced with more efficient and compact QBOX units,
+                                                                                        leading to a reduction in hardware complexity. While the TRV units
+ • TRV Units: Handle tree traversal logic and stack management.                         experience a slight increase in area due to the increased traver-
+ • BOX Units: Perform ray-box intersection tests for internal nodes.                    sal logic required for cluster-switching operations, this increase
+ • TRIG Units: Perform ray-triangle intersection tests for leaf nodes.                  is offset by the reduction in BOX units. The design thus achieves a
+ • L0 Cache: A small on-chip memory that stores nodes and tri-                          net reduction in area while delivering substantial improvements in
+   angles. If the requested data is not found in the L0 cache, the                      computational efficiency.
+   next-level memory access is triggered.                                                  The memory subsystem also benefits from these changes. Reduc-
+  Our quantized RT accelerator (Figure 11(b)) builds on these units                     ing the size of BB data allows the cache to store more BBs, improv-
+by adapting existing components and adding new hardware:                                ing cache utilization and reducing DRAM traffic. This alleviates
+                                                                                        memory bottlenecks, particularly for memory-bound workloads.
+ • Modified TRV Units: These units handle the traversal logic                              These architectural changes collectively contribute to both com-
+   for quantized BVH trees, incorporating the necessary clus-                           putational and memory efficiency. Detailed evaluation on these
+   ter switching operations and the traversal policies for SWITCH,                      improvements will be discussed in Section 7.
+   STAY, and LEAF nodes as described in Algorithm 1.
+ • Modified BOX Units: The BOX units are redesigned to account                          6     Methodology
+   for the calculation of quantized rays when performing ray-box
+   intersection tests on anchor BBs (Algorithm 1, line 8).                              In this section, we describe our experimental setup and evaluation
+ • New QBOX Units: Introduced specifically for handling quantized                       approach for assessing the effectiveness of our proposed multi-level
+   ray-box intersection tests on quantized BBs. These units use                         quantization technique in both low-level hardware simulations and
+   efficient integer arithmetic operations, which makes them fast,                      full-system GPU simulations. We begin with an explanation of our
+   energy-efficient, and smaller in area compared to the BOX units.                     comparison approach, then present the details of our evaluated
+                                                                                        workloads, accelerator models, and GPU integration.
+   Figures 11(c) and 11(d) illustrate the difference between BOX and
+QBOX units. The BOX unit performs ray-box intersection using FP32                       6.1    Comparison Approach
+arithmetic (following the equations in Section 2.1.3), which requires
+                                                                                        Our primary goal is to demonstrate that multi-level quantization
+costly floating-point multiplications, additions, and comparisons.
+                                                                                        is a broadly applicable optimization, rather than only for a specific
+In contrast, the QBOX unit operates entirely on integer arithmetic,
+                                                                                        BVH tree structure. In principle, almost all BVH trees can bene-
+replacing FP32 operations with efficient low-bit integer multiplica-
+                                                                                        fit from substituting their BBs with quantized ones and adapting
+tions, shifts, and additions (following the equations in Section 4.5).
+                                                                                        the traversal logic accordingly. To evaluate this general applica-
+                                                                                        bility, we consider two BVH configurations: (1) a 2-ary BVH tree
+5.2     Design Implications                                                             constructed with an open-source library [4], and (2) a 6-wide BVH
+The architectural modifications in the quantized RT accelerator                         tree built using Embree [75]. For each configuration, we compare a
+bring significant changes to the way BBs are processed. By intro-                       baseline RT accelerator (storing all bounding boxes in FP32) with
+ducing specialized QBOX units, the majority of ray-box intersection                     a compressed RT accelerator (compressing all bounding boxes in
+tests—performed on quantized BBs—are efficiently handled using                          INT8 based on [77]) and our quantized RT accelerator (compressing
+lightweight integer-only operations. This approach minimizes the                        most bounding boxes in INT8 with multi-level quantization). All
+reliance on the more complex floating-point-based BOX units, which                      configurations share the same tree topology for their respective
+
+
+
+
+                                                                                  382
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                    Yen-Chieh Huang, Chen-Pin Yang, and Tsung Tai Yeh
+
+
+               Table 1: Statistics of evaluated scenes.                      include additional TRV, BOX (or QBOX), and TRIG units. While this
+                                                                             increases hardware area, it ensures all accelerators operate at com-
+                                                                             parable throughput when tested under the same scenarios.
+                                                                             6.3.3 Energy Measurement. We assess the overall energy consump-
+                                                                             tion of the rendering process by combining measurements from
+                                                                             both the compute and memory subsystems. For compute part, we
+                                                                             simulate the synthesized hardware at gate level, and use Prime-
+                                                                             Power [65] to obtain each unit’s power consumption. We then com-
+                                                                             pute the energy consumed by each unit by multiplying its power
+                                                                             by the corresponding operation count (gathered from simulations)
+                                                                             and by the clock period.
+                                                                                For the memory subsystem, we follow the approach in [19]
+                                                                             and use CACTI [5] to determine the energy per read/write access
+                                                                             in caches, while modeling DRAM energy consumption at a fixed
+branching factors to isolate the impact of multi-level quantization          6.5 pJ/bit (GDDR6 [41]). Our functional memory model includes
+without introducing additional factors that could obscure or inflate         an L1–L2 cache hierarchy, where the L1 cache is 32KB, 4-way
+its benefits.                                                                associative, with a 64B line size, and the L2 cache is 1MB, 8-way
+                                                                             associative, also with 64B lines. We employ our cache simulator
+6.2     Evaluated Workloads                                                  to count various cache statistics and then compute the energy by
+                                                                             multiplying these counts with the corresponding per-access energy
+Our evaluation spans seven diverse scenes [9, 51], covering a wide
+                                                                             reported by CACTI and with the modeled DRAM energy.
+range of geometric and lighting complexities. Table 1 overviews
+                                                                                To avoid conflating memory-access delays with the accelerators’
+these scenes, including indoor settings like the bathroom (BA), with
+                                                                             energy consumption, our functional memory model assumes un-
+reflective surfaces and indirect lighting, and outdoor environments
+                                                                             limited memory bandwidth and zero-latency data transfers. This
+like the house (HOU), which emphasize environmental daylight. For
+                                                                             abstraction lets us focus on measuring the intrinsic energy con-
+each scene, we employ two types of workloads:
+                                                                             sumption of both the accelerators and the memory subsystem.
+(a) Replay-based: For energy consumption analysis, we pre-collect
+     rays from pbrt-v4 [52] (one sample per pixel) and replay these          6.4     GPU Hardware Modeling
+     ray traces on our accelerators in a cycle-accurate simulation.
+                                                                             We implement the baseline, compressed, and quantized RT accelera-
+     Here, we use a functionally simulated memory subsystem rather
+                                                                             tors on the Vulkan-Sim [56] to enable full-system GPU simulation.
+     than a full GPU model.
+                                                                             In Vulkan-Sim, the BVH traversal algorithm is functionally mod-
+(b) Vulkan-Sim-based: For analyses other than energy measure-
+                                                                             eled to generate each accelerator’s memory access stream, which
+     ment, we generate rays at runtime and evaluate them using
+                                                                             is then fed into Vulkan-Sim’s timing model. We enhance the simu-
+     Vulkan-Sim [56]. These simulations were conducted at a resolu-
+                                                                             lator to support both tree traversal algorithms: for the compressed
+     tion of 256×256 per scene, integrating a complete GPU memory
+                                                                             RT accelerator, we use its standard INT8-to-FP32 decompression
+     subsystem, which allows us to capture a more realistic perfor-
+                                                                             scheme [69, 77], while for the quantized RT accelerator, we imple-
+     mance perspective at scale.
+                                                                             ment modifications that correctly compute and fetch anchor and
+   By separating these two evaluation strategies, we can (a) pre-            quantized BBs. This integration allows us to evaluate the impact of
+cisely isolate the energy impacts through a controllable “replay”            multi-level quantization on memory traffic and rendering perfor-
+method, and (b) demonstrate practical, real-time efficiency improve-         mance under a realistic GPU execution model. Table 2 summarizes
+ments within a complete GPU simulation environment.                          the key simulation settings used in our evaluations on Vulkan-Sim.
+6.3     RT Accelerator Hardware Modeling                                             Table 2: Vulkan-Sim simulation configurations.
+6.3.1 Design and Implementation. We model three RT accelerator
+designs—baseline, compressed, and quantized—in a cycle-accurate                       Number of SMs          30           L1 Data Cache / SM            64KB
+                                                                                     Max Warps / SM          32             L2 Unified Cache            3MB
+manner. All designs are synthesized with Catapult HLS [60] and                           Warp Size           32          Compute Core Clock           1365MHz
+Design Compiler [64] with TSMC 40nm cell library [68], and simu-                      Warp Scheduler        GTO        # of RT Accelerators / SM          1
+                                                                                    # of Registers / SM     32768   RT Accelerator Warp Buffer Size       4
+lated cycle-accurately with QuestaSim [61]. The main processing                    Global Memory Clock    3500MHz       RT Dedicated L0 Cache           8KB
+units—responsible for BVH traversal, ray-box, and ray-triangle
+intersection—are fully synthesized. FIFO buffers and on-chip inter-
+connects are cycle-accurately simulated but not synthesized.                 7     Evaluation Results
+6.3.2 Hardware Resource Sizing. We determine the number of each              In this section, we evaluate the effectiveness of our proposed method
+processing unit (e.g., TRV, BOX, QBOX, TRIG) based on typical RT             across five perspectives: memory traffic, energy consumption, tree
+workloads. The exact counts are shown in Figure 15. Both com-                traversal steps, hardware area, and performance. We compare mul-
+pressed and quantized RT accelerator incur slightly more traversal           tiple variants of the baseline RT accelerator, the compressed RT
+steps, so to maintain similar throughput, these accelerators can             accelerator, and our AQB8 quantized RT accelerator under different
+
+
+
+
+                                                                       383
+AQB8: Energy-Efficient Ray Tracing Accelerator through Multi-Level Quantization                                                                        ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+                                                                                                                    Baseline−2   Compress−2   AQB8−2        Compute    SRAM    Cache     DRAM
+BVH branching factors. We denote these evaluations as Baseline-
+
+
+
+
+                                                                                         Normalized Energy
+                                                                                                             1.00
+2, Compress-2, and AQB8-2 when using 2-ary BVH trees, and as
+
+
+
+
+                                                                                           Consumption
+                                                                                                             0.75
+Baseline-6, Compress-6, and AQB8-6 when using 6-wide BVH trees.
+                                                                                                             0.50
+7.1     Memory Traffic                                                                                       0.25
+7.1.1 L1D/L2 Cache Requests. Figure 12(a) shows the total number
+                                                                                                             0.00
+of L1D cache requests, while Figure 12(b) shows the total number of                                                    KIT       BA     BMW       CLA       HOU       STR      TEA      MEAN
+
+L2 cache requests for different accelerator designs. With multi-level                                                                                  Scenes
+quantization, AQB8 reduces the average L1D cache requests by
+                                                                                                               Figure 13: Comparison of energy consumption.
+65–82% (74% on average) and L2 cache requests by 48-68% (60%
+on average). This reduction is achieved not only because the BBs
+are stored in a substantially smaller size, allowing more data to fit                    7.3                   Tree Traversal Steps
+within the upper-level caches, but also because AQB8 exploits spa-
+                                                                                         Figure 14 compares the number of ray-box and ray-triangle inter-
+tial locality—nodes within the same cluster are stored contiguously.
+                                                                                         section tests among Baseline-2, Compress-2, and AQB8-2. Storing
+This contiguity ensures that when one node is fetched, its neigh-
+                                                                                         bounding boxes in low-bit representation inevitably introduces
+boring nodes in the same cluster are likely brought into the cache
+                                                                                         quantization errors, slightly expanding the bounding boxes and
+as well, further lowering the overall frequency of cache requests.
+                                                                                         causing false-positive intersections. For AQB8-2, this expansion
+7.1.2 DRAM Accesses. Figure 12(c) compares the total DRAM ac-                            increases ray-box intersection tests by 3–6% and ray-triangle inter-
+cesses. AQB8 reduces DRAM accesses by 61-76% (70% on average).                           section tests by 6–31%. Although the percentage increase is larger
+As DRAM accesses are especially costly in terms of both latency                          for ray-triangle tests, their total count is much lower than that of
+and power, this reduction alleviates the memory bottleneck and                           ray-box tests. As a result, the overall impact on traversal remains
+contributes to faster and more energy-efficient graphic rendering.                       modest, and the notable gains in memory efficiency and energy
+                                                                                         savings outweigh this minor overhead.
+
+                                                                                                                                         Baseline−2     Compress−2    AQB8−2
+                                                                                                                       (a) Ray−Box Intersection Test       (b) Ray−Triangle Intersection Test
+                                                                                                         1.00
+                                                                                        Normalized
+                                                                                        Test Counts
+
+
+
+
+                                                                                                         0.75
+                                                                                                         0.50
+                                                                                                         0.25
+                                                                                                         0.00
+                                                                                                                                          U           N                        U            N
+                                                                                                                      KI
+                                                                                                                        T    BA BMW CLA HO STR TEA MEA KIT        BA BMW CLA HO STR TEA MEA
+
+                                                                                                                                                       Scenes
+
+                                                                                         Figure 14: Normalized counts of (a) ray-box and (b) ray-
+                                                                                         triangle intersection tests while traversing BVH trees.
+
+
+                                                                                         7.4                   Hardware Area
+Figure 12: Comparison of memory traffic on (a) L1D cache,
+                                                                                         Table 3 presents the hardware area of each single compute unit
+(b) L2 cache, and (c) DRAM.
+                                                                                         on different RT accelerator designs. As shown in Table 3, the QBOX
+                                                                                         unit that operates on INT8 arithmetic has a 5.1x smaller hardware
+7.2     Energy Consumption                                                               area than the FP32 BOX unit. The modified TRV units in AQB8-2
+                                                                                         require slightly more area to handle the cluster-switching logic
+Figure 13 presents the normalized energy consumption of Baseline-
+2, Compress-2, and AQB8-2 across the evaluated scenes. Although
+Compress-2 effectively reduces memory traffic by storing BBs in                          Table 3: Hardware area, energy per operation, and average
+compressed format, its on-the-fly decompression and continued                            operation counts of each unit on different accelerators.
+reliance on FP32 arithmetic keep compute energy high and actually
+increase it across all tested scenes. By contrast, AQB8-2 lowers                                                                                  TRV       QBOX         BOX          TRIG
+both compute and memory energy: most ray-box intersections                                                                       Baseline-2       7.88          -       82.13        192.92
+                                                                                                        Hardware
+                                                                                                                                 Compress-2       8.12          -       90.58        192.92
+are handled with low-bit integer arithmetic, reducing dynamic                                           Area (𝑚𝑚 2 )
+                                                                                                                                  AQB8-2          9.80       16.08      97.05        192.92
+power in hardware units, and its quantized (INT8) representation                                                                 Baseline-2      6.0e-3         -      1.38e-1       2.90e-1
+combined with the cluster-based layout improves cache locality,                                      Energy (𝑛𝐽 )
+                                                                                                                                 Compress-2      8.4e-3         -      1.51e-1       2.90e-1
+                                                                                                    Per Operation
+reducing energy-consuming accesses to bottom-level caches and                                                                     AQB8-2         5.5e-3     2.43e-2    1.56e-1       2.90e-1
+DRAM beyond what existing compression methods achieve. As                                                     Average            Baseline-2      35.9M          -       28.8M        6.07M
+a result, AQB8-2 achieves 29–49% (42% on average) total energy                                               Operation           Compress-2      36.3M          -       29.2M        6.17M
+savings compared to Baseline-2 across the evaluated scenes.                                                   Counts              AQB8-2         43.1M       30.0M      4.3M          7.0M
+
+
+
+
+                                                                                  384
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                        Yen-Chieh Huang, Chen-Pin Yang, and Tsung Tai Yeh
+
+
+needed for the quantized BVH tree. Similarly, the modified BOX                                                        8    Related Work
+units in AQB8-2, which additionally calculate quantized rays, are                                                     Memory-Efficient Ray Tracing. Prior work on improving RT’s
+also slightly larger than the BOX units in Baseline-2. Despite this,                                                  memory efficiency spans several directions, including compres-
+AQB8-2 reduces overall hardware area by replacing most of the                                                         sion [7, 16, 20, 23, 26, 32, 37, 54, 58, 69, 77], prefetching [2, 3, 10],
+FP32 BOX units with area-efficient INT8 QBOX units.                                                                   stackless traversal [8, 17, 28, 70], and cache-efficient layouts [32,
+   Figure 15 compares the hardware area of Baseline-2, Compress-2,                                                    47, 78]. While compression techniques can reduce memory traffic,
+and AQB8-2, with numbers inside the bars indicating each hard-                                                        they often require decompression before traversal and still rely on
+ware unit counts. Since both Compress-2 and AQB8-2 introduce                                                          FP32 arithmetic, limiting computational efficiency.
+slightly more traversal steps, we use linear extrapolation based on                                                      RT Accelerators and Optimizations. To meet real-time ren-
+the operation counts in Baseline-2 to determine the required num-                                                     dering requirements, numerous RT accelerators have been devel-
+ber of additional TRV, BOX (or QBOX), and TRIG units in Compress-2                                                    oped [13, 18, 24, 25, 27, 30, 31, 45, 46, 48, 55, 57, 59, 62, 72, 76], with
+and AQB8-2, ensuring a fair comparison by maintaining compara-                                                        many targeting GPUs, where divergent rays can still incur high tra-
+ble throughput across all accelerators. While Compress-2 reduces                                                      versal overhead [3]. Techniques such as thread compaction [29, 36,
+memory traffic, it retains FP32-based BOX units and introduces de-                                                    63, 71, 74], ray prediction [33], and maximizing ray coherency [12,
+compression logic, leading to a net area increase of 8%. In contrast,                                                 14, 39, 42, 49, 53] have been employed to boost efficiency.
+AQB8-2 replaces Baseline-2’s 51 BOX units with 53 smaller QBOX units                                                     Generalizing RT Accelerators on Other Domains. Recent
+(which use simplified integer arithmetic) and 9 BOX units for anchor                                                  research leverages RT accelerators for applications in different
+bounding boxes, resulting in a 27% reduction in total hardware area                                                   domains, such as approximate nearest neighbor search [35] and
+compared to Baseline-2, demonstrating the cost-effectiveness of our                                                   other applications structured as tree traversals [6, 15, 38, 43, 44].
+quantization approach.                                                                                                   Comparison to Prior Work. Our work differentiates itself by
+                                                                                                                      co-designing a BVH structure and a corresponding RT accelerator
+                                         TRV          QBOX            BOX       TRIG     OTHER
+                                                                                                                      that takes advantage of efficient low-bit integer arithmetic hard-
+   Baseline−2         64                         51                                      11
+                                                                                                                      ware to operate directly on compressed data. Unlike prior methods
+ Compress−2           65                              52                                      11        +8%
+                                                                                                                      that reduce memory traffic but still rely on FP32 arithmetic for
+       AQB8−2              78       53       9                   13               −27%
+                   0e+00                 2e+06                    4e+06                   6e+06
+                                                                                                                      traversal, our approach simultaneously minimizes both memory
+                                                                            2                                         and computational overhead, achieving simultaneous gains in mem-
+                                                            Area        m
+                                                                                                                      ory, performance, and energy efficiency. Since bounding boxes are
+Figure 15: Comparison of hardware area. Numbers inside the                                                            fundamental to virtually all BVH-based RT systems, our technique
+bars indicate the count of each hardware unit.                                                                        remains largely orthogonal to prior work, thereby offering a more
+                                                                                                                      scalable path to enhancing ray tracing efficiency. Moreover, our pro-
+                                                                                                                      posed method also provide a gateway to generalize other potential
+                                                                                                                      applications structured as tree traversals through data quantization.
+7.5            Performance
+Figure 16 illustrates the performance speedups of different RT ac-
+celerator designs. Compress-2, AQB8-2, Compress-6, and AQB8-6 re-                                                     9    Conclusion
+spectively achieve a geometric mean speedup of 1.31x, 1.82x, 1.19x,                                                   This paper introduces AQB8, a domain-specific accelerator leverag-
+and 1.43x compared to their respective Baseline implementations.                                                      ing our proposed multi-level quantization technique for BVH trees
+The Compress implementations improve performance mainly by                                                            and addressing the persistent challenge of high computational and
+reducing memory traffic via bounding box compression; however,                                                        memory demands in ray tracing (RT). By structuring BVH nodes
+the gains are limited due to decompression overhead and continued                                                     into clusters with high-precision anchor bounding boxes (BBs) and
+reliance on FP32 compute units. In contrast, AQB8 delivers greater                                                    low-bit quantized BBs, our approach alleviates the performance
+performance gains across both 2-ary and 6-wide setups by syner-                                                       degradation of RT when encoding BBs in the reduced precision
+gistically combining memory traffic reduction from the quantized                                                      format. Our proposed quantized BVH structure and the AQB8 hard-
+BVH structure with the efficiency of performing most traversal op-                                                    ware accelerator significantly reduce memory traffic and replace
+erations directly using INT8 arithmetic, thereby minimizing costly                                                    costly FP32 operations with integer arithmetic, achieving substan-
+FP32 ray-box intersection operations.                                                                                 tial energy efficiency. Our evaluations demonstrate that our AQB8
+                                                                                                                      reduces DRAM accesses by 70%, energy consumption by 49%, and
+     Baseline−2                 Compress−2       AQB8−2           Baseline−6           Compress−6    AQB8−6           hardware area by 27%, yields a 1.82x performance speedup over
+             2.0                                                                                    1.82x             modern GPU RT accelerators, thereby offering a more scalable and
+Normalized
+
+
+
+
+                                                                                                        1.43x
+ Speedup
+
+
+
+
+             1.5                                                                                                      efficient RT accelerator for high-fidelity graphics rendering.
+             1.0
+             0.5
+             0.0
+                      KIT           BA       BMW           CLA         HOU        STR         TEA   GMEAN             Acknowledgments
+                                                             Scenes
+                                                                                                                      We thank MingLun Hsieh, Kai Chieh Hsu, and Yu Lun Ning for
+                                                                                                                      their valuable feedback. We also acknowledge the generous support
+     Figure 16: Comparison of RT accelerator performance.
+                                                                                                                      provided by grants from MediaTek and the National Science and
+                                                                                                                      Technology Council (NSTC) in Taiwan (111-2221-E-A49-131-MY3).
+
+
+
+
+                                                                                                                385
+AQB8: Energy-Efficient Ray Tracing Accelerator through Multi-Level Quantization                                                           ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+References                                                                                        (2013), 938–950.
+ [1] Advanced Micro Devices, Inc. 2023. "RDNA3" Instruction Set Architecture: Ref-           [26] Tae-Joon Kim, Bochang Moon, Duksu Kim, and Sung-Eui Yoon. 2009. RACBVHs:
+     erence Guide. Retrieved Feb. 10, 2025 from https://www.amd.com/content/dam/                  Random-Accessible Compressed Bounding Volume Hierarchies. IEEE Transac-
+     amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna3-                       tions on Visualization and Computer Graphics (TVCG) 16, 2 (2009), 273–286.
+     shader-instruction-set-architecture-feb-2023_0.pdf                                      [27] D. Kopta, J. Spjut, E. Brunvand, and A. Davis. 2010. Efficient MIMD architectures
+ [2] Timo Aila and Tero Karras. 2010. Architecture considerations for tracing inco-               for high-performance ray tracing. In IEEE International Conference on Computer
+     herent rays. In Proceedings of the Conference on High Performance Graphics (HPG).            Design (ICCD). 9–16.
+     113–122.                                                                                [28] Samuli Laine. 2010. Restart trail for stackless BVH traversal. In Proceedings of the
+ [3] Timo Aila and Samuli Laine. 2009. Understanding the efficiency of ray traversal              Conference on High Performance Graphics (HPG). 107–111.
+     on GPUs. In Proceedings of the Conference on High Performance Graphics (HPG).           [29] Samuli Laine, Tero Karras, and Timo Aila. 2013. Megakernels Considered Harmful:
+     145–149.                                                                                     Wavefront Path Tracing on GPUs. In Proceedings of the Conference on High
+ [4] Arsène Pérard-Gayot. 2024. madmann91/bvh: A modern C++ BVH construc-                         Performance Graphics (HPG). 137–143.
+     tion and traversal library. Retrieved Feb. 10, 2025 from https://github.com/            [30] Won-Jong Lee, Youngsam Shin, Seok Joong Hwang, Seok Kang, Jeong-Joon
+     madmann91/bvh                                                                                Yoo, and Soojung Ryu. 2015. Reorder buffer: an energy-efficient multithreading
+ [5] Rajeev Balasubramonian, Andrew B. Kahng, Naveen Muralimanohar, Ali Shafiee,                  architecture for hardware MIMD ray traversal. In Proceedings of the Conference
+     and Vaishnav Srinivas. 2017. CACTI 7: New Tools for Interconnect Exploration                 on High Performance Graphics (HPG). 21–32.
+     in Innovative Off-Chip Memories. ACM Transactions on Architecture and Code              [31] Won-Jong Lee, Youngsam Shin, Jaedon Lee, Jin-Woo Kim, Jae-Ho Nah, Seokyoon
+     Optimization (TACO) 14, 2 (2017), 1–25.                                                      Jung, Shihwa Lee, Hyun-Sang Park, and Tack-Don Han. 2013. SGRT: a mobile
+ [6] Aaron Barnes, Fangjia Shen, and Timothy G Rogers. 2024. Extending GPU                        GPU architecture for real-time ray tracing. In Proceedings of the Conference on
+     Ray-Tracing Units for Hierarchical Search Acceleration. In Proceedings of the                High Performance Graphics (HPG). 109–119.
+     International Symposium on Microarchitecture (MICRO). 1027–1040.                        [32] Gábor Liktor and Karthikeyan Vaidyanathan. 2016. Bandwidth-efficient BVH
+ [7] Carsten Benthin, Ingo Wald, Sven Woop, and Attila T. Áfra. 2018. Compressed-leaf             layout for incremental hardware traversal.. In Proceedings of the Conference on
+     bounding volume hierarchies. In Proceedings of the Conference on High Perfor-                High Performance Graphics (HPG). 51–61.
+     mance Graphics (HPG). 1–4.                                                              [33] Lufei Liu, Wesley Chang, Francois Demoullin, Yuan Hsi Chou, Mohammadreza
+ [8] Nikolaus Binder and Alexander Keller. 2016. Efficient stackless hierarchy traversal          Saed, David Pankratz, Tyler Nowicki, and Tor M. Aamodt. 2021. Intersection
+     on GPUs with backtracking in constant time.. In Proceedings of the Conference on             Prediction for Accelerated GPU Ray Tracing. In Proceedings of the International
+     High Performance Graphics (HPG). 41–50.                                                      Symposium on Microarchitecture (MICRO). 709–723.
+ [9] Benedikt Bitterli. 2024. Rendering Resources | Benedikt Bitterli’s Portfolio. Re-       [34] Lufei Liu, Mohammadreza Saed, Yuan Hsi Chou, Davit Grigoryan, Tyler Nowicki,
+     trieved Feb. 10, 2025 from https://benedikt-bitterli.me/resources/                           and Tor M. Aamodt. 2023. LumiBench: A Benchmark Suite for Hardware Ray
+[10] Yuan Hsi Chou, Tyler Nowicki, and Tor M. Aamodt. 2023. Treelet Prefetching For               Tracing. In Proceedings of the International Symposium on Workload Characteriza-
+     Ray Tracing. In Proceedings of the International Symposium on Microarchitecture              tion (IISWC). 1–14.
+     (MICRO). 742–755.                                                                       [35] Zihan Liu, Wentao Ni, Jingwen Leng, Yu Feng, Cong Guo, Quan Chen, Chao Li,
+[11] Yangdong Deng, Yufei Ni, Zonghui Li, Shuai Mu, and Wenjun Zhang. 2017.                       Minyi Guo, and Yuhao Zhu. 2024. JUNO: Optimizing High-Dimensional Approxi-
+     Toward Real-Time Ray Tracing: A Survey on Hardware Acceleration and Mi-                      mate Nearest Neighbour Search with Sparsity-Aware Algorithm and Ray-Tracing
+     croarchitecture Techniques. ACM Computing Surveys (CSUR) 50, 4 (2017), 1–41.                 Core Mapping. In Proceedings of the International Conference on Architectural
+[12] Kirill Garanzha and Charles Loop. 2010. Fast ray sorting and breadth-first packet            Support for Programming Languages and Operation Systems (ASPLOS). 549–565.
+     traversal for GPU ray tracing. Computer Graphics Forum 29, 2 (2010), 289–298.           [36] Yashuai Lü, Libo Huang, Li Shen, and Zhiying Wang. 2017. Unleashing the power
+[13] Venkatraman Govindaraju, Peter Djeu, Karthikeyan Sankaralingam, Mary Ver-                    of GPU for physically-based rendering via dynamic ray shuffling. In Proceedings
+     non, and William R. Mark. 2008. Toward a multicore architecture for real-time                of the International Symposium on Microarchitecture (MICRO). 560–573.
+     ray-tracing. In Proceedings of the International Symposium on Microarchitecture         [37] Jeffrey Mahovsky and Brian Wyvill. 2006. Memory-Conserving Bounding Volume
+     (MICRO). 176–187.                                                                            Hierarchies with Coherent Raytracing. In Computer Graphics Forum, Vol. 25.
+[14] Christiaan P. Gribble and Karthik Ramani. 2008. Coherent ray tracing via stream              Wiley Online Library, 173–182.
+     filtering. In IEEE Symposium on Interactive Ray Tracing. 59–66.                         [38] Durga Keerthi Mandarapu, Vani Nagarajan, Artem Pelenitsyn, and Milind Kulka-
+[15] Dongho Ha, Lufei Liu, Yuan Hsi Chou, Seokjin Go, Won Woo Ro, Hung-Wei Tseng,                 rni. 2024. Arkade: k-Nearest Neighbor Search With Non-Euclidean Distances
+     and Tor M Aamodt. 2024. Generalizing Ray Tracing Accelerators for Tree Traver-               using GPU Ray Tracing. In Proceedings of the 38th ACM International Conference
+     sals on GPUs. In Proceedings of the International Symposium on Microarchitecture             on Supercomputing (ICS). 14–25.
+     (MICRO). 1041–1057.                                                                     [39] Daniel Meister, Jakub Boksansky, Michael Guthe, and Jiri Bittner. 2020. On
+[16] Johannes Hanika and Alexander Keller. 2007. Towards Hardware Ray Tracing                     Ray Reordering Techniques for Faster GPU Ray Tracing. In ACM Symposium on
+     using Fixed Point Arithmetic. In IEEE Symposium on Interactive Ray Tracing.                  Interactive 3D Graphics and Games (I3D). 1–9.
+     119–128.                                                                                [40] Daniel Meister, Shinji Ogaki, Carsten Benthin, Michael J Doyle, Michael Guthe,
+[17] Michal Hapala, Tomáš Davidovič, Ingo Wald, Vlastimil Havran, and Philipp                     and Jiří Bittner. 2021. A survey on bounding volume hierarchies for ray tracing.
+     Slusallek. 2011. Efficient stack-less bvh traversal for ray tracing. In Proceedings          Computer Graphics Forum 40, 2 (2021), 683–712.
+     of the Spring Conference on Computer Graphics. 7–12.                                    [41] Micron. 2024. Graphics memory | Micron Technology Inc. Retrieved Feb. 10,
+[18] Jacob Haydel, Cem Yuksel, and Larry Seiler. 2023. Locally-Adaptive Level-of-                 2025 from https://www.micron.com/products/memory/graphics-memory
+     Detail for Hardware-Accelerated Ray Tracing. ACM Transactions on Graphics               [42] Bochang Moon, Yongyoung Byun, Tae-Joon Kim, Pio Claudio, Hye-Sun Kim,
+     (TOG) 42, 6 (2023), 1–15.                                                                    Yun-Ji Ban, Seung Woo Nam, and Sung-Eui Yoon. 2010. Cache-oblivious ray
+[19] Kartik Hegde, Jiyong Yu, Rohit Agrawal, Mengjia Yan, Michael Pellauer, and                   reordering. ACM Transactions on Graphics (TOG) 29, 3 (2010), 1–10.
+     Christopher Fletcher. 2018. UCNN: Exploiting Computational Reuse in Deep                [43] Vani Nagarajan and Milind Kulkarni. 2023. RT-DBSCAN: Accelerating DBSCAN
+     Neural Networks via Weight Repetition. In Proceedings of the International Sym-              using Ray Tracing Hardware. In IEEE International Parallel and Distributed Pro-
+     posium on Computer Architecture (ISCA). IEEE, 674–687.                                       cessing Symposium (IPDPS). 963–973.
+[20] Seok Joong Hwang, Jaedon Lee, Youngsam Shin, Won-Jong Lee, and Soojung                  [44] Vani Nagarajan, Durga Mandarapu, and Milind Kulkarni. 2023. RT-kNNS Un-
+     Ryu. 2015. A mobile ray tracing engine with hybrid number representations. In                bound: Using RT Cores to Accelerate Unrestricted Neighbor Search. In Proceedings
+     Proceedings of the SIGGRAPH Asia Conference. 1–4.                                            of the 37th International Conference on Supercomputing (ICS). 289–300.
+[21] Intel Corporation. 2023.         Intel® Arc™ Graphics Developer Guide for               [45] Jae-Ho Nah, Jin-Woo Kim, Junho Park, Won-Jong Lee, Jeong-Soo Park, Seok-Yoon
+     Real-Time Ray Tracing in Games.                 Retrieved Feb. 10, 2025 from                 Jung, Woo-Chan Park, Dinesh Manocha, and Tack-Don Han. 2014. HART: A
+     https://www.intel.com/content/www/us/en/developer/articles/guide/real-                       Hybrid Architecture for Ray Tracing Animated Scenes. IEEE Transactions on
+     time-ray-tracing-in-games.html/                                                              Visualization and Computer Graphics (TVCG) 21, 3 (2014), 389–401.
+[22] Timothy L Kay and James T Kajiya. 1986. Ray tracing complex scenes. ACM                 [46] Jae-Ho Nah, Hyuck-Joo Kwon, Dong-Seok Kim, Cheol-Ho Jeong, Jinhong Park,
+     SIGGRAPH Computer Graphics 20, 4 (1986), 269–278.                                            Tack-Don Han, Dinesh Manocha, and Woo-Chan Park. 2014. RayCore: A Ray-
+[23] Sean Keely. 2014. Reduced Precision for Hardware Ray Tracing in GPUs. In                     Tracing Hardware Architecture for Mobile Devices. ACM Transactions on Graphics
+     Proceedings of the Conference on High Performance Graphics (HPG). 29–40.                     (TOG) 33, 5 (2014), 1–15.
+[24] Hong-Yun Kim, Young-Jun Kim, and Lee-Sup Kim. 2011. MRTP: Mobile Ray Trac-              [47] Jae-Ho Nah, Jeong-Soo Park, Jin-Woo Kim, Chanmin Park, and Tack-Don Han.
+     ing Processor With Reconfigurable Stream Multi-Processors for High Datapath                  2010. Ordered depth-first layouts for ray tracing. In ACM SIGGRAPH ASIA
+     Utilization. IEEE Journal of Solid-State Circuits (JSSC) 47, 2 (2011), 518–535.              Sketches. 1–2.
+[25] Hong-Yun Kim, Young-Jun Kim, Jie-Hwan Oh, and Lee-Sup Kim. 2013. A Recon-               [48] Jae-Ho Nah, Jeong-Soo Park, Chanmin Park, Jin-Woo Kim, Yun-Hye Jung, Woo-
+     figurable SIMT Processor for Mobile Ray Tracing With Contention Reduction in                 Chan Park, and Tack-Don Han. 2011. T&I engine: traversal and intersection
+     Shared Memory. IEEE Transactions on Circuits and Systems I: Regular Papers 60, 4             engine for hardware accelerated ray tracing. In Proceedings of the SIGGRAPH
+                                                                                                  Asia Conference. 1–10.
+
+
+
+
+                                                                                       386
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                   Yen-Chieh Huang, Chen-Pin Yang, and Tsung Tai Yeh
+
+
+[49] Paul Arthur Navrátil, Donald S Fussell, Calvin Lin, and William R Mark. 2007.               on Graphics (TOG) 33, 4 (2014), 1–8.
+     Dynamic Ray Scheduling to Improve Ray Coherence and Bandwidth Utilization.             [76] Sven Woop, Jörg Schmittler, and Philipp Slusallek. 2005. RPU: a programmable
+     In IEEE Symposium on Interactive Ray Tracing. 95–104.                                       ray processing unit for realtime ray tracing. ACM Transactions on Graphics (TOG)
+[50] Nvidia Corporation. 2023. NVIDIA ADA GPU ARCHITECTURE. Retrieved Feb.                       24, 3 (2005), 434–444.
+     10, 2025 from https://images.nvidia.com/aem-dam/Solutions/geforce/ada/nvidia-          [77] Henri Ylitie, Tero Karras, and Samuli Laine. 2017. Efficient incoherent ray traver-
+     ada-gpu-architecture.pdf                                                                    sal on GPUs through compressed wide BVHs. In Proceedings of the Conference on
+[51] Matt Pharr, Wenzel Jakob, and Greg Humphreys. 2023. mmp/pbrt-v4-scenes:                     High Performance Graphics (HPG). 1–13.
+     Example scenes for pbrt-v4. Retrieved Feb. 10, 2025 from https://github.com/           [78] Sung-Eui Yoon and Dinesh Manocha. 2006. Cache-efficient layouts of bounding
+     mmp/pbrt-v4-scenes                                                                          volume hierarchies. Computer Graphics Forum 25, 3 (2006), 507–516.
+[52] Matt Pharr, Wenzel Jakob, and Greg Humphreys. 2023. Physically based rendering:
+     From theory to implementation. MIT Press.
+[53] Matt Pharr, Craig Kolb, Reid Gershbein, and Pat Hanrahan. 1997. Rendering
+     complex scenes with memory-coherent ray tracing. In Proceedings of the annual
+     conference on Computer graphics and interactive techniques. 101–108.
+[54] Krishna Rajan, Soheil Hashemi, Ulya Karpuzcu, Michael Doggett, and Sherief
+     Reda. 2020. Dual-precision fixed-point arithmetic for low-power ray-triangle
+     intersections. Computers & Graphics 87 (2020), 72–79.
+[55] Karthik Ramani, Christiaan P. Gribble, and Al Davis. 2009. StreamRay: a stream
+     filtering architecture for coherent ray tracing. ACM SIGARCH Computer Archi-
+     tecture News 37, 1 (2009), 325–336.
+[56] Mohammadreza Saed, Yuan Hsi Chou, Lufei Liu, Tyler Nowicki, and Tor M.
+     Aamodt. 2022. Vulkan-Sim: A GPU Architecture Simulator for Ray Tracing. In
+     Proceedings of the International Symposium on Microarchitecture (MICRO). 263–
+     281.
+[57] Jörg Schmittler, Ingo Wald, and Philipp Slusallek. 2002. SaarCOR: a hardware ar-
+     chitecture for ray tracing. In Proceedings of the ACM SIGGRAPH/EUROGRAPHICS
+     conference on Graphics hardware. 27–36.
+[58] Benjamin Segovia and Manfred Ernst. 2010. Memory efficient ray tracing with
+     hierarchical mesh quantization. In Proceedings of Graphics Interface. 153–160.
+[59] Konstantin Shkurko, Tim Grant, Daniel Kopta, Ian Mallett, Cem Yuksel, and
+     Erik Brunvand. 2017. Dual streaming for hardware-accelerated ray tracing. In
+     Proceedings of the Conference on High Performance Graphics (HPG). 1–11.
+[60] Siemens AG. 2024. Catapult High-Level Synthesis & Verification | Siemens
+     Software. Retrieved Feb. 10, 2025 from https://eda.sw.siemens.com/en-US/ic/
+     catapult-high-level-synthesis/
+[61] Siemens AG. 2024. Questa Advanced Simulator | Siemens Software. Retrieved Feb.
+     10, 2025 from https://eda.sw.siemens.com/en-US/ic/questa/simulation/advanced-
+     simulator/
+[62] Josef Spjut, Andrew Kensler, Daniel Kopta, and Erik Brunvand. 2009. TRaX: A
+     Multicore Hardware Architecture for Real-Time Ray Tracing. IEEE Transactions
+     on Computer-Aided Design of Integrated Circuits and Systems (TCAD) 28, 12 (2009),
+     1802–1815.
+[63] Michael Steffen and Joseph Zambreno. 2010. Improving SIMT Efficiency of Global
+     Rendering Algorithms with Architectural Support for Dynamic Micro-Kernels.
+     In Proceedings of the International Symposium on Microarchitecture (MICRO).
+     237–248.
+[64] Synopsys, Inc. 2024. Design Compiler: Timing, Area, Power, & Test Optimiza-
+     tion | Synopsys. Retrieved Feb. 10, 2025 from https://www.synopsys.com/
+     implementation-and-signoff/rtl-synthesis-test/dc-ultra.html
+[65] Synopsys, Inc. 2024. PrimePower: RTL to Signoff Power Analysis | Synopsys.
+     Retrieved Feb. 10, 2025 from https://www.synopsys.com/implementation-and-
+     signoff/signoff/primepower.html
+[66] Lorenzo Tessari, A Dittebrand, Michael J Doyle, and Carsten Benthin. 2023.
+     Stochastic Subsets for BVH Construction. In Computer Graphics Forum, Vol. 42.
+     Wiley Online Library, 255–267.
+[67] The Khronos Group, Inc. 2024. Home | Vulkan | Cross platform 3D Graphics.
+     Retrieved Feb. 10, 2025 from https://www.vulkan.org/
+[68] TSMC. 2024. 40nm Technology - Taiwan Semiconductor Manufacturing Com-
+     pany Limited. Retrieved Feb. 10, 2025 from https://www.tsmc.com/english/
+     dedicatedFoundry/technology/logic/l_40nm
+[69] Karthikeyan Vaidyanathan, Tomas Akenine-Möller, and Marco Salvi. 2016. Wa-
+     tertight Ray Traversal with Reduced Precision. In Proceedings of the Conference
+     on High Performance Graphics (HPG). 33–40.
+[70] Karthik Vaidyanathan, Sven Woop, and Carsten Benthin. 2019. Wide BVH
+     traversal with a short stack. In Proceedings of the Conference on High Performance
+     Graphics (HPG). 15–19.
+[71] Dietger Van Antwerpen. 2011. Improving SIMD efficiency for parallel Monte
+     Carlo light transport on the GPU. In Proceedings of the Conference on High Perfor-
+     mance Graphics (HPG). 41–50.
+[72] Elena Vasiou, Konstantin Shkurko, Erik Brunvand, and Cem Yuksel. 2020. Mach-
+     RT: A Many Chip Architecture for High Performance Ray Tracing. IEEE Trans-
+     actions on Visualization and Computer Graphics (TVCG) 28, 3 (2020), 1585–1596.
+[73] Ingo Wald. 2007. On fast Construction of SAH-based Bounding Volume Hierar-
+     chies. In IEEE Symposium on Interactive Ray Tracing. 33–40.
+[74] Ingo Wald. 2011. Active thread compaction for GPU path tracing. In Proceedings
+     of the Conference on High Performance Graphics (HPG). 51–58.
+[75] Ingo Wald, Sven Woop, Carsten Benthin, Gregory S Johnson, and Manfred Ernst.
+     2014. Embree: a kernel framework for efficient CPU ray tracing. ACM Transactions
+
+
+
+
+                                                                                      387
+

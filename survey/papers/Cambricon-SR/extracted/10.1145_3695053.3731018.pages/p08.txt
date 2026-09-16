@@ -1,0 +1,87 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                                    Liu et al.
+
+
+        3               13                                           1               6                                        them as no on-chip updating of ST is required. For entries changing
+     DT 0          ST 42                   QA     QB                                             QA        QB
+                                                                 0               21                               21
+    Addr.
+          3
+                  Addr.
+                        13
+                                    TH     A E     A
+                                                                 3
+                                                                                         TH      A E        A
+                                                                                                                  15
+                                                                                                                              from dense to dense, as these entries are already stored on-chip,
+                                   |0.8|                                         15      |0.8|
+                    1                                                                            1    6      5
+            5                -7                                  1               6                                            Cambricon-SR directly write the updated value into ST ("21" and
+                 Table
+                                                                                                                              "15" in Figure 9). This process is performed simultaneously with
+                                    >      0→1 1→0 1→1                Table
+                                                                                          >      0→1 1→0 1→1
+                Gradients
+                                                   Sparse
+                                                                     Gradients
+                                                                                                         Sparse               the update of the DT. For entries changing from sparse to dense,
+                                                   Update                                                Update
+       CAM              SRAM                       Unit
+                                                                CAM           SRAM                       Unit                 the address in DT and the updated value are stored into Queue A in
+    DRAM          0           1    2       3       4      5   DRAM       0       1        2      3          4    5            the Sparse Update Unit. For entries changing from dense to sparse,
+     DT           42         0.1   0       13    -0.02   -7    DT        21      6       0.2     15       -0.03 -0.5
+                                                                                                                              the address in DT is stored into Queue B in the entry update.
+                                                                                                                                  In each STA node, one data is read from each of the two queues
+Figure 9: An example of sparse table (ST) access (left) and                                                                   simultaneously. From Queue A, an address (Address A, "1" in Fig-
+update (right) in a node of the Sparse Table Array (STA). For                                                                 ure 9) and an entry (Entry A, "6" in Figure 9) are read. From Queue
+simplicity, the dimension of table entries is 1 in this figure.                                                               B, an address (Address B, "5" in Figure 9) is read. First, Address B
+                                                                                                                              is translated into the corresponding address in ST (Address C, "2"
+                                                                                                                              in Figure 9) through CAM. Then, the Address A is write into the
+with regular and sequential addresses. Therefore, unlike the sparse                                                           Address C of the CAM and the Entry A is write into the Address C
+tables and its gradients, which are stored in STA, the dense table is                                                         of the SRAM bank for sparse entries. This mechanism ensures that
+stored in off-chip memory.                                                                                                    the space released by an old entry (stored at address B in the node)
+                                                                                                                              is directly utilized to store the new entry, and the address data in
+4.3         Sparse Update Unit                                                                                                CAM is updated accordingly.
+According to our evaluation, off-chip memory access to the DT                                                                     Since the sparsity threshold is updated based on the predeter-
+accounts for 72.1% of the total ST-NSR processing time, making it a                                                           mined sparsity rate, the number of entries in the two queues is
+significant performance bottleneck. In the ST-NSR process, there                                                              roughly equal. For minimal extra entries (around 0.03%), if the en-
+are two stages that require accessing the off-chip DT. Firstly, during                                                        try is in Queue B, it is removed from the CAM and SRAM, and the
+the update of the DT, we observe that the table gradients exhibit a                                                           last entry is moved to its position. If the entry is in Queue A, it is
+sparsity of at least 89%, meaning that no more than 11% of the DT                                                             added to the end of the CAM and SRAM. Note that the capacity of
+data needs to be loaded and stored even once. This stage contributes                                                          the CAM and SRAM in Cambricon-SR is redundant to accommodate
+to 13.0% of the total ST-NSR processing time. Secondly, during the                                                            such minimal extra entries. As a result, Cambricon-SR avoids the
+update of ST, all entries in the DT are read to update the on-chip ST.                                                        overhead of extensive data movement, achieving efficient update
+Even though DT access is regular and continuous, the large volume                                                             of ST.
+of data results in this stage accounting for 59.1% of the processing                                                              Through the aforementioned optimizations of sparse table up-
+time.                                                                                                                         date, Cambricon-SR reduces the total memory accesses during the
+   To alleviate the performance degradation caused by the large                                                               table update process by 6.06×. The overall execution time for the
+volume of off-chip memory accesses, we propose a sparse update                                                                update stage has decreased by 5.28×, and the proportion of time
+strategy to optimize the update process for ST. By comparing the                                                              spent on the update stage to the total time has decreased to 32.85%.
+encoding tables of adjacent iterations, we observe that the sparsity
+of entries tends to stabilize as the training progresses. After each                                                          4.4    Sparse Index Unit
+iteration, sparsity of only no more than 0.8% of entries changes,                                                             The ST-NSR algorithm significantly reduces the number of valid
+except for the first 20 iterations. This insight inspires us to update                                                        table entries that need to be stored. However, due to the hash func-
+the ST incrementally.                                                                                                         tion in the encoding stage, the mapping between grid vertices and
+   However, when updating the ST, some new entries, whose ab-                                                                 table entry addresses is irregular, making it difficult to determine
+solute values after updating exceed the sparsity threshold, need to                                                           which entries are pruned during memory access request genera-
+be inserted into the ST. Similarly, some entries whose values fall                                                            tion. Due to the high sparsity of encoding tables, a large portion of
+below the sparsity threshold need to be deleted from the ST. This                                                             memory access requests target invalid addresses, leading to wasted
+process is challenging because the on-chip ST is stored compactly.                                                            bandwidth in the sparse table array and severe congestion in the
+The straightforward implementation involves first identifying the                                                             NoC. To improve memory access throughput in ST-NSR, invalid
+entries to be deleted, shifting all subsequent entries in the compact                                                         memory access requests must be identified and eliminated before
+storage to fill the gap created by the deletion, and then finding                                                             reaching the sparse table array. We introduce the sparse index unit
+the appropriate position for the new entries to be inserted. This                                                             (SIU) to efficiently handle this problem.
+requires a significant amount of data movement in the storage of
+the ST, leading to severe performance degradation.                                                                            4.4.1 Challenges. The throughput requirement of SIU is estimated
+   To address this issue, we design a sparse update unit based on out-                                                        according to the typical sparsity of around 86% and the throughput
+of-order storage and in-place data replacement, as shown in Figure 9.                                                         of the sparse table array of 256 requests per cycle. Thus, the SIU
+During the update of DT, Cambricon-SR computes the new value of                                                               need to process around 1800 memory requests per cycle to fully
+changed entries. Then, it compares the values before and after the                                                            utilize the throughput of the sparse table array. And we choose
+update with the sparsity threshold to classify changed entries into                                                           2048 as the target of SIU throughput.
+4 categories according to the sparsity state of each changed entry.                                                              A straightforward implementation of SIU is to parallelly ac-
+For entries changing from sparse to sparse, Cambricon-SR skips                                                                cessing the bitmap that stores the sparsity of each entry in a bit.
+
+
+
+
+                                                                                                                       1261
+

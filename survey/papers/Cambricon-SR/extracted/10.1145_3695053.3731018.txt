@@ -1,0 +1,1265 @@
+ Cambricon-SR: An Accelerator for Neural Scene Representation
+                with Sparse Encoding Table
+                     Tianbo Liu                                               Xinkai Song                                    Zhifei Yue
+                       USTC                                                SKLP, ICT, CAS                                       USTC
+                   Hefei, China                                             Beijing, China                                  Hefei, China
+                 SKLP, ICT, CAS                                          songxinkai@ict.ac.cn                             SKLP, ICT, CAS
+                  Beijing, China                                                                                           Beijing, China
+           liutianbo@mail.ustc.edu.cn                                                                               zhifeiyue@mail.ustc.edu.cn
+
+                         Rui Wen                                                 Xing Hu                                  Zhuoran Song
+                  SKLP, ICT, CAS                                             SKLP, ICT, CAS                                   SJTU
+                   Beijing, China                                             Beijing, China                             Shanghai, China
+                       UCAS                                                 huxing@ict.ac.cn                         songzhuoran@sjtu.edu.cn
+                   Beijing, China
+                wenrui24s@ict.ac.cn
+
+                    Yuanbo Wen                                                  Yifan Hao                                      Wei Li
+                 SKLP, ICT, CAS                                             SKLP, ICT, CAS                                 SKLP, ICT, CAS
+                  Beijing, China                                             Beijing, China                                 Beijing, China
+               wenyuanbo@ict.ac.cn                                         haoyifan@ict.ac.cn                              liwei@ict.ac.cn
+
+                     Zidong Du                                                 Rui Zhang                                   Jiaming Guo
+                   SKLP, ICT, CAS                                            SKLP, ICT, CAS                               SKLP, ICT, CAS
+                    Beijing, China                                            Beijing, China                               Beijing, China
+                 duzidong@ict.ac.cn                                        zhangrui@ict.ac.cn                           guojiaming@ict.ac.cn
+
+                      Di Huang                                               Shaohui Peng                               Guangzhong Sun
+                  SKLP, ICT, CAS                                               ISCAS                                           USTC
+                   Beijing, China                                          Beijing, China                                   Hefei, China
+                 huangdi@ict.ac.cn                                    pengshaohui@iscas.ac.cn                            gzsun@ustc.edu.cn
+
+                                                     Qi Guo∗                                        Tianshi Chen
+                                                SKLP, ICT, CAS                                 Cambricon Technologies
+                                                 Beijing, China                                     Beijing, China
+                                                guoqi@ict.ac.cn                                 tchen@cambricon.com
+
+Abstract                                                                                     In this paper, we propose Cambricon-SR, an algorithm-hardware
+Neural Scene Representation (NSR) is a promising technique for                            co-designed accelerator to improve NSR performance and quality.
+representing real scenes. By learning from dozens of 2D photos                            First, we propose a novel NSR algorithm with sparse encoding
+captured from different viewpoints, NSR computes the 3D repre-                            table, it achieves more than 80% of sparsity for the encoding table
+sentation of real scenes. However, the performance of NSR process-                        with negligible accuracy loss. Second, to efficiently eliminate the
+ing running on GPU is insufficient for applications. Cambricon-R                          invalid memory access requests to the pruned entries, we propose
+achieves high performance of more than 60 scenes per second, but                          the sparse index unit based on sequential SRAM access to address
+at the cost of modeling quality.                                                          the challenge of irregular memory access to the sparse structure
+                                                                                          bitmap. It achieves a throughput increase of 7.54× for the encoding
+∗ Corresponding Author                                                                    stage with an additional area overhead of 8.59%. Third, we propose
+                                                                                          the dynamic shared buffer for the MLP units to reduce the buffer
+                                                                                          usage by 85.3% so that we can increase the number of the MLP
+                                                                                          units.
+This work is licensed under a Creative Commons Attribution 4.0 International License.        We conduct experimental evaluations on 8 typical scenes. The
+ISCA ’25, Tokyo, Japan
+© 2025 Copyright held by the owner/author(s).
+                                                                                          results demonstrate that, compared with A100 GPU and Cambricon-
+ACM ISBN 979-8-4007-1261-6/25/06                                                          R, Cambricon-SR achieves 1259× and 4.12× speedup, and reduces
+https://doi.org/10.1145/3695053.3731018
+
+
+
+
+                                                                                   1254
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                                        Liu et al.
+
+
+the energy consumption by 1139× and 2.98× for each training                                            Cambricon-R        Cambricon-SR                               Cambricon-R        Cambricon-SR
+iteration of NSR, respectively.                                                             30
+                                                                                                                                                          26
+                                                                                            28
+
+
+
+
+                                                                                                                                              PSNR (dB)
+                                                                                PSNR (dB)
+                                                                                            26                                                            24
+CCS Concepts
+                                                                                            24
+                                                                                                                                                          22
+• Computer systems organization → Architectures.                                            22
+                                                                                            20                                                            20
+                                                                                                 0      10    20     30     40   50      60                    0      10   20      30    40    50      60
+Keywords                                                                                             Modeling speed (scenes/second)                                Modeling speed (scenes/second)
+
+neural scene representation, sparse encoding table, accelerator                                       (a) Kitchen dataset                                           (b) Counter dataset
+
+ACM Reference Format:
+                                                                              Figure 1: Performance-quality curves of Cambricon-R [42]
+Tianbo Liu, Xinkai Song, Zhifei Yue, Rui Wen, Xing Hu, Zhuoran Song,
+Yuanbo Wen, Yifan Hao, Wei Li, Zidong Du, Rui Zhang, Jiaming Guo, Di          and Cambricon-SR on Kitchen and Counter datasets. The
+Huang, Shaohui Peng, Guangzhong Sun, Qi Guo, and Tianshi Chen. 2025.          performance-quality curves demonstrate the trade-off be-
+Cambricon-SR: An Accelerator for Neural Scene Representation with Sparse      tween the modeling speed and quality. By reducing the num-
+Encoding Table. In Proceedings of the 52nd Annual International Symposium     ber of training iterations, the modeling speed can be im-
+on Computer Architecture (ISCA ’25), June 21–25, 2025, Tokyo, Japan. ACM,     proved with the damage of modeling quality. The x-axis rep-
+New York, NY, USA, 15 pages. https://doi.org/10.1145/3695053.3731018          resents the modeling speed through the number of scenes per
+                                                                              second. The y-axis represents the modeling quality through
+1    Introduction                                                             PSNR (Peak Signal-to-Noise Ratio). The curve closer to the
+                                                                              top right corner indicates better performance and quality.
+Neural scene representation (NSR) is a novel algorithm to recon-
+struct 3D representation of real scenes. It learns the encoded 3D
+representation from dozens of 2D photos taken from RGB cam-
+eras. The 3D information can then be used for novel view render-
+ing [25, 27, 29], scene editing [2, 17, 53], relighting [43, 47, 54], and     achieved at the cost of modeling quality. The NSR process involves
+so on. Compared to traditional 3D reconstruct technique, it avoids            performing a training task for each frame of the scene. Reducing the
+the substantial human efforts and expensive laser cameras required            number of training iterations per frame improves performance but
+for 3D representation, significantly reducing the cost and time for           degrades the quality of the trained model. Cambricon-R only com-
+realistic 3D representation.                                                  pletes 250 iterations in training of each scene, which is insufficient
+   NSR can be applied to various fields such as autonomous driv-              for representations of large-scale real-world scenes. For instance,
+ing [6, 15, 51, 52], embodied intelligence [1, 5, 7, 18, 30, 56], and         in the large-scale dataset Kitchen, training for 250 iterations only
+AR/VR [10, 23]. However, the insufficient modeling performance                achieves a PSNR of 18.16. At this level of quality, the results are se-
+of NSR limits its application. In many real-world applications, the           verely affected by noise, making them impractical for applications.
+surrounding environment is changing, requiring continuous NSR                 Figure 1 shows the trade-offs between performance and quality in
+modeling of the environment. For instance, in autonomous driving,             two typical large-scale real-world scenes.
+modeling the environment requires low latency. Due to the insuffi-               In this paper, we aim to improve both the performance and qual-
+cient modeling performance of NSR, current NSR can only model                 ity of NSR accelerator with a key technology of sparse encoding
+environmental information offline for data generation and driving             table. We observe that a large number of the entries in the encoding
+simulation, and cannot be used for modeling the environment on-               table can be pruned with negligible impact to the representation
+line [6, 15, 48, 51]. Similarly, in embodied intelligence, using NSR for      quality of NSR, as shown in Figure 4. When using the sparse encod-
+scene reconstruction can help robots understand and interact with             ing table, memory accesses to the pruned entries can be avoided
+the scene [5, 7, 30]. However, the NSR modeling process in these              to speed up the encoding stage, which is bottleneck stage of NSR
+applications is often completed offline in advance [1, 18, 56], thus          due to the heavy fine-grained irregular memory accesses even for
+only supporting pre-determined static scenes. These applications              on-chip memory [42].
+set high demands on both the performance and quality of NSR.                     Based on this observation, we first propose a training algorithm
+   However, the performance of NSR running on GPUs is insuffi-                called sparse table NSR (ST-NSR), which achieves more than 80%
+cient. For example, it takes at least 5 seconds to compute the repre-         sparsity of the table during the forward stage and more than 90%
+sentation of a scene on A100 [36], which cannot meet the require-             sparsity of the table gradient during the backward stage at the cost
+ment of the aforementioned applications. Several accelerator archi-           of negligible accuracy loss. To the best of our knowledge, this is
+tectures have been proposed to speed up NSR processing [24, 42, 55].          the first NSR training algorithm with sparse encoding tables. We
+Accelerators like Instant-3D [24] and Instant-NeRF [55] are de-               observe that as the size of the encoding table increases, the sparsity
+signed for edge devices. They improve the NSR performance by                  rate grows, resulting in a reduction of required memory accesses,
+around 200 times compared with edge-end GPUs and achieve NSR                  as shown in Figure 3. However, a larger encoding table comes at
+performance of around 1 scene per second. Other accelerators like             the cost of an increased memory footprint, making it impossible to
+Cambricon-R [42] are implemented on a large chip. By keeping the              store the entire table on-chip. Based on the design space exploration
+encoding table on chip, almost all off-chip memory accesses are               of different table sizes, we determine that a table size of 128 MB
+eliminated. They achieve NSR performance of more than 60 scenes               maximizes the number of invalid memory access requests while
+per second. However, the high performance of Cambricon-R is                   ensuring that the sparse table can still be stored on-chip.
+
+
+
+
+                                                                       1255
+Cambricon-SR: An Accelerator for Neural Scene Representation with Sparse Encoding Table                                                  ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+   In the update stage of ST-NSR, a dense table must be maintained                                   Cambricon-SR achieves 1259× and 4.12× speedup, and re-
+to accumulate gradients. Due to the large size of the dense table,                                   duces the energy consumption by 1139× and 2.98× for each
+it must be stored off-chip. As a result, the large amount of off-                                    training iteration of NSR, respectively.
+chip memory access to this table in the update stage becomes a
+performance bottleneck. To address this challenge, we propose                             2 Background and motivation
+sparse update unit that efficiently updates the sparse table on-chip
+with sparse storage format, thus avoiding off-chip memory access
+                                                                                          2.1 NSR Algorithms
+to the dense table and reducing the memory access volume by 83.5%                         NSR algorithms are primarily divided into two main categories:
+compared to the straightforward approach.                                                 NeRF-based [33] and 3DGS-based [19]. In this paper, we focus
+   Efficient memory access to the on-chip sparse table is challenging.                    on NeRF-based NSR algorithms. 3DGS-based algorithms explicitly
+During the forward stage, many invalid memory requests occur for                          represent the scene using millions of discrete Gaussians in 3D space.
+pruned entries. Efficiently eliminating these requests before access-                     In contrast, NeRF-based algorithms learn implicit representation of
+ing the sparse table is difficult due to the irregular access patterns of                 a scene by sampling points in 3D space and using MLPs to learn
+the sparse structure bitmap. We propose a Sparse Index Unit (SIU)                         the mapping between spatial position of points and their color and
+based on sequential SRAM accessing and parallel address matching                          volume density. However, due to the large size of the MLP, the
+to address this challenge. With an additional area overhead of 8.59%,                     modeling speed is exceedingly slow, making it difficult to meet the
+SIU achieves high throughput filtering of memory access requests,                         demands of applications.
+thereby increasing the throughput of encoding stage by 7.54×.                                 To improve modeling efficiency, optimized NSR algorithms com-
+   After improving the throughput of the encoding stage, the MLP                          bine encoding table with small MLPs. Each point is obtained through
+stage becomes a new bottleneck of ST-NSR algorithm. However,                              a lookup table to get encoded features, which are then processed
+due to the large local buffer used by each MLP unit, increasing the                       by small MLPs. This method significantly reduces the computa-
+MLP units by 4× would require an additional total buffer capacity                         tional workload for each point. Currently, many mainstream NSR
+of 144 MB, significantly raising the cost of the chip. We propose                         algorithms [4, 9, 12, 36, 46, 49] adopt this technique of combin-
+a design with dynamic shared buffers that reduces the average                             ing encoding table with small MLPs. A training iteration of the
+buffer capacity required per MLP unit by 85.3%. As a result, we can                       algorithms consists of following stages, as illustrased in Figure 2:
+increase the number of MLP units by 4× to improve performance                                 (1) Sampling. In the sampling stage, pixels are randomly sam-
+with acceptable size of buffer requirement.                                               pled from the training images. The coordinates and the RGB color
+   We conduct experimental evaluations on 8 typical scenes. The                           of sampled pixels are the input and the ground truth of the NSR
+results show that, compared with A100 GPU and the state-of-the-                           process, respectively. To compute the color of pixels, each pixel is
+art NSR training accelerator Cambricon-R, Cambricon-SR achieves                           mapped to a ray [33, 36] or a cone [3, 4], which starts from the cam-
+1259× and 4.12× speedup, and reduces the energy consumption by                            era viewpoint through the corresponding pixel along the viewing
+1139× and 2.98× for each training iteration of NSR, respectively.                         direction. Then, points are randomly sampled along each ray or
+Thus, we improve both the performance and quality of NSR. As                              cone. The coordinates (𝑥, 𝑦, 𝑧) and view direction (𝜃, 𝜙) of these
+shown in Figure 1, under the same modeling speed, the quality                             sampled points are computed and transmitted to the next stage.
+improvement comes from more iterations of training.                                           (2) Encoding. Hash grid [36] and Multi-planes [12] are two
+   The contributions of this paper are summarized below:                                  mainstream encoding methods of NSR. The process of hash grid
+                                                                                          is shown in the middle part of Figure 2. Step ○     1 hash encoding
+     • We propose the first NSR algorithm with sparse encoding                            of vertices: Specifically, For a given sampled point 𝑠, the voxel
+       table (ST-NSR). It achieves more than 80% sparsity of the                          that encloses the point is determined, and its 8 corner vertices
+       encoding table and its gradients. We implement ST-NSR on                           are identified. Through the hash function given in Equation 1, the
+       GPU and it achieves a 1.55× speedup in the encoding stage                          vertices’ coordinate (𝑥𝑖 , 𝑦𝑖 , 𝑧𝑖 ) is mapped to the hash table index
+       and a 1.19× overall speedup.                                                       ℎ𝑖 . Step ○2 encoding table lookup: Using the index ℎ𝑖 , an 𝐹 -
+     • We propose the Sparse Update Unit to reduce 83.5% of the                           dimensional feature vector is retrieved for each vertex of the voxel
+       off-chip memory accesses in the update stage. It decreases                         from a compact encoding table containing 𝑇 entries. Step ○     3 inter-
+       the execution time for the update stage by 5.28×.                                  polation & concatenation: Linear interpolation of the 8 vertices’
+     • We propose the Sparse Index Unit (SIU) based on sequential                         𝐹 -dimensional feature vectors yields an 𝐹 -dimensional feature vec-
+       SRAM access to address the challenge of irregular memory                           tor. This process is repeated across 𝐿 different grid resolutions using
+       access to the bitmap. It achieves a throughput increase of                         the corresponding hash tables. The feature vectors from all levels
+       7.54× during the encoding stage with an additional area                            are then concatenated to construct an input vector of size 𝐹 × 𝐿 for
+       overhead of 8.59%.                                                                 the MLP.
+     • We propose the dynamic shared buffer for the MLP units to
+       reduce the buffer usage by 85.3% so that we can increase the                                   ℎ𝑖 = 𝐻 (𝑥𝑖 , 𝑦𝑖 , 𝑧𝑖 ) = (𝜋 1𝑥𝑖 ⊕ 𝜋2𝑦𝑖 ⊕ 𝜋3𝑧𝑖 )        mod 𝑇 1         (1)
+       number of the MLP units by 4× with acceptable capacity of
+       on-chip buffers.                                                                     Note that each resolution level has an independent hash table,
+     • We conduct thorough experimental evaluation of Cambricon-                          where each hash table consists of 𝑇 entries, and each entry stores
+       SR. The results show that, compared with A100 GPU and
+       the state-of-the-art NSR training accelerator Cambricon-R,                         1𝜋
+                                                                                               1 = 1; 𝜋 2 = 2 654 435 761; 𝜋 3 = 805 459 861
+
+
+
+
+                                                                              1256
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                  Liu et al.
+
+
+
+                                                                                         Resolution                                       Updating
+                                                                                            1
+      (𝑥, 𝑦, 𝑧, 𝜃, 𝜙)                            ①Hash encoding of vertices
+                                                                                                                   Density MLP           loss
+                                                                                  𝑇                                                                    ground
+                                                                                                                                                Yes     truth
+                                                               Hash
+                                                               Func.                                                             (𝑅, 𝐺, 𝐵, 𝜎)
+                                                                              𝐹                       𝐹·𝐿                                       𝑇 <𝑇
+                                                               ℎ(𝒙)                                                                   ∑
+                                                                                                                   Color MLP
+                                                                                            𝐿
+                                                                   ②Table         𝑇
+                                                                                                 ③Interpolation&                                Forward
+                                                                   Lookup
+                                                                                                   Concatenation                                Backward
+
+
+                 Figure 2: The training process of a typical NSR algorithm. Hash grid encoding is used in this example.
+
+
+an 𝐹 -dimensional feature vector. Therefore, the total number of                  locality, and skips the access of encoding table when the sampled
+trainable parameters in the hash encoding tables is 𝐿 × 𝑇 × 𝐹 .                   point is far from the grid veritces.
+   In multi-planes encoding [12], sampled points are first projected                 These three accelerators are designed for edge devices and achieve
+to multiple planes (x-y plane, x-z plane, and y-z plane in case of                huge improvement against edge-end GPUs. However, due to the
+3D space). Each plane corresponds to a series of encoding tables                  limited hardware resources of edge-end chips, high performance
+at different levels of resolution. Similar with hash grid, the feature            NSR processing cannot be achieved by these accelerators.
+vector of a point is computed through bilinear interpolation of 4                    Cambricon-R. Cambricon-R [42] introduces a fully fused archi-
+vertices of the grid that surrounds the point at each level. Then,                tecture to address the memory access challenges in NSR. It proposes
+features of different planes from the same level are reduced using                a ray-based execution flow which keeps almost all data on-chip,
+operations such as element-wise multiplication.                                   thereby eliminating the majority of off-chip memory accesses. Ad-
+   (3) MLP. In the MLP stage, the encoded feature vector of each                  ditionally, it introduces an network-on-chip (NoC) to alleviate the
+sampled point is fed into MLPs to predict the RGB color and volume                fine-grained irregular memory access conflicts during encoding
+density of the point.                                                             table access, thus resolving the memory access challenges during
+   (4) Volume Rendering & Loss Computing. Volume rendering                        the encoding stage. As a result, Cambricon-R achieves high per-
+is performed to accumulate the colors and densities of sampled                    formance NSR processing for the first time with on-chip storage
+points along each ray, resulting in the color of the corresponding                resources comparable to those of an A100.
+pixel. Then, the computed pixel color is compared with the ground                    However, Cambricon-R has insufficient training iterations under
+truth color to calculate the loss.                                                high performance requirements. The NoC for accessing encoding
+   (5) Parameters Updating. After computing the loss, gradients                   table has limited throughput. When improving the throughput
+are back-propagated through the above pipeline. The learnable                     of the NoC, the additional area cost of wires and buffers will in-
+parameters in NSR, primarily including entries in encoding tables                 crease rapidly as the number of banks increases. Due to insufficient
+and weights of MLPs, are optimized using optimization algorithm                   throughput, Cambricon-R can only complete 250 training itera-
+such as gradient descent.                                                         tions for each scene, which seriously damages the modeling quality,
+                                                                                  especially for large-scale scenes.
+2.2     NSR Accelerators
+                                                                                  3     ST-NSR Algorithm
+Some applications of NSR algorithm, such as autonomous driving
+and embodied intelligence, require a high 3D representation perfor-               Multiple works [21, 24, 42, 55] have demonstrate that a large number
+mance. However, executing NSR processing for a typical scene takes                of irregular table accesses during the encoding stage are a perfor-
+at least 5 seconds on A100 to achieve an acceptable representation                mance bottleneck of NSR process. In order to reduce the number
+quality, which cannot meet the requirement of these applications.                 of encoding table access, we adopt a sparse algorithm ST-NSR to
+Some researchers have proposed designs for NSR accelerators to                    prune the encoding table and its gradients during training.
+address the performance gap.
+   Instant-NeRF. Instant-NeRF [55] accelerates NSR training us-                   3.1    Process of ST-NSR
+ing a Near Memory Processing (NMP) architecture. To address the                   We propose ST-NSR, the first NSR training algorithm with sparse en-
+memory access bottleneck in the NSR processing, Instant-NeRF in-                  coding tables to achieve high sparsity with negligible accuracy loss.
+tegrates computing units directly on the memory, achieving greater                Algorithm 1 illustrates the ST-NSR process, where sparsification-
+bandwidth.                                                                        related operations are marked in red. Note that the original dense
+   Instant-3D. Instant-3D [24] splits the hash grid into two branches             encoding table (DT) is defined as 𝑇dense , while the pruned sparse en-
+and reduces the grid size and update frequency for the less sensitive             coding table (ST) is defined as 𝑇sparse , which is stored using a sparse
+branch. It also minimizes memory read/write operations during                     storage format. ST-NSR consists of the following three stages:
+hash grid interpolation by employing memory access merging.                          (1) Forward stage, Line 3 − 6. In the forward stage, the process
+   NeuGPU. NeuGPU [40] is an NSR training accelerator chip that                   of the ST-NSR algorithm is the same as that of the NSR algorithm,
+has taped out. It partitions the encoding table for better spatial                involving sampling, encoding, MLP, and loss computation. The
+
+
+
+
+                                                                       1257
+                                                                                                                                                                                                                          40
+                                                                                                                                                                                                                          35
+                                                                                                                                                 Sparse Table Size (MB)                                    Valid Memory Access
+                                                                                                                                                                                                                        30     (MB)
+                                                                                                                                                                                                                          25
+                                                                                                                                                                                                                          20
+                                                                                                                                                                                                                          15
+                                                                                                                                                                                                                          10
+                                                                                                                                                                                                                           5
+                                                                                                                                                                                                                           0
+                                                                                                                                                                                                                               8      16   32
+
+
+Cambricon-SR: An Accelerator for Neural Scene Representation with Sparse Encoding Table                                                                          ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                                                                                                      Sparsity Rate              Sparse Table Size (MB)                     Valid Memory Access (MB)
+Algorithm 1 ST-NSR Training Algorithm                                                                        1                              50                                                              1500
+                                                                                                           0.8                              40                                                              1200
+Data: 𝑇dense : dense encoding tables. 𝑇sparse : sparse encoding tables.                                    0.6                              30                                                              900
+    𝑊MLP : weights of MLPs. 𝑁 iter : the number of training iterations.                                    0.4                              20                                                              600
+                                                                                                           0.2                              10                                                              300
+    𝜃 : the sparsity threshold.                                                                              0                               0                                                              0
+                                                                                                                 8   16 32 64 128 256              8        16                 32      64     128    256
+ 1: for 𝑖 = 1, 2, · · · , 𝑁 iter do
+                                                                                                           (a) Dense Table Size (MB)                    (b) Dense Table Size (MB)
+ 2:      𝑑𝑇accum, 𝑑𝑊accum ← 0
+ 3:      for each 𝑟𝑎𝑦 in Sampling(training-data) do                                       Figure 3: (a) The impact of dense table size on sparsity rate.
+ 4:          𝑓 𝑒𝑎𝑡𝑢𝑟𝑒𝑠 ← Encoding(𝑟𝑎𝑦,𝑇sparse )                                           (b) The impact of dense table size on sparse table storage
+ 5:          𝑐𝑜𝑙𝑜𝑟 ← MLP(𝑓 𝑒𝑎𝑡𝑢𝑟𝑒𝑠,𝑊MLP )                                                 and volume of valid memory access. The yellow dashed line
+ 6:          𝑑𝑐 ← Loss(𝑐𝑜𝑙𝑜𝑟, 𝑐𝑜𝑙𝑜𝑟 ground_truth )                                        represents the total volume of memory access.
+ 7:          𝑑 𝑓 , 𝑑𝑊 ← Backward-MLP(𝑑𝑐,𝑊MLP )
+ 8:          𝑑 𝑓s ← Backward-Sparsification(𝑑 𝑓 )
+ 9:          𝑑𝑇 ← Backward-Encoding(𝑑 𝑓s )                                                                  6                                                              6
+
+
+
+
+                                                                                                                                                         PSNR loss(dB)
+                                                                                           PSNR loss(dB)
+                                                                                                                      Fx         Fc     Hd                                             Fx      Fc      Hd
+10:          𝑑𝑇accum ← 𝑑𝑇accum + 𝑑𝑇                                                                                   Mc         Bs     Rm
+                                                                                                            4                                                              4           Mc      Bs      Rm
+11:          𝑑𝑊accum ← 𝑑𝑊accum + 𝑑𝑊                                                                                   Ct         Kt                                                    Ct      Kt
+12:      end for                                                                                            2                                                              2
+
+13:      𝑇dense ← Parameters-Updating(𝑇dense, 𝑑𝑇accum )                                                     0                                                              0
+                                                                                                             70%           80%        90%        100%                       70%             80%      90%           100%
+14:      𝑊MLP ← Parameters-Updating(𝑊MLP, 𝑑𝑊accum )
+                                                                                                                     (a) Forward stage                                              (b) Backward stage
+15:      𝜃 ← Threshold-Updating(𝑇dense )
+16:      𝑇sparse ← Forward-Sparsification(𝑇dense, 𝜃 )
+17: end for                                                                                                      Figure 4: The impact of sparsity on PSNR loss.
+
+                                                                                                                             PSNR: 26.25                                 PSNR: 25.85
+                                                                                                                             SSIM: 0.817                                 SSIM: 0.802
+difference lies in the encoding stage, where ST-NSR algorithm ac-
+cesses the pruned ST instead of the original DT. Since most of
+entries are pruned, a large number of invalid memory accesses
+can be eliminated. The generation of ST will be introduced in (3)
+Update stage.                                                                                                         (a) NSR                     (b) ST-NSR                                (c) Ground Truth
+   (2) Backward stage, Line 7 − 11. First, the loss gradient is back-
+propagated through the MLP, obtaining gradients for both the MLP                          Figure 5: Modeling quality comparison of NSR and ST-NSR
+weights and the encoded features. A dedicated backward sparsifica-
+tion step (Line 8) is designed to sparsify the gradients of the encoded
+features (𝑑 𝑓 ). Specifically, for each gradient vector, if the absolute                  3.2                    Sparsity-Size Trade-off
+values of all its dimensions are below the sparsity threshold, the                        We observe that the size of the dense table (DT) has a significant
+vector is pruned. Subsequently, the remaining gradients (𝑑 𝑓s ) are                       impact on sparsity rates. We evaluate the sparsity rates under dif-
+further propagated to the encoding stage, and the accumulated                             ferent table sizes, ensuring that the PSNR degradation does not
+gradients for both the MLP and encoding are updated.                                      exceed 0.5. The experimental results are shown in Figure 3. As
+   (3) Update stage, Line 13 − 16. During the update stage, using                         the size of DT increases, higher sparsity rates are achieved. Since
+the accumulated gradients computed in the backward stage, entries                         the total volume of accesses to the tables is same across different
+in the DT and weights in the MLPs are updated through optimiza-                           DT sizes, the volume of valid accesses is reduced, thereby creating
+tion algorithms. Subsequently, given a pre-determined sparsity rate,                      potentials for performance improvement. However, the increase in
+the sparsity threshold 𝜃 is dynamically determined using the top-k                        the size of DT also results in a larger ST. To reduce the volume of
+algorithm based on the updated DT. In the DT, entries with all di-                        valid accesses by increasing the DT size while ensuring that the ST
+mensions below 𝜃 are pruned, while others are retained, generating                        can be stored on-chip, we select the DT size to 128 MB. Under this
+the ST for the next training iteration.                                                   configuration, the size of the sparse table is no more than 26 MB.
+   In each iteration of the ST-NSR, which entries in the encoding                         And according to our evaluations, the size of table gradients is no
+table are pruned or retained changes dynamically. To achieve this,                        more than 14 MB in this case, meaning that sparse table and table
+gradients must be continuously accumulated for all entries until                          gradients can be stored in a 40 MB on-chip buffer.
+their accumulated values exceed or fall below a threshold, triggering                        Sparsity Evaluation. In ST-NSR, different sparsity rates are set
+changes in sparsity. However, since ST only contains the active                           for the encoding tables in the forward stage and for the gradients of
+entries that have not been pruned in the current iteration, it cannot                     encoded features in the backward stage. Under the aforementioned
+fulfill this requirement. Therefore, it is necessary to maintain a                        configuration of table size, we conduct experimental evaluations on
+DT that includes all entries to accumulate gradients. This ensures                        two types of sparsity in various datasets. Figure 4a shows the impact
+that pruned parameters still have a chance to be restored rather                          of sparsity in the forward stage on the modeling quality (measured
+than being permanently discarded due to temporary inactivity. For                         in PSNR), while the sparsity in the backward stage is set to 0. The
+example, in Figure 9, the first entry in the DT gradually accumulates                     results indicate that when the sparsity rates for 8 typical scenes are
+from 0.1 to 6, eventually becoming a valid parameter.                                     set to 86%, 88%, 96%, 94%, 82%, 80%, 84%, and 82%, respectively, the
+
+
+
+
+                                                                              1258
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                               Liu et al.
+
+
+impact on PSNR is less than 0.5. Figure 4b illustrates the impact                                          NSR(Other stages)               ST-NSR(Other stages)
+                                                                                                           NSR(Encoding stage)             ST-NSR(Encoding stage)
+                                                                                          30
+
+
+
+
+                                                                            Runtime(ms)
+of sparsity in the backward stage on the modeling quality, with
+the forward stage sparsity set according to the results mentioned                         20
+above. The results demonstrate that when the sparsity rates for 8                         10
+typical scenes are set to 80%, 85%, 95%, 85%, 85%, 90%, 95%, and                          0
+85%, respectively, the impact on PSNR is less than 0.5. As shown in                              Fx            Fc   Hd   Mc        Bs        Rm        Ct      Kc    Geo
+Figure 5, a PSNR reduction of around 0.5 has little impact on the
+                                                                           Figure 6: Comparison of NSR and ST-NSR runtime on GPU.
+visual quality. The remainder of this paper will be based on these
+sparsity results.
+                                                                                   Forward & Backward                                                 Update
+                                                                               Ray 1               Ray 𝑛
+                                                                           Sampling        ······                              MLP
+3.3     GPU Optimization                                                                                                      weights
+                                                                           Encoding                   ······
+According to our evaluation of Instant-NGP [37], a representa-             MLP                        ······                            Dense Table            Sparse Table
+tive NSR algorithm, the encoding stage is most time-consuming,
+                                                                           Threshold Update(last iteration)
+accounting for 46% of the total runtime. This is due to massive fine-
+grained irregular memory accesses to encoding tables during the
+                                                                           Figure 7: Dataflow of Cambricon-SR for one iteration of NSR
+encoding stage. In this section, we implement ST-NSR algorithm on
+                                                                           training.
+NVIDIA A100 GPU using CUDA to reduce the volume of memory
+accesses and improve the performance of the encoding stage.
+   We first attempt to leverage the structured sparsity hard-
+                                                                           concurrently access the bitmap in shared memory, as the access
+ware of the A100 to support ST-NSR, but find it to be com-
+                                                                           addresses are irregular indexes computed by hash functions. The in-
+pletely ineffective. The structured sparsity in the A100’s Tensor
+                                                                           efficiency motivates our design of a dedicated hardware accelerator
+Cores, such as 2:4 sparsity, is designed to accelerate matrix mul-
+                                                                           (Section 4) to address these limitations.
+tiplications in NNs by reducing MAC operation overhead [34]. In
+contrast, ST-NSR leverages sparsity to reduce memory access in the
+                                                                           4              Cambricon-SR
+encoding stage, which does not involve any matrix multiplication
+operations, making structured sparsity hardware ineffective for ST-        In this section, we present Cambricon-SR, a hardware architecture
+NSR. Moreover, applying the structured sparsity algorithm to               developed to efficiently execute the ST-NSR algorithm proposed in
+sparse encoding table is also ineffective. We apply structured             Section 3. We first introduce the dataflow and overall architecture
+sparsity to the encoding table with the same sparsity rate as ST-NSR.      of Cambricon-SR in Section 4.1 and Section 4.2. Subsequently, we
+Experiments show that it not only fails to improve performance             detail the optimizations applied to the update stage, the encoding
+but also degrades quality, reducing PSNR by 1.5 dB. This is because        stage, and the MLP stage, which include Sparse Update Unit in
+structured sparsity (e.g., 2:4) requires accessing four consecutive        Section 4.3, Sparse Index Unit in Section 4.4, and Dynamic Shared
+entries as a group to gain performance benefits. However, accesses         Buffer in Section 4.5, respectively.
+to the encoding table are irregular single-entry lookups, resulting in
+no performance gain. Moreover, the fixed sparsity pattern further          4.1                 Overall Dataflow of Cambricon-SR
+degrades modeling quality.                                                 Figure 7 shows the high-level execution flow of Cambricon-SR
+   In our GPU implementation of ST-NSR, sparse table (ST) is kept          for one iteration of NSR training. We divide the entire execution
+resident in the L2 cache to reduce off-chip memory accesses, as its        process into two stages: the forward & backward stage, and the
+size is less than 40 MB. To further filter out invalid ST accesses, a      update stage.
+bitmap stored in shared memory is utilized to track the sparsity              Forward & Backward Stage. In this stage, by storing all in-
+state of each table entry. Since each block in our CUDA kernel             volved parameters and intermediate data on-chip, off-chip memory
+only processes one level of encoding table, we only load the bitmap        accesses are nearly eliminated. Weights and gradients of MLP are
+corresponding to that level into shared memory. However, shared            small and stored on-chip. For parameters of encoding tables, due
+memory on A100 (164 KB per block) cannot accommodate the com-              to ST-NSR algorithm, the total size of the sparse table and table
+plete bitmap of one level (256 KB). To address this issue, we employ       gradients does not exceed 40 MB. Therefore, it is feasible to store
+a hash table, which saves storage to 128 KB through hash mapping           them on-chip. The size of the intermediate data depends on the
+at the cost of hash collisions that may cause a small number of            number of rays or sampled points processed in parallel. To reduce
+pruned entries to be misidentified as valid.                               the size of intermediate data and store those data on-chip, sam-
+   We evaluate the performance of NSR and ST-NSR on GPU across             pling, encoding, and MLP processes of one ray are executed in a
+8 datasets. Figure 6 shows the runtime of one training iteration           fine-grained pipelined manner, with a granularity of 32 sampled
+of NSR and ST-NSR on GPU. ST-NSR achieves a 1.55× speedup in               points.
+the encoding stage and a 1.19× overall speedup compared to the                Update Stage. During the update stage, three types of model
+baseline GPU implementation. However, there remains a significant          parameters need to be updated: MLP weights, sparse table (ST), and
+performance gap between the achieved speedup and the theoret-              dense table (DT). The MLP weights and gradients are stored on-chip
+ical reduction in memory accesses (at least 5×). This is primarily         and are updated directly on-chip. Simultaneously, the off-chip DT
+attributed to bank conflicts issues when threads within a block            is updated by using the on-chip table gradients generated at the
+
+
+
+
+                                                                    1259
+Cambricon-SR: An Accelerator for Neural Scene Representation with Sparse Encoding Table                                                                 ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+      Forward&                               Encoding Module                          MLP Module                    a bitonic sorter and cascaded bidirectional insertion sorting units,
+      Backward                                    Sparse Index Unit                                                 the Update Module performs top-k sorting on DT and updates
+                                                                                          MLP Unit
+       Update                              Request       Compar.      Sequential               MAC Loss             the sparsity threshold.
+
+
+
+
+                                                                                    Prefetch
+                                           Buffer        Network      Access Unit              Unit Unit
+
+
+
+
+                                                                                     Buffer
+                                                                                                                       Encoding Module. The Encoding Module is responsible for
+                                     Routing Interpolate                                        PGS Unit
+                  Pre-process Unit
+
+
+
+      Sampling                       Crossbar   Unit
+                                                                          …                                         performing memory access to the sparse tables and executing the
+       Module                                                                                   Address             interpolation for each sampled point. Inside the encoding module,
+                                                                                                Crossbar
+
+
+
+
+                                                                   …
+                                                    Sparse
+                                           SRAM
+
+
+
+                                                                                                                    the Pre-process Unit is responsible for calculating the addresses
+                                     CAM
+
+
+
+
+       Update                                       Update                            Weight       Activa.
+       Update                                        Unit
+        Unit
+       Module                                                 Sparse Table Array      Buffer       Buffer           of the vertices surrounding the sampled points in the table at each
+                                                                                                                    level. The Sparse Index Unit (SIU) is responsible for eliminating
+                                                       Global Buffer
+                                                                                                                    invalid memory access requests for entries that have been sparsified.
+                                                             DRAM                                                   Details of SIU will be discussed in Section 4.4.
+                                                                                                                       Sparse Table Array (STA). The encoding module is composed
+       Figure 8: Overall Architecture of Cambricon-SR.                                                              of 16 STAs, corresponding to 16 levels of encoding tables,with a
+                                                                                                                    total of 40 MB SRAM. The STA performs high-throughput memory
+                                                                                                                    access to the the sparse table and its gradients. STA is implemented
+forward & backward stage. Subsequently, the DT is read to compute                                                   based on the Auto-Interpolation Bank Array of Cambricon-R [42]
+the sparsity threshold, and then each DT entry is compared with                                                     since it achieves SOTA throughput of encoding in NSR. Specifically,
+this threshold to update the on-chip ST. The optimization of this                                                   nodes in the array are interconnected in a mesh NoC. Each node
+process is introduced in Section 4.3.                                                                               contains an SRAM bank that stores a part of sparse tables and
+    We observe minor changes in the sparsity threshold between iter-                                                gradients. During the encoding process, memory access requests
+ations. To avoid waiting for the computing of the sparsity threshold,                                               are transmitted between nodes via the NoC. And data access and
+Cambricon-SR utilizes the sparsity threshold from the last iteration                                                interpolation computations are performed when the request arrives
+during the update process of the sparse table. Previously, the thresh-                                              at the corresponding node. This approach resolves bank conflict
+old update process was performed between the DT and ST updates,                                                     issues through asynchronous control of different nodes. Compared
+but our dataflow shifts this operation to run in parallel with the                                                  to Cambricon-R, we modify the structure of node to efficiently
+forward and backward stage. However, the computes of threshold                                                      support ST-NSR algorithm. As shown in Figure 8, CAM and Sparse
+takes longer time than the forward and backward process because                                                     Update Unit (detailed in Section 4.3) are integrated into the STA.
+it requires read the entire DT. We propose imprecise computation                                                       Content Addressable Memory (CAM). To improve space uti-
+of the threshold by using only half of the DT. As a result, the time                                                lization of the STA, we compactly store the valid entries of the
+taken for sparsity threshold computation is shorter than the time                                                   sparse table in SRAM. However, each access to an entry in the
+for the forward and backward stage. Due to the randomization                                                        sparse table (ST) requires the translation of the original address
+of DT access addresses through hash functions, we consider the                                                      in the dense table (DT) to the address in the sparse table, to cor-
+data distribution in DT to be approximately uniform. Therefore,                                                     rectly access the entry from the on-chip SRAM. We propose the
+we simply use the first half of the DT to calculate the threshold.                                                  use of CAM to implement this address translation. CAM is a type
+Experimental evaluations show that this mechanism of updating                                                       of memory device that, upon inputting its stored content, returns
+threshold has negligible impact on the representation accuracy of                                                   the corresponding address of the content. Each node in STA has a
+ST-NSR (less than 0.1).                                                                                             corresponding CAM to perform address translation. As shown in
+                                                                                                                    Figure 9 (left), the entry at DT address 3 is accessed, translated to
+4.2     Overall Architecture of Cambricon-SR                                                                        the corresponding ST address 1 via the CAM, and then the entry
+The overall architecture of Cambricon-SR is optimized for the ST-                                                   13 at SRAM address 1 is retrieved.
+NSR algorithm based on a fully fused on-chip processing architec-                                                      In our hardware configuration, each node in the STA can store
+ture, as illustrated in Figure 8.                                                                                   up to approximately 2,500 table entries and table gradients in to-
+   In Cambricon-SR, the Global Buffer primarily stores the train-                                                   tal. To reduce the significant area and energy overhead associated
+ing data for each training iteration, the weights of the MLP, and                                                   with the parallel match of such a large number of entries in the
+the accumulated gradients of the MLP. The Sampling Module                                                           CAM, we adopt a blocking strategy, a technique commonly used
+is responsible for performing the conversion from pixels to rays,                                                   in the design of large CAM [41]. Specifically, each node includes
+as well as sampling points along the rays. The MLP Module han-                                                      16 blocks of CAM, each with 160 entries. Each block operates in-
+dles the training of the MLP. The MLP module comprises 512 MLP                                                      dependently, handling search, read, and write operations. When a
+units, each consisting of two 32 × 32 MAC (Multiply Accumulate)                                                     request with an address from the dense tables arrives at the CAMs.
+arrays. The optimized design of the MLP Module will be discussed                                                    The corresponding block of CAMs is determined by the upper 4
+in Section 4.5. To enable sparsity in the backward stage of the ST-                                                 bits of the address, and only the selected block is activated. We eval-
+NSR algorithm, the MLP unit includes a Point Gradients Sparse                                                       uate the CAM design using Synopsys Design Compiler. According
+Unit (PGS Unit), which is designed to prune the gradients of the                                                    to our experimental results, the total area of the 15 MB CAM in
+encoded features obtained during the backpropagation of MLP.                                                        Cambricon-SR is 33.56𝑚𝑚 2 , accounting for 14.29% of the total chip
+The Update Module gathers and accumulates the weight gradi-                                                         area.
+ents from the MLP module, then updates the weights in the global                                                       Off-chip Memory. We observe that the dense table used in
+buffer. Based on the architecture of [8], which is constructed with                                                 the update stage is not only the largest in size but also accessed
+
+
+
+
+                                                                                                             1260
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                                                    Liu et al.
+
+
+        3               13                                           1               6                                        them as no on-chip updating of ST is required. For entries changing
+     DT 0          ST 42                   QA     QB                                             QA        QB
+                                                                 0               21                               21
+    Addr.
+          3
+                  Addr.
+                        13
+                                    TH     A E     A
+                                                                 3
+                                                                                         TH      A E        A
+                                                                                                                  15
+                                                                                                                              from dense to dense, as these entries are already stored on-chip,
+                                   |0.8|                                         15      |0.8|
+                    1                                                                            1    6      5
+            5                -7                                  1               6                                            Cambricon-SR directly write the updated value into ST ("21" and
+                 Table
+                                                                                                                              "15" in Figure 9). This process is performed simultaneously with
+                                    >      0→1 1→0 1→1                Table
+                                                                                          >      0→1 1→0 1→1
+                Gradients
+                                                   Sparse
+                                                                     Gradients
+                                                                                                         Sparse               the update of the DT. For entries changing from sparse to dense,
+                                                   Update                                                Update
+       CAM              SRAM                       Unit
+                                                                CAM           SRAM                       Unit                 the address in DT and the updated value are stored into Queue A in
+    DRAM          0           1    2       3       4      5   DRAM       0       1        2      3          4    5            the Sparse Update Unit. For entries changing from dense to sparse,
+     DT           42         0.1   0       13    -0.02   -7    DT        21      6       0.2     15       -0.03 -0.5
+                                                                                                                              the address in DT is stored into Queue B in the entry update.
+                                                                                                                                  In each STA node, one data is read from each of the two queues
+Figure 9: An example of sparse table (ST) access (left) and                                                                   simultaneously. From Queue A, an address (Address A, "1" in Fig-
+update (right) in a node of the Sparse Table Array (STA). For                                                                 ure 9) and an entry (Entry A, "6" in Figure 9) are read. From Queue
+simplicity, the dimension of table entries is 1 in this figure.                                                               B, an address (Address B, "5" in Figure 9) is read. First, Address B
+                                                                                                                              is translated into the corresponding address in ST (Address C, "2"
+                                                                                                                              in Figure 9) through CAM. Then, the Address A is write into the
+with regular and sequential addresses. Therefore, unlike the sparse                                                           Address C of the CAM and the Entry A is write into the Address C
+tables and its gradients, which are stored in STA, the dense table is                                                         of the SRAM bank for sparse entries. This mechanism ensures that
+stored in off-chip memory.                                                                                                    the space released by an old entry (stored at address B in the node)
+                                                                                                                              is directly utilized to store the new entry, and the address data in
+4.3         Sparse Update Unit                                                                                                CAM is updated accordingly.
+According to our evaluation, off-chip memory access to the DT                                                                     Since the sparsity threshold is updated based on the predeter-
+accounts for 72.1% of the total ST-NSR processing time, making it a                                                           mined sparsity rate, the number of entries in the two queues is
+significant performance bottleneck. In the ST-NSR process, there                                                              roughly equal. For minimal extra entries (around 0.03%), if the en-
+are two stages that require accessing the off-chip DT. Firstly, during                                                        try is in Queue B, it is removed from the CAM and SRAM, and the
+the update of the DT, we observe that the table gradients exhibit a                                                           last entry is moved to its position. If the entry is in Queue A, it is
+sparsity of at least 89%, meaning that no more than 11% of the DT                                                             added to the end of the CAM and SRAM. Note that the capacity of
+data needs to be loaded and stored even once. This stage contributes                                                          the CAM and SRAM in Cambricon-SR is redundant to accommodate
+to 13.0% of the total ST-NSR processing time. Secondly, during the                                                            such minimal extra entries. As a result, Cambricon-SR avoids the
+update of ST, all entries in the DT are read to update the on-chip ST.                                                        overhead of extensive data movement, achieving efficient update
+Even though DT access is regular and continuous, the large volume                                                             of ST.
+of data results in this stage accounting for 59.1% of the processing                                                              Through the aforementioned optimizations of sparse table up-
+time.                                                                                                                         date, Cambricon-SR reduces the total memory accesses during the
+   To alleviate the performance degradation caused by the large                                                               table update process by 6.06×. The overall execution time for the
+volume of off-chip memory accesses, we propose a sparse update                                                                update stage has decreased by 5.28×, and the proportion of time
+strategy to optimize the update process for ST. By comparing the                                                              spent on the update stage to the total time has decreased to 32.85%.
+encoding tables of adjacent iterations, we observe that the sparsity
+of entries tends to stabilize as the training progresses. After each                                                          4.4    Sparse Index Unit
+iteration, sparsity of only no more than 0.8% of entries changes,                                                             The ST-NSR algorithm significantly reduces the number of valid
+except for the first 20 iterations. This insight inspires us to update                                                        table entries that need to be stored. However, due to the hash func-
+the ST incrementally.                                                                                                         tion in the encoding stage, the mapping between grid vertices and
+   However, when updating the ST, some new entries, whose ab-                                                                 table entry addresses is irregular, making it difficult to determine
+solute values after updating exceed the sparsity threshold, need to                                                           which entries are pruned during memory access request genera-
+be inserted into the ST. Similarly, some entries whose values fall                                                            tion. Due to the high sparsity of encoding tables, a large portion of
+below the sparsity threshold need to be deleted from the ST. This                                                             memory access requests target invalid addresses, leading to wasted
+process is challenging because the on-chip ST is stored compactly.                                                            bandwidth in the sparse table array and severe congestion in the
+The straightforward implementation involves first identifying the                                                             NoC. To improve memory access throughput in ST-NSR, invalid
+entries to be deleted, shifting all subsequent entries in the compact                                                         memory access requests must be identified and eliminated before
+storage to fill the gap created by the deletion, and then finding                                                             reaching the sparse table array. We introduce the sparse index unit
+the appropriate position for the new entries to be inserted. This                                                             (SIU) to efficiently handle this problem.
+requires a significant amount of data movement in the storage of
+the ST, leading to severe performance degradation.                                                                            4.4.1 Challenges. The throughput requirement of SIU is estimated
+   To address this issue, we design a sparse update unit based on out-                                                        according to the typical sparsity of around 86% and the throughput
+of-order storage and in-place data replacement, as shown in Figure 9.                                                         of the sparse table array of 256 requests per cycle. Thus, the SIU
+During the update of DT, Cambricon-SR computes the new value of                                                               need to process around 1800 memory requests per cycle to fully
+changed entries. Then, it compares the values before and after the                                                            utilize the throughput of the sparse table array. And we choose
+update with the sparsity threshold to classify changed entries into                                                           2048 as the target of SIU throughput.
+4 categories according to the sparsity state of each changed entry.                                                              A straightforward implementation of SIU is to parallelly ac-
+For entries changing from sparse to sparse, Cambricon-SR skips                                                                cessing the bitmap that stores the sparsity of each entry in a bit.
+
+
+
+
+                                                                                                                       1261
+Cambricon-SR: An Accelerator for Neural Scene Representation with Sparse Encoding Table                                                                                     ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+                                                                                                                        FF00                                                                           1
+However, it requires to execute 2048 irregularly distributed single-
+
+
+
+
+                                                                                                                                                                                              Reg. B
+                                                                                              (a)
+
+
+
+
+                                                                                                                                                                                                                           Bitmap
+                                                                                                                                                                                                                 Addr
+bit memory access per cycle. A naive implementation is to first                                                                                                                        Addr
+
+
+
+
+                                                                                                                        …
+                                                                                                         Partition
+                                                                                                         High-Bit
+
+
+
+
+                                                                                                                                            Group Buffer
+split the bitmap into 2048 banks and connects all input addresses                                                                                                                      Flag                      0/1
+
+
+
+
+                                                                                                                               Router
+                                                                                             Req.                                                              𝒏×𝟏
+
+
+
+
+                                                                                                                                                                           SAU
+                                                                                                                                                              Compar.                                      1
+and all banks through a crossbar. However, the 2048 × 2048 cross-
+
+
+
+
+                                                                                                                                                                                                                           Output Q.
+                                                                                                                        0000
+                                                                                                                                                              Network
+
+
+
+
+                                                                                                                                                                                              Reg. A
+                                                                                                                                                                                                                =1
+bar will cause substantial wiring congestion and area overhead.                                                                                                                                                Comp.
+In our experiments, EDA tools are unable to complete the layout                                                                                            SIU Block
+and routing for it. Even if the crossbar is implemented, it still faces                       (b)
+severe bank conflict problem. Since the addresses for the bitmap                                                           001F                𝒏×𝟏                     010···01 next                             Output Q.
+                                                                                                                                              Compar.
+
+
+
+
+                                                                                                                               …
+are generated by the hash function, the addresses are randomly                                001F                                                                 000016 001F16 003F16 005F16 007F16             001F
+                                                                                                                           006F               Network
+
+
+
+
+                                                                                                               Router
+                                                                                              006F
+distributed across 2048 banks. The number of requests that each                               0082
+                                                                                              00A7                         0082                𝒏×𝟏                     000···10 next
+bank needs to handle per cycle is unbalanced, requiring waiting                                                                               Compar.
+                                                                                                                                                                                                                 Output Q.
+
+
+
+
+                                                                                                                               …
+for the busiest bank to complete all of its accesses. This results in                                                      00A7               Network              008016 009F16 00BF16 00DF16 00FF16                  ×
+severe throughput degradation of 83%.
+
+                                                                                          Figure 10: Architecture of Sparse Index Unit (SIU). (a) Overall
+4.4.2 Our Design. To address the issues of complex routing and                            architecture of SIU; (b) a processing example of SIU block.
+bank conflicts caused by high-throughput random access to SRAM,
+we propose a method based on sequential access to SRAM. We                                                                       16 blocks                       32 blocks        64 blocks            128 blocks
+                                                                                                               80
+
+
+
+
+                                                                                               SIU Area(mm2)
+notice that these issues come from the irregular memory access to                                              60
+the SRAM. So we propose an idea to first sequentially and iteratively                                          40
+                                                                                                               20
+read words from the SRAM, and then match the word with the input                                                0
+addresses.                                                                                                                              4                              8                16                      32
+    Sequential Access. As illustrated in Figure 10(a), Sequential                                                                                  Number of SAUs in each SIU block
+Access Unit (SAU) perform sequential access to the bitmap in SRAM.
+In each cycle, 4 bytes are loaded from SRAM into register A, while                        Figure 11: Area of SIU under different configurations to
+the current access address, which increments by 1 every cycle, is                         achieve the same target throughput.
+stored in register B. For an incoming lookup requests, the addresses
+are first stored in a buffer. In each cycle, addresses in this buffer are
+compared with the address in register B. If some addresses match                             Nearest grouping. We observe that a memory access request
+the register B, the corresponding bit of data from register A is read                     only needs to match the address of any one SAU to return a result.
+to decide whether these addresses need to be output. If there is no                       Since each SAU accesses sequentially, we compare the address of
+match, the input addresses remains in the request buffer.                                 each memory access request with the access addresses of each SAU
+    This approach suffers from obvious latency and area overhead is-                      to find the one that precedes and is closest to the request address (i.e.,
+sues. Due to the large size of the bitmap, sequentially accessing and                     the SAU that can match the request the fastest). Based on this result,
+traversing the entire bitmap takes a significant amount of time, re-                      we group the access requests, with each group being compared
+sulting in extremely high latency for the matching of some requests.                      only with the corresponding SAU’s address. Figure 10(a) shows
+The high latency in processing requests leads to a large number of                        the architecture of a SIU block, where incoming memory access
+requests accumulating in the buffer, causing substantial overhead                         requests are compared with all addresses of SAUs to determine
+for buffer capacity and associated wiring for address comparison.                         their groups, and subsequently enter the respective group request
+Our evaluation shows that, to achieve the target throughput, the                          buffers. Each group request buffer corresponds to one SAU, and
+buffer needs to accommodate 1,059,584 memory access requests,                             the memory requests within it only need to be compared with that
+with the total area for buffers and address comparison reaching                           SAU’s address, thereby transforming the original 𝑚𝑛 × 𝑚 large
+418𝑚𝑚 2 , which is unpractical.                                                           comparison network into 𝑚 independent 𝑛 × 1 smaller comparison
+    Parallel Matching. To mitigate this issue, we increase the num-                       networks, where 𝑚 is the number of SAUs, and 𝑛 is the capacity of
+ber of SAUs and all memory access requests are compared with                              each group’s request buffer. After this optimization, the comparison
+them in parallel. These SAUs access multiple SRAM banks in paral-                         network’s area is reduced to 6.40𝑚𝑚 2 , occupying only 2.73% of the
+lel at regular intervals. Thus that the latency for matching is largely                   total chip area.
+reduced. Since the access to SRAM is sequential, ensuring that the                           After the above optimizations, 10(b) shows an processing exam-
+initial access addresses of different SAUs are not in the same bank                       ple of a SIU block. Requests that arrive at the SIU block are allocated
+prevents bank conflicts.                                                                  to the group request buffer corresponding to each SAU according
+    However, parallel comparisons with multiple SAUs have led to a                        to the nearest grouping strategy. The address corresponding to the
+multiplicative increase in the number of comparators, and a high-                         4 bytes in the bitmap accessed serially by the SAU in the current
+radix crossbar is also require to connect the SAUs with the memory                        cycle is matched in parallel with the requests in the group request
+access requests in the request buffer. Our evaluation shows that to                       buffer. The matching addresses (e.g., requests 001F16 and 008216 )
+achieve the throughput target, the total area for the comparison                          are output based on the bitmap. If the bitmap access result is 1 (e.g.,
+network is 123𝑚𝑚 2 , which accounts for approximately 52.37% of                           001F16 ), the memory access request is stored in the output queue;
+the total chip area.                                                                      otherwise, the request is filtered out directly.
+
+
+
+
+                                                                              1262
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                     Liu et al.
+
+
+   Hardware Implementation. The aforementioned content of                    even in extreme cases, the training of the ray with the maximum
+this section describes the structure and process of one SIU block. In        number of sampled points can be fully fused on the chip, while
+the implementation of SIU, multiple blocks are contained in SIU to           also avoiding the wastage of buffer capacity that occurs with most
+increase parallelism. Input requests are assigned to the correspond-         smaller rays.
+ing SIU block based on the high bits of the addresses.                           The storage of the shared buffer is divided into two categories
+   To choose an adequate configuration of SIU, we evaluate the area          based on the type of data. Weights and the accumulated weight
+of SIU under different configurations and the results are shown in           gradients, which are small in volume, are shared among all MLP
+Figure 11. For different SIU configurations, we simulate the execu-          units and stored in the weight buffer. In the forward stage, we
+tion process of the SIU using a cycle-accurate simulator. Requests           use prefetching and merge memory accesses for the same address.
+are input into SIU with the target throughput of SIU. By ensuring            In the backward stage, gradients computed by the MLP units are
+that no backpressure occurs during SIU execution, we determine               accumulated into the corresponding weight buffer using atomic
+the buffer size and the number of comparators in the SIU. Then, the          operations. The activation data and their gradients for different
+area of the SIU is evaluated through EDA tools. According to the             rays are independent from each other. Each MLP unit occupy a
+evaluation results, to achieve the lowest area, the SIU is divided into      larger volume for the activation and gradient data. And the volume
+32 blocks, each containing 16 SAUs. Each request buffer correspond-          varies for different rays. These data are stored in the activation
+ing to one SAU needs to store up to 192 memory access requests,              buffer.
+and the total area of the SIU is 20.17𝑚𝑚 2 . If SIU is divided into more         To simplify the management, the activation buffer is divided
+blocks, the grouping crossbar incurs significant area overheads. If          into multiple blocks. Each block is used to store training data for
+SIU is divided into fewer blocks, larger request buffers and more            32 points belonging to the same ray. Additionally, the processing
+comparators are needed to prevent performance degradation due                of each ray is divided into multiple batches, each consisting of 32
+to backpressure.                                                             points. This prevents conflicts when multiple MLP units access the
+   Overall, compared to the naive crossbar approach, SIU increase            shared activation buffer. Each group of MLP units is managed by a
+throughput by 5.88×. Compared to scenarios without using SIU                 control unit, which contains a group of flag registers to maintain
+to filter out ineffective memory accesses, SIU achieves a 7.54×              the states of each block of activation buffer. When processing a new
+throughput improvement during the encoding stage, at the cost of             batch of points, the MLP unit is first assigned a buffer block whose
+8.59% of the total chip area.                                                corresponding state register equals to 0 and changes it into 1. Then,
+                                                                             the MLP unit record the index of this buffer block in a queue, thus
+4.5     MLP Units with Dynamic Shared Buffer                                 it knows where to access each batch of points. After the finishing
+Following the aforementioned optimizations, the encoding stage               of each ray, the MLP unit change the state registers of the index in
+is accelerated by 7.54×, making MLP units the new bottleneck. To             its queue into 0, and then free the queue.
+improve the overall throughput, it is necessary to increase the num-         4.5.2 Dynamic Buffer Management. The aforementioned scheme
+ber of MLP units. We find that the number of MLP units needs to be           utilizes the dynamic sharing of the activation buffer among different
+increased by at least 4× to match the throughput of the optimized            MLP units to improve buffer utilization. Furthermore, we propose
+encoding stage. However, since each MLP unit of Cambricon-R                  dynamic space management in the training of a single ray to reduce
+contains a large local buffer to store the training data of a ray, di-       the capacity requirement of each block of activation buffer.
+rectly increasing the number of MLP units by 4× would require an                The baseline solution for performing MLP training is to allocate
+additional total buffer capacity of 144 MB, significantly raising the        independent storage space to the activation and its gradient of all
+cost of the chip. As illustrated in Figure 8, we propose a design with       layers. However, each tensor in the MLP network has a different life
+dynamic shared buffers that reduces the average buffer capacity              period, which is an period from the first write of this data to the last
+required per MLP unit, so that we can largely increase the number            read of it. We observe that the life period of some tensors begins
+of MLP units to improve performance.                                         after the end of some other tensors. For example, after computing
+                                                                             the weight gradient and input gradient for the 5-th layer during
+4.5.1 Shared Buffer. Since the minimum unit to compute loss is a
+                                                                             the backward pass, the input activation of the 5-th layer can be
+ray, each MLP unit performs MLP training with the granularity of
+                                                                             deleted and the corresponding storage space can be released and
+all points along a single ray. Since the number of sampled points
+                                                                             reallocated to the input gradient of the 5-th layer. This inspire us
+for each ray in the NSR algorithm varies, Cambricon-R designs the
+                                                                             that the later tensor can use the space released by the former tensor
+capacity of the local buffer in each MLP unit based on the maximum
+                                                                             to save the use of memory space.
+number of effective sampled points. This ensures support for fully
+                                                                                Based on this observation, we adopt dynamic buffer manage-
+fused on-chip training of the MLP. We observe that the number
+                                                                             ment, which dynamically allocates and releases storage space for
+of sampled points for most rays is much less than the maximum,
+                                                                             different tensor within a block of the activation buffer. Experimen-
+resulting in an average utilization rate of the local buffer being only
+                                                                             tal results show that this approach can reduce the size of each block
+20.29%.
+                                                                             of activation buffer by 49.42%.
+   Based on this observation, we propose a design scheme where
+multiple MLP units share a buffer to enhance buffer utilization. The         4.5.3 Design Space Exploration. We conduct design space explo-
+capacity of the shared buffer is greater than the maximum capacity           ration to analyze the trade-off between performance and area. In
+required by a single ray, yet less than the total capacity if each of        Figure 12a, increasing the number of MLP units that share one
+these MLP units had their own buffer. This design ensures that               buffer improves buffer utilization and reduces required total buffer
+
+
+
+
+                                                                      1263
+Cambricon-SR: An Accelerator for Neural Scene Representation with Sparse Encoding Table                                                                    ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                              Table 1: PSNR (dB) and SSIM comparison at the same modeling time
+
+                                                                                         Datasets
+ Algorithm                 Hardware
+                                                     Fox        Ficus    Hotdog       Mic        Bonsai    Room      Counter    Kitchen
+                                                  PSNR↑SSIM↑PSNR↑SSIM↑PSNR↑SSIM↑PSNR↑SSIM↑PSNR↑SSIM↑PSNR↑SSIM↑PSNR↑SSIM↑PSNR↑SSIM↑
+                           Cambricon-R            32.6 0.915 31.0 0.856 35.6 0.964 34.7 0.930 26.0 0.804 27.5 0.873 22.9 0.770 24.5 0.810
+ Instant-NGP               Cambricon-SR           33.9 0.922 31.6 0.857 37.1 0.969 37.2 0.945 28.6 0.841 29.2 0.895 24.8 0.792 26.4 0.874
+                           Cambricon-R            21.9 0.694 23.1 0.916 25.1 0.835 24.8 0.928 17.8 0.556 17.2 0.662 17.1 0.570 16.2 0.443
+ Zip-NeRF                  Cambricon-SR           28.0 0.921 26.3 0.935 27.8 0.932 26.9 0.956 23.3 0.672 23.4 0.722 21.6 0.677 20.9 0.504
+                           Cambricon-R            24.4 0.725 25.8 0.929 28.6 0.909 28.4 0.955 20.5 0.628 20.2 0.687 19.9 0.515 19.8 0.378
+ K-Planes                  Cambricon-SR           29.7 0.827 26.4 0.946 33.2 0.958 30.6 0.967 22.6 0.670 23.3 0.711 21.8 0.569 21.8 0.419
+
+                                                                                                                           PSNR: 23.15                      PSNR: 25.85
+                                                                                                                           SSIM: 0.735                      SSIM: 0.802
+      Crossbar area(mm2)     Shared buffers(MB)      Chip total area(mm2)              Speedup
+ 6                                        100     600                                       6
+ 5                                        80      500                                       5
+ 4                                        60      400                                       4
+ 3                                                300                                       3
+ 2                                        40      200                                       2
+ 1                                        20      100                                       1
+ 0                                        0         0                                       0             678 Iterations                 2027 Iterations
+        1    2    4    8   16 32 64                      64 128 256         512 1024 2048                     (a) Cambricon-R              (b) Cambricon-SR               (c) Ground Truth
+     (a) MLP units sharing one buffer                (b) Total number of MLP units
+                                                                                                    Figure 13: Rendered images at the same modeling time.
+  Figure 12: Design space exploration of the MLP module.                                            Cambricon-SR achieves lower per-iteration runtime than
+                                                                                                    Cambricon-R, completing more iterations within same mod-
+                                                                                                    eling time.
+size but significantly increasing crossbar area, especially at 64 units.
+Therefore, we adopt a design where 32 MLP units share one buffer.                                   5.1.2 Datasets & Benchmarks. Eight datasets are involved in our
+In Figure 12b, while the chip total area grows approximately lin-                                   evaluation, including Ficus, Hotdog, Mic, Fox, Bonsai, Room, Counter,
+early with more MLP units, the speedup shows diminishing returns                                    and Kitchen. Ficus, Hotdog, and Mic are synthetic datasets from
+at higher unit counts. Thus, 512 MLP units achieve a good balance                                   commonly-used NeRF-Synthetic [32]. Fox is a small-scale real-
+between performance and cost.                                                                       world dataset from Instant-NGP [36]. The other four datasets are
+    Using the above configuration, the dynamic shared buffer signif-                                larger-scale real-world datasets from Mip-NeRF-360 datasets [3].
+icantly optimizes resource utilization. Compared to Cambricon-R,                                       We evaluate Cambricon-SR on three typical NeRF-based NSR
+it reduces the average buffer capacity per MLP unit by 85.31% while                                 algorithms: Instant-NGP [36], Zip-NeRF [4], and K-Planes [12]. In
+increasing utilization to 69.49%. To further increase throughput by                                 our experimental evaluation, the number of entries in each level
+4×, we scale up the number of MLP units by 4×, yet the total buffer                                 of encoding tables and the MLP network configurations are same
+size of the MLP module decreases by 41%.                                                            across the three algorithms. Instant-NGP and Zip-NeRF employ
+                                                                                                    hash grid encoding, while K-Planes employs multi-planes encoding.
+5 Experimental Evaluation                                                                           Runtime and energy results in Section 5.2 are measured when the
+                                                                                                    training quality reaches a PSNR of 25 following prior works [24].
+5.1 Methodology
+5.1.1 Hardware Implementation. To evaluate Cambricon-SR, we                                         5.1.3 Baselines. Cambricon-SR is compared against two baseline
+develop a cycle-accurate simulator to measure runtime and hard-                                     hardwares: GPU and an NSR accelerator, Cambricon-R [42]. We
+ware utilization. This simulator also tracks the number of DRAM                                     choose NVIDIA A100 as the GPU baseline. For evaluations of
+access, enabling the calculation of energy consumption associated                                   Instant-NGP on the GPU, we execute open-source CUDA codes
+with off-chip memory accesses. Same as the baseline hardware                                        obtained from the official Instant-NGP repository [37]. It is specifi-
+configuration, we employ HBM2 as the off-chip memory, which                                         cally optimized in small matrix multiplications with tensor cores.
+offers a bandwidth of 1,555 GB/s. For accurate simulation of DRAM                                   However, the irregular fine-grained memory accesses during the
+timing, Ramulator [20] is integrated into our simulator.                                            encoding stage still leads to low utilization. This code is also the
+   We also implement an RTL design of Cambricon-SR using Verilog                                    GPU baseline for many NSR accelerators [21, 24, 42, 55]. Zip-NeRF
+to evaluate the area and energy consumption of Cambricon-SR. The                                    and K-Planes are evaluated in the Nerfstudio framework [45]. To
+RTL design is then synthesized using the Synopsys Design Compiler,                                  fairly compare with Cambricon-R, we also implement Cambricon-R
+targeting the TSMC 45nm technology node at a clock frequency of                                     in a cycle-accurate simulator according to its paper.
+750 MHz. The energy consumption of off-chip memory accesses
+is estimated at 3.9 pJ/bit [38]. Given that the baseline hardwares                                  5.2        Evaluation Results
+operate on a 7nm node, we scale the area and power measurements                                     5.2.1 Modeling Quality. We evaluate the modeling quality (PSNR
+of Cambricon-SR to the 7nm node, based on the method described                                      and SSIM) on Cambricon-R and Cambricon-SR when given 0.1
+in [44]. This approach is commonly used in research papers [26, 31].                                second to model each scene (i.e., 10 scenes per second), as shown
+
+
+
+
+                                                                                             1264
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                               Liu et al.
+
+
+                                                         GPU                   Cambricon-R                Cambricon-SR
+            Runtime(ms)   1E+6
+                          1E+5             Instant-NGP                            Zip-NeRF                           K-Planes
+                          1E+4
+                          1E+3
+                          1E+2
+                          1E+1
+                          1E+0
+                                 Fx   Fc Hd Mc Bs Rm Ct        Kc   Fx   Fc Hd Mc Bs Rm Ct           Kc     Fx     Fc    Hd Mc Bs Rm Ct                   Kc Geo
+
+                                                               Figure 14: Runtime comparison.
+
+                                                         GPU                  Cambricon-R              Cambricon-SR
+                          1E+5
+                          1E+4             Instant-NGP                           Zip-NeRF                          K-Planes
+            Energy(J)
+
+
+
+
+                          1E+3
+                          1E+2
+                          1E+1
+                          1E+0
+                          1E-1
+                                 Fx   Fc Hd Mc Bs Rm Ct        Kc   Fx   Fc    Hd Mc Bs Rm Ct        Kc    Fx      Fc    Hd Mc Bs Rm Ct                  Kc Geo
+
+                                                               Figure 15: Energy comparison.
+
+
+in Table 1. We do not compare against GPU since GPU could only                                  Table 2: Area and Power of Cambricon-SR
+complete approximately 5 iterations within 0.1 second, resulting
+in completely noisy outputs. To match the modeling quality of                                                            Area (mm2 )            %        Power (W)         %
+Cambricon-SR at 0.1 second per scene, GPU would require approx-                          Sampling Module                        2.64         1.12              5.62     1.58
+                                                                                         Sparse Index Unit (SIU)               20.17         8.59            53.81     15.09
+imately 2 minutes of training time per scene. Although ST-NSR                            Encoding Module (w/o SIU)            116.41        49.57           189.00     53.01
+introduces a slight PSNR loss under the same number of iterations,                       MLP Module                            89.79        38.23            97.48     27.34
+the higher throughput of ST-NSR on Cambricon-SR enables more                             Update Module                          1.10         0.47              2.08     0.58
+                                                                                         Global Buffer                          3.55         1.51              4.48     1.26
+iterations to be performed under the same modeling time, which                           Other                                  1.20         0.51              4.10     1.15
+not only compensates for this loss but also achieves higher quality,                     Total                                234.86       100.00           356.57    100.00
+as shown in Figure 13.
+   The PSNR and SSIM of the latter four datasets are lower than
+                                                                                                        7.68%    2.67%
+those of the first four. The reason is that the last four datasets rep-                              2.33%                  16.77%   Sampling module
+resent large-scale real-world scenes that demand higher modeling                                                                     Sparse index unit
+speeds. Instant-NGP achieves better modeling quality than Zip-                                            20.49%                     Encoding module (w/o SIU)
+                                                                                                                   50.06%            MLP module
+NeRF and K-Planes because its shorter per-iteration time allows
+                                                                                                                                     Update module
+more training iterations under the same modeling time.                                                                               Off-chip memory access
+
+
+
+                                                                                                          Figure 16: Energy breakdown.
+
+5.2.2 Performance. Figure 14 shows the total training time on 8
+datasets and the geometric mean of both our design and baselines.
+The results indicate that Cambricon-SR achieves 1259× and 4.12×                       5.2.3 Area and Energy Efficiency. Table 2 shows the area and the
+speedup on average over GPU and Cambricon-R, respectively. The                        power consumption of Cambricon-SR. Compared to Cambricon-R,
+performance improvement of Cambricon-SR over Cambricon-R                              Cambricon-SR achieves a speedup of 4.12×, while only increasing
+mainly comes from two aspects. On the one hand, the sparsification                    the total area by 43.0%. The additional area primarily comes from the
+of the encoding table reduces the number of valid table accesses                      units that handle the sparse table, including CAM, Sparse Update
+and invalid table accesses are filtered by SIU. On the other hand,                    Unit, and SIU. More MLP units are employed in Cambricon-SR, but
+by sharing buffers among different MLP units, the size of the buffer                  the total area of the MLP Module is less than that in Cambricon-R.
+is decreased, allowing more compute units to be added.                                The reason is that dynamic shared buffer in Cambricon-SR effec-
+   As shown in Figure 14, the runtime for the first four datasets                     tively reduces the capacity of buffers in MLP Module.
+is significantly shorter than that of the latter four datasets. The                      Figure 15 presents the energy consumption of Cambricon-SR
+main reason is that the latter four datasets are larger-scale and                     and baselines for processing NSR training on 8 datasets. Compared
+more iterations are needed to reach the same PSNR, as mentioned                       with GPU and Cambricon-R, Cambricon-SR reduces the energy
+in Section 5.1.2. For instance, to achieve a PSNR of 25 in Instant-                   consumption by 1139× and 2.98×, on average. The reduction of en-
+NGP, around 200 training iterations is required in the small-scale                    ergy consumption is mainly attributed to the decrease of encoding
+dataset Fox, while around 4,300 training iterations is required in                    table accesses, which accounts for most of the energy consumption
+the large-scale dataset Kitchen.                                                      in Cambricon-R.
+
+
+
+
+                                                                               1265
+Cambricon-SR: An Accelerator for Neural Scene Representation with Sparse Encoding Table                                                     ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+                                                                  GPU           Cambricon-R                     Cambricon-SR
+                              1E+9
+                                                 Instant-NGP                        Zip-NeRF                                           K-Planes
+                 Access(MB)
+                              1E+6
+
+                              1E+3
+
+                              1E+0
+                                       Fx   Fc Hd Mc Bs Rm Ct        Kc Fx    Fc Hd Mc Bs Rm Ct               Kc Fx      Fc Hd Mc Bs Rm Ct                    Kc Geo
+
+                                                                  Figure 17: Off-chip access comparison.
+
+                                Cambricon-SR-plain        Cambricon-SR-U
+                                                                                               Sampling
+                                Cambricon-SR-UM           Cambricon-SR
+                 6
+                 5                                                                             Encoding
+                                                                                                                                            ③ Sparse Index Unit
+       Speedup
+
+
+
+
+                 4
+                                                                                                   MLP
+                 3                                                                                                     ② Dynamic Shared Buffer
+                                                                                                                                                        Cambricon-SR-plain
+                 2
+                                                                                              TH-update
+                 1                                                                                                                                      Cambricon-SR
+                 0                                                                              Update               ① Sparse Update Unit
+                              Instant-NGP   Zip-NeRF   K-Planes     Geomean
+                                                                                                          0     20       40     60     80        100   120   140    160      180 (ms)
+
+
+                                     Figure 18: Ablation study.                           Figure 19: Runtime breakdown based on the dataflow in Fig-
+                                                                                          ure 7. ’TH-update’ refers to threshold update, while ’Update’
+                                                                                          includes updating MLP weights, ST and DT.
+   Figure 16 presents the energy breakdown of Cambricon-SR. Most
+of the energy is consumed in MLP module and the encoding module.
+Only 7.68% of the total energy consumption is consumed in off-                               The impact of the Sparse Update Unit (Figure 19○).     1 As the
+chip memory accesses, as Cambricon-SR nearly eliminates off-chip                          baseline implementation, Cambricon-SR-plain operates without
+memory access during the encoding stage by storing the entire                             the optimizations in Section 4. Compared to Cambricon-SR-plain,
+ST on-chip. Furthermore, the sparse update unit reduces off-chip                          Cambricon-SR-U incorporates the Sparse Update Unit for efficient
+memory accesses during the update stage by 6.06×.                                         updates in ST, achieving a 1.24× speedup over Cambricon-SR-plain.
+   SIU accounts for 16.77% of the total energy consumption while                          Unlike Cambricon-SR-plain, which accesses the entire DT each
+occupying only 8.59% of the total area. The relatively high energy                        iteration, Cambricon-SR-U updates only changed entries, reducing
+consumption of SIU is attributed to continuous sequential bitmap                          the execution time of the table update stage by 5.28×.
+accesses with 70.7% of accessed data unused. The unused accesses                             The impact of the Dynamic Shared Buffer (Figure 19○).         2
+contribute to 52.8% of SIU’s energy consumption. Overall, sequen-                         Cambricon-SR-UM further integrates the Dynamic Shared Buffer
+tial bitmap accesses in SIU result in only an 8.85% energy waste, but                     to optimize buffer usage in the MLP module, achieving a 1.36×
+achieve a 7.54× speedup in the encoding stage and a 3.07× overall                         speedup over Cambricon-SR-U. By reducing the average buffer
+speedup. This is a worthwhile trade-off.                                                  usage per MLP unit by 85.3%, the Dynamic Shared Buffer allows
+                                                                                          for a 4× increase in MLP units, resulting in a 3.92× speedup in the
+5.2.4 Off-chip Memory Access. Figure 17 compares the total amount                         MLP stage while reducing the total buffer size by 41%.
+of off-chip memory accesses of Cambricon-SR and baselines during                             The impact of the Sparse Index Unit (Figure 19○).        3 The
+the NSR training. Compared with GPU, both Cambricon-SR and                                complete Cambricon-SR introduces the Sparse Index Unit (SIU),
+Cambricon-R significantly reduce the off-chip memory accesses be-                         achieving an additional 3.07× speedup over Cambricon-SR-UM.
+cause they store most of the intermediate results on-chip and avoid                       SIU optimizes the encoding stage by filtering out invalid table
+the off-chip memory access of intermediate results. Cambricon-R                           access requests. With only 8.59% increase in area, SIU improves the
+eliminates nearly all off-chip memory accesses by storing the en-                         throughput of the encoding stage by 7.54×, further enhancing the
+tire encoding table and all intermediate data during the training                         performance.
+process on-chip. Cambricon-SR stores the sparse encoding table                               We observe that the optimization effect of the sparse update unit
+and table gradients on-chip, eliminating off-chip memory accesses                         and dynamic shared buffer in Zip-NeRF and K-Planes is less signifi-
+during the forward and backward computation stages. However, in                           cant. The reason is that the workload of encoding table accesses
+Cambricon-SR, off-chip access to the dense table is still required                        is relatively large in Zip-NeRF and K-Planes. Consequently, the
+during the update stage of each training iteration. Therefore, more                       impact of optimizing the MLP stage and the update stage is limited,
+off-chip memory accesses are required for Cambricon-SR compared                           as the overall performance is constrained by the encoding stage.
+with Cambricon-R.
+
+5.2.5 Ablation Study. As shown in Figure 18 and 19, we conduct                            6    Related Work
+experimental evaluations on four variants of the Cambricon-SR to                          We review the related works on neural scene representation and
+analyze contributions of the proposed optimizations. All of four                          neural rendering algorithms and hardware accelerators for neural
+variants execute the ST-NSR algorithm.                                                    scene representation and neural rendering.
+
+
+
+
+                                                                                 1266
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                                  Liu et al.
+
+
+   Neural scene representation and neural rendering algo-                    with A100 GPU and Cambricon-R, Cambricon-SR achieves 1259×
+rithms. Neural scene representation and neural rendering are first           and 4.12× speedup, and reduces the energy consumption by 1139×
+proposed by [33] in 2020. [33] proposes the basic idea and pro-              and 2.98× for each training iteration of NSR, respectively. Thus,
+cess of neural scene representation. However, it introduces a large          Cambricon-SR largely improves both the performance and quality
+amount of computations into the rendering process due to the                 compared with the baseline.
+large MLP. Many algorithms are proposed to solve this problem.
+Instant-NGP [36] introduces the encoding table to learn some of              Acknowledgments
+the representations so that the size of MLPs can be reduced. Zip-            This work is partially supported by the NSF of China (Grants
+NeRF [4] combines the anti-aliasing features of Mip-NeRF 360 with            No. 62302482, U22A2028, 62222214, 62341411, 62302478, 62302483,
+the fast grid training of Instant-NGP, which not only improves the           6240073476, 62302480, 62302481), the Science and Technology Ma-
+rendering quality but also effectively speeds up the training.               jor Special Program of Jiangsu (Grants No. BG2024028), Strategic
+   Sparse NSR Algorithm. Currently, many works have applied                  Priority Research Program of the Chinese Academy of Sciences,
+sparsification to NSR algorithms [13, 28, 36, 50]. [28] represents           (Grants No. XDB0660200, XDB0660201, XDB0660202), CAS Project
+scenes using a sparse voxel octree format, allowing the rendering            for Young Scientists in Basic Research (YSBR-029) and Youth Inno-
+process to skip voxels that do not contain scene information. [13]           vation Promotion Association CAS.
+represents a scene as a sparse voxel grid with spherical harmonics,
+which eliminates the need for neural networks and significantly
+                                                                             References
+improves training and rendering speed. [36] maintains an occu-
+                                                                              [1] Michal Adamkiewicz, Timothy Chen, Adam Caccavale, Rachel Gardner, Preston
+pancy grid during training to record the occupancy of each grid                   Culbertson, Jeannette Bohg, and Mac Schwager. 2022. Vision-only robot naviga-
+cell, skipping sampled points within empty grid cells. These sparse               tion in a neural radiance world. IEEE Robotics and Automation Letters 7, 2 (2022),
+                                                                                  4606–4613.
+algorithms perform sparsification during the sampling stage, skip-            [2] Chong Bao, Yinda Zhang, Bangbang Yang, Tianxing Fan, Zesong Yang, Hujun
+ping sparse sampled points. In contrast, our proposed sparse al-                  Bao, Guofeng Zhang, and Zhaopeng Cui. 2023. Sine: Semantic-driven image-
+gorithm further sparsifies the encoding table during the encoding                 based nerf editing with prior-guided editing field. In Proceedings of the IEEE/CVF
+                                                                                  Conference on Computer Vision and Pattern Recognition. 20919–20929.
+stage, allowing it to bypass parts of the dense sampled points when           [3] Jonathan T Barron, Ben Mildenhall, Dor Verbin, Pratul P Srinivasan, and Peter
+accessing sparse table entries.                                                   Hedman. 2022. Mip-nerf 360: Unbounded anti-aliased neural radiance fields. In
+   Hardware Accelerators for NSR. Recent works have proposed                      Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition.
+                                                                                  5470–5479.
+several accelerators for both NSR modeling [24, 40, 42, 55] and               [4] Jonathan T Barron, Ben Mildenhall, Dor Verbin, Pratul P Srinivasan, and Pe-
+rendering [11, 14, 16, 21, 22, 35, 39]. [21] proposes restricted hashing          ter Hedman. 2023. Zip-nerf: Anti-aliased grid-based neural radiance fields. In
+                                                                                  Proceedings of the IEEE/CVF International Conference on Computer Vision. 19697–
+algorithm, which can avoid the irregular off-chip memory access by                19705.
+partitioning the hash table and loading only a portion of the table           [5] Arunkumar Byravan, Jan Humplik, Leonard Hasenclever, Arthur Brussee,
+into on-chip memory at a time. [11] introduces a frame reusing                    Francesco Nori, Tuomas Haarnoja, Ben Moran, Steven Bohez, Fereshteh Sadeghi,
+                                                                                  Bojan Vujatovic, and Nicolas Heess. 2023. Nerf2real: Sim2real transfer of vision-
+algorithm, which exploits the similarity between adjacent frames                  guided bipedal motion skills using neural radiance fields. In 2023 IEEE Interna-
+during the rendering process. [24] proposes to split the NSR hash                 tional Conference on Robotics and Automation (ICRA). IEEE, 9362–9369.
+grid into 2 parts and reduce the grid size and update frequency for           [6] Junyi Cao, Zhichao Li, Naiyan Wang, and Chao Ma. 2024. Lightning NeRF: Effi-
+                                                                                  cient Hybrid Scene Representation for Autonomous Driving. In IEEE International
+the less sensitive branch. [55] employs a Near Memory Processing                  Conference on Robotics and Automation (ICRA).
+(NMP) architecture to address the memory access bottleneck in                 [7] Timothy Chen, Preston Culbertson, and Mac Schwager. 2024. Catnips: Collision
+                                                                                  avoidance through neural implicit probabilistic scenes. IEEE Transactions on
+the NSR processing. [42] proposes a ray-based execution flow to                   Robotics (2024).
+eliminate almost all of the off-chip memory accesses and an NoC               [8] You-Rong Chen, Chien-Chia Ho, Wei-Ting Chen, and Pei-Yin Chen. 2023. A
+to address the challenges of irregular memory access.                             Low-Cost Pipelined Architecture Based on a Hybrid Sorting Algorithm. IEEE
+                                                                                  Transactions on Circuits and Systems I: Regular Papers (2023).
+                                                                              [9] Zhang Chen, Zhong Li, Liangchen Song, Lele Chen, Jingyi Yu, Junsong Yuan,
+                                                                                  and Yi Xu. 2023. Neurbf: A neural fields representation with adaptive radial basis
+7    Conclusion                                                                   functions. In Proceedings of the IEEE/CVF International Conference on Computer
+                                                                                  Vision. 4182–4194.
+In this paper, we propose Cambricon-SR, an algorithm-hardware                [10] Nianchen Deng, Zhenyi He, Jiannan Ye, Budmonde Duinkharjav, Praneeth
+co-designed accelerator to improve NSR performance and quality.                   Chakravarthula, Xubo Yang, and Qi Sun. 2022. Fov-nerf: Foveated neural radi-
+                                                                                  ance fields for virtual reality. IEEE Transactions on Visualization and Computer
+We propose a novel NSR algorithm with sparse encoding table, it                   Graphics 28, 11 (2022), 3854–3864.
+achieves more than 80% of sparsity for the encoding table with neg-          [11] Yu Feng, Zihan Liu, Jingwen Leng, Minyi Guo, and Yuhao Zhu. 2024. Cicero:
+ligible accuracy loss. To the best of our knowledge, this is the first            Addressing Algorithmic and Architectural Bottlenecks in Neural Rendering by
+                                                                                  Radiance Warping and Memory Optimizations. arXiv preprint arXiv:2404.11852
+NSR training algorithm with sparse encoding tables. Then, to effi-                (2024).
+ciently eliminate the invalid memory access requests to the pruned           [12] Sara Fridovich-Keil, Giacomo Meanti, Frederik Rahbæk Warburg, Benjamin Recht,
+entries, we propose the sparse index unit based on sequential SRAM                and Angjoo Kanazawa. 2023. K-planes: Explicit radiance fields in space, time,
+                                                                                  and appearance. In Proceedings of the IEEE/CVF Conference on Computer Vision
+access to address the challenge of irregularity memory access to the              and Pattern Recognition. 12479–12488.
+bitmap. It achieves a throughput increase of 7.54× for the encoding          [13] Sara Fridovich-Keil, Alex Yu, Matthew Tancik, Qinhong Chen, Benjamin Recht,
+                                                                                  and Angjoo Kanazawa. 2022. Plenoxels: Radiance fields without neural net-
+stage with an additional area overhead of 8.59%. Third, we propose                works. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+the dynamic shared buffer for the MLP units to reduce the buffer                  Recognition. 5501–5510.
+usage by 85.3% so that we can increase the number of the MLP                 [14] Yonggan Fu, Zhifan Ye, Jiayi Yuan, Shunyao Zhang, Sixu Li, Haoran You, and
+                                                                                  Yingyan Lin. 2023. Gen-nerf: Efficient and generalizable neural radiance fields
+units by 4× with acceptable cost of on-chip buffers. We conduct                   via algorithm-hardware co-design. In Proceedings of the 50th Annual International
+evaluations on 8 typical scenes. The results show that, compared                  Symposium on Computer Architecture. 1–12.
+
+
+
+
+                                                                      1267
+Cambricon-SR: An Accelerator for Neural Scene Representation with Sparse Encoding Table                                                    ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+[15] Jianfei Guo, Nianchen Deng, Xinyang Li, Yeqi Bai, Botian Shi, Chiyu Wang, Chen-         [38] Mike O’Connor, Niladrish Chatterjee, Donghyuk Lee, John Wilson, Aditya
+     jing Ding, Dongliang Wang, and Yikang Li. 2023. Streetsurf: Extending multi-view             Agrawal, Stephen W Keckler, and William J Dally. 2017. Fine-grained DRAM:
+     implicit surface reconstruction to street views. arXiv preprint arXiv:2306.04988             Energy-efficient DRAM for extreme bandwidth systems. In 2017 50th Annual
+     (2023).                                                                                      IEEE/ACM International Symposium on Microarchitecture (MICRO). IEEE, 41–54.
+[16] Donghyeon Han, Junha Ryu, Sangyeob Kim, Sangjin Kim, and Hoi-Jun Yoo. 2023.             [39] Chaolin Rao, Huangjie Yu, Haochuan Wan, Jindong Zhou, Yueyang Zheng, Minye
+     2.7 MetaVRain: A 133mW Real-Time Hyper-Realistic 3D-NeRF Processor with                      Wu, Yu Ma, Anpei Chen, Binzhe Yuan, Pingqiang Zhou, Xin Lou, and Jingyi Yu.
+     1D-2D Hybrid-Neural Engines for Metaverse on Mobile Devices. In 2023 IEEE                    2022. Icarus: A specialized architecture for neural radiance fields rendering. ACM
+     International Solid-State Circuits Conference (ISSCC). IEEE, 50–52.                          Transactions on Graphics (TOG) 41, 6 (2022), 1–14.
+[17] Ayaan Haque, Matthew Tancik, Alexei A Efros, Aleksander Holynski, and Angjoo            [40] Junha Ryu, Hankyul Kwon, Wonhoon Park, Zhiyong Li, Beomseok Kwon,
+     Kanazawa. 2023. Instruct-nerf2nerf: Editing 3d scenes with instructions. In                  Donghyeon Han, Dongseok Im, Sangyeob Kim, Hyungnam Joo, and Hoi-Jun
+     Proceedings of the IEEE/CVF International Conference on Computer Vision. 19740–              Yoo. 2024. 20.7 NeuGPU: A 18.5 mJ/Iter Neural-Graphics Processing Unit for
+     19750.                                                                                       Instant-Modeling and Real-Time Rendering with Segmented-Hashing Architec-
+[18] Benran Hu, Junkai Huang, Yichen Liu, Yu-Wing Tai, and Chi-Keung Tang. 2023.                  ture. In 2024 IEEE International Solid-State Circuits Conference (ISSCC), Vol. 67.
+     Nerf-rpn: A general framework for object detection in nerfs. In Proceedings of the           IEEE, 372–374.
+     IEEE/CVF Conference on Computer Vision and Pattern Recognition. 23528–23538.            [41] Farhad Shafai, Kenneth J Schultz, GF Randall Gibson, Armin G Bluschke, and
+[19] Bernhard Kerbl, Georgios Kopanas, Thomas Leimkühler, and George Drettakis.                   David E Somppi. 1998. Fully parallel 30-MHz, 2.5-Mb CAM. IEEE Journal of
+     2023. 3d gaussian splatting for real-time radiance field rendering. ACM Transac-             Solid-State Circuits 33, 11 (1998), 1690–1696.
+     tions on Graphics 42, 4 (2023), 1–14.                                                   [42] Xinkai Song, Yuanbo Wen, Xing Hu, Tianbo Liu, Haoxuan Zhou, Husheng Han,
+[20] Yoongu Kim, Weikun Yang, and Onur Mutlu. 2015. Ramulator: A fast and exten-                  Tian Zhi, Zidong Du, Wei Li, Rui Zhang, Chen Zhang, Lin Gao, Qi Guo, and
+     sible DRAM simulator. IEEE Computer architecture letters 15, 1 (2015), 45–49.                Tianshi Chen. 2023. Cambricon-R: A Fully Fused Accelerator for Real-Time
+[21] Junseo Lee, Kwanseok Choi, Jungi Lee, Seokwon Lee, Joonho Whangbo, and                       Learning of Neural Scene Representation. In Proceedings of the 56th Annual
+     Jaewoong Sim. 2023. NeuRex: A Case for Neural Rendering Acceleration. In                     IEEE/ACM International Symposium on Microarchitecture. 1305–1318.
+     Proceedings of the 50th Annual International Symposium on Computer Architecture.        [43] Pratul P Srinivasan, Boyang Deng, Xiuming Zhang, Matthew Tancik, Ben Milden-
+     1–13.                                                                                        hall, and Jonathan T Barron. 2021. Nerv: Neural reflectance and visibility fields
+[22] Chaojian Li, Sixu Li, Yang Zhao, Wenbo Zhu, and Yingyan Lin. 2022. RT-NeRF:                  for relighting and view synthesis. In Proceedings of the IEEE/CVF Conference on
+     Real-time on-device neural radiance fields towards immersive AR/VR rendering.                Computer Vision and Pattern Recognition. 7495–7504.
+     In Proceedings of the 41st IEEE/ACM International Conference on Computer-Aided          [44] Aaron Stillmaker and Bevan Baas. 2017. Scaling equations for the accurate
+     Design. 1–9.                                                                                 prediction of CMOS device performance from 180 nm to 7 nm. Integration 58
+[23] Ke Li, Susanne Schmidt, Tim Rolff, Reinhard Bacher, Wim Leemans, and Frank                   (2017), 74–81.
+     Steinicke. 2024. Magic nerf lens: Interactive fusion of neural radiance fields for      [45] Matthew Tancik, Ethan Weber, Evonne Ng, Ruilong Li, Brent Yi, Justin Kerr,
+     virtual facility inspection. Frontiers in Virtual Reality 5 (2024), 1377245.                 Terrance Wang, Alexander Kristoffersen, Jake Austin, Kamyar Salahi, Abhik
+[24] Sixu Li, Chaojian Li, Wenbo Zhu, Boyang Yu, Yang Zhao, Cheng Wan, Haoran                     Ahuja, David McAllister, and Angjoo Kanazawa. 2023. Nerfstudio: A Modular
+     You, Huihong Shi, and Yingyan Lin. 2023. Instant-3d: Instant neural radiance                 Framework for Neural Radiance Field Development. In ACM SIGGRAPH 2023
+     field training towards on-device ar/vr 3d reconstruction. In Proceedings of the              Conference Proceedings (SIGGRAPH ’23).
+     50th Annual International Symposium on Computer Architecture. 1–13.                     [46] Peng Wang, Yuan Liu, Zhaoxi Chen, Lingjie Liu, Ziwei Liu, Taku Komura, Chris-
+[25] Tianye Li, Miroslava Slavcheva, Michael Zollhoefer, Simon Green, Christoph Lass-             tian Theobalt, and Wenping Wang. 2023. F2-nerf: Fast neural radiance field
+     ner, Changil Kim, Tanner Schmidt, S. Lovegrove, Michael Goesele, and Zhaoyang                training with free camera trajectories. In Proceedings of the IEEE/CVF Conference
+     Lv. 2021. Neural 3D Video Synthesis. ArXiv abs/2103.02597 (2021).                            on Computer Vision and Pattern Recognition. 4150–4159.
+[26] Zheng Li, Soroush Ghodrati, Amir Yazdanbakhsh, Hadi Esmaeilzadeh, and Mingu             [47] Suttisak Wizadwongsa, Pakkapon Phongthawee, Jiraphon Yenphraphai, and
+     Kang. 2022. Accelerating attention through gradient-based learned runtime                    Supasorn Suwajanakorn. 2021. Nex: Real-time view synthesis with neural basis
+     pruning. In Proceedings of the 49th Annual International Symposium on Computer               expansion. In Proceedings of the IEEE/CVF Conference on Computer Vision and
+     Architecture. 902–915.                                                                       Pattern Recognition. 8534–8543.
+[27] Zhengqi Li, Simon Niklaus, Noah Snavely, and Oliver Wang. 2021. Neural Scene            [48] Chenming Wu, Jiadai Sun, Zhelun Shen, and Liangjun Zhang. 2023. Mapnerf:
+     Flow Fields for Space-Time View Synthesis of Dynamic Scenes. 2021 IEEE/CVF                   Incorporating map priors into neural radiance fields for driving view simulation.
+     Conference on Computer Vision and Pattern Recognition (CVPR) (2021), 6494–6504.              In 2023 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS).
+[28] Lingjie Liu, Jiatao Gu, Kyaw Zaw Lin, Tat-Seng Chua, and Christian Theobalt.                 IEEE, 7082–7088.
+     2020. Neural Sparse Voxel Fields. NeurIPS (2020).                                       [49] Zhijie Wu, Yuhe Jin, and Kwang Moo Yi. 2023. Neural fourier filter bank. In
+[29] Stephen Lombardi, Tomas Simon, Jason M. Saragih, Gabriel Schwartz, Andreas M.                Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition.
+     Lehrmann, and Yaser Sheikh. 2019. Neural volumes. ACM Transactions on                        14153–14163.
+     Graphics (TOG) 38 (2019), 1 – 14.                                                       [50] Xiufeng Xie, Riccardo Gherardi, Zhihong Pan, and Stephen Huang. 2023. Hol-
+[30] Dominic Maggio, Marcus Abate, Jingnan Shi, Courtney Mario, and Luca Carlone.                 lownerf: Pruning hashgrid-based nerfs with trainable collision mitigation. In
+     2023. Loc-nerf: Monte carlo localization using neural radiance fields. In 2023 IEEE          Proceedings of the IEEE/CVF International Conference on Computer Vision. 3480–
+     International Conference on Robotics and Automation (ICRA). IEEE, 4018–4025.                 3490.
+[31] Nika Mansouri Ghiasi, Jisung Park, Harun Mustafa, Jeremie Kim, Ataberk Ol-              [51] Ziyang Xie, Junge Zhang, Wenye Li, Feihu Zhang, and Li Zhang. 2023. S-NeRF:
+     gun, Arvid Gollwitzer, Damla Senol Cali, Can Firtina, Haiyu Mao, Nour Almad-                 Neural Radiance Fields for Street Views. In International Conference on Learning
+     houn Alserr, Rachata Ausavarungnirun, Nandita Vijaykumar, Mohammed Alser,                    Representations (ICLR).
+     and Onur Mutlu. 2022. GenStore: a high-performance in-storage processing sys-           [52] Honghui Yang, Sha Zhang, Di Huang, Xiaoyang Wu, Haoyi Zhu, Tong He, Shix-
+     tem for genome sequence analysis. In Proceedings of the 27th ACM International               iang Tang, Hengshuang Zhao, Qibo Qiu, Binbin Lin, Xiaofei He, and Wanli
+     Conference on Architectural Support for Programming Languages and Operating                  Ouyang. 2024. Unipad: A universal pre-training paradigm for autonomous driv-
+     Systems. 635–654.                                                                            ing. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+[32] Ben Mildenhall, Pratul P. Srinivasan, Matthew Tancik, Jonathan T. Barron, Ravi               Recognition. 15238–15250.
+     Ramamoorthi, and Ren Ng. 2020. NeRF: Representing Scenes as Neural Radiance             [53] Yu-Jie Yuan, Yang-Tian Sun, Yu-Kun Lai, Yuewen Ma, Rongfei Jia, and Lin Gao.
+     Fields for View Synthesis. In ECCV.                                                          2022. Nerf-editing: geometry editing of neural radiance fields. In Proceedings of the
+[33] Ben Mildenhall, Pratul P Srinivasan, Matthew Tancik, Jonathan T Barron, Ravi                 IEEE/CVF Conference on Computer Vision and Pattern Recognition. 18353–18364.
+     Ramamoorthi, and Ren Ng. 2021. Nerf: Representing scenes as neural radiance             [54] Xiuming Zhang, Pratul P Srinivasan, Boyang Deng, Paul Debevec, William T
+     fields for view synthesis. Commun. ACM 65, 1 (2021), 99–106.                                 Freeman, and Jonathan T Barron. 2021. Nerfactor: Neural factorization of shape
+[34] Asit Mishra, Jorge Albericio Latorre, Jeff Pool, Darko Stosic, Dusan Stosic, Ganesh          and reflectance under an unknown illumination. ACM Transactions on Graphics
+     Venkatesh, Chong Yu, and Paulius Micikevicius. 2021. Accelerating sparse deep                (ToG) 40, 6 (2021), 1–18.
+     neural networks. arXiv preprint arXiv:2104.08378 (2021).                                [55] Yang Katie Zhao, Shang Wu, Jingqun Zhang, Sixu Li, Chaojian Li, and Yingyan Ce-
+[35] Muhammad Husnain Mubarik, Ramakrishna Kanungo, Tobias Zirr, and Rakesh                       line Lin. 2023. Instant-NeRF: Instant On-Device Neural Radiance Field Training
+     Kumar. 2023. Hardware acceleration of neural graphics. In Proceedings of the                 via Algorithm-Accelerator Co-Designed Near-Memory Processing. In 2023 60th
+     50th Annual International Symposium on Computer Architecture. 1–12.                          ACM/IEEE Design Automation Conference (DAC). IEEE, 1–6.
+[36] Thomas Müller, Alex Evans, Christoph Schied, and Alexander Keller. 2022. In-            [56] Zhenxin Zhu, Yuantao Chen, Zirui Wu, Chao Hou, Yongliang Shi, Chuxuan Li,
+     stant neural graphics primitives with a multiresolution hash encoding. ACM                   Pengfei Li, Hao Zhao, and Guyue Zhou. 2023. Latitude: Robotic global local-
+     transactions on graphics (TOG) 41, 4 (2022), 1–15.                                           ization with truncated dynamic low-pass filter in city-scale nerf. In 2023 IEEE
+[37] Thomas Müller, Alex Evans, Christoph Schied, and Alexander Keller. 2022. The                 International Conference on Robotics and Automation (ICRA). IEEE, 8326–8332.
+     Official Instant-NGP Repository. https://github.com/NVlabs/instant-ngp.
+
+
+
+
+                                                                                      1268
+

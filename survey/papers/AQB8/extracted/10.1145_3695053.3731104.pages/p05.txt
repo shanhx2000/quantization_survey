@@ -1,0 +1,85 @@
+AQB8: Energy-Efficient Ray Tracing Accelerator through Multi-Level Quantization                                                        ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+multi-level quantization offers a promising direction for reducing                                      A                                         A
+                                                                                                     (0.66, 1.64, 0.69)                           (0.66, 1.64, 0.69)
+memory traffic and computational complexity, effectively leverag-                                                                 U1
+                                                                                                                                                             (254, 126, 194)
+                                                                                                B             C                           B           C
+ing scene sparsity and mitigating the pitfalls of precision reduction.                                                                                       (0.66, 0.82, 0.68)
+                                                                                                          (0.66, 0.82, 0.68)
+                                                                                              D E                G                     D E                G    (61, 32, 200)
+4     Quantized BVH Tree                                                                                     (0.51, 0.82, 0.31)
+
+In the previous section, we introduced multi-level quantization as
+                                                                                                                                  U2       U3          U4
+a technique to mitigate the memory bandwidth and computational                                      (a)                                         (b)
+costs associated with traditional FP32-based BVH traversal. This
+technique results in a specialized data structure, termed quantized                     Figure 8: (a) The standard BVH tree. (b) The proposed quan-
+BVH tree, which is specifically designed to be processed efficiently                    tized BVH tree. Non-bold coordinates represent FP32 values,
+by hardware accelerators like AQB8 (detailed in Section 5). This                        while bold coordinates indicate quantized INT8 values.
+section describes the structure of this quantized BVH tree, covering
+its quantization approach, data layout, and traversal algorithm.
+                                                                                           A quantized BB is constructed as the smallest BB within the [0,
+4.1     Overview                                                                        255] coordinate system that fully encloses the corresponding FP32
+Recall from Section 3 that multi-level quantization leverages scene                     BB. To ensure complete coverage, the minimum and maximum
+sparsity by organizing BVH nodes into clusters established by high-                     coordinates of the quantized BB are adjusted outwards, which may
+precision anchor BBs. Building upon this concept, the quantized                         result in a slightly larger volume compared to the original FP32 BB
+BVH tree structure differs significantly from a standard BVH tree                       due to quantization error. Building upon this quantization scheme,
+where all BBs are stored using FP32 precision (as depicted in Fig-                      the following section details the algorithm used to construct the
+ure 8(a)). For example, in a standard BVH tree, node A might have                       complete quantized BVH tree.
+its BB stored as (0.66, 1.64, 0.69), node C as (0.66, 0.82, 0.68), and
+node G as (0.51, 0.82, 0.31), all in FP32.                                              4.3    Tree Construction
+    In contrast, our quantized BVH tree (Figure 8(b)) organizes nodes                   4.3.1 Overview. The construction of a quantized BVH tree involves
+into clusters (e.g., U1-U4). Each cluster contains:                                     two steps. First, a standard BVH tree is constructed using any exist-
+  • An anchor BB, retained in FP32, serving as the high-precision                       ing BVH tree construction algorithm. Next, a clustering algorithm
+     reference frame for that cluster.                                                  is applied to partition the BVH tree into multiple clusters. Notably,
+  • Multiple quantized BBs, stored in INT8, whose coordinates are                       our quantized BVH construction method is agnostic to the specific
+     encoded relative to the anchor BB.                                                 BVH construction algorithm employed in the first step, offering
+                                                                                        flexibility to substitute it with alternative algorithms as needed.
+    For instance, consider cluster U1 in Figure 8(b) (purple dotted
+line). Its anchor BB is derived from node A (colored purple), using its                 4.3.2 The Cost Function. The clustering strategy for the quantized
+FP32 coordinates (0.66, 1.64, 0.69). Nodes B, C, D, and E all belong                    BVH tree is guided by a cost function derived from the Surface
+to U1, and thus have their quantized BBs stored in INT8 relative to                     Area Heuristic (SAH) [73]. The SAH models the geometric proba-
+the anchor BB of U1. Specifically, node C’s BB representation within                    bility of traversing a child node 𝑁𝑐 given that its parent node 𝑁 is
+U1 is the quantized INT8 coordinate (254 , 126 , 194), interpreted                      intersected. This probability is expressed as:
+relative to the anchor BB of U1.                                                                                                 𝑆 (𝑁𝑐 )
+    Now, consider cluster U4 (blue dotted line). Its anchor BB is                                               𝑃 (𝑁𝑐 |𝑁 ) SAH =         ,
+                                                                                                                                 𝑆 (𝑁 )
+derived from node C (colored blue), using its FP32 coordinates
+                                                                                        where 𝑆 (𝑁 ) represents the surface area of the BB for node 𝑁 . Using
+(0.66 , 0.82 , 0.68). Nodes within U4, such as G, have their quantized
+                                                                                        this principle, the total cost of a BVH tree rooted at node 𝑁 is
+BBs stored in INT8 relative to the anchor BB of U4. Specifically, node
+                                                                                        defined recursively as:
+G’s BB representation within U4 is the quantized INT8 coordinate                                      (      Í 𝑆 (𝑁 )
+(61 , 32 , 200), interpreted relative to the anchor BB of U4.                                          𝑐𝑡 + 𝑁𝑐 𝑆 (𝑁𝑐) 𝐶 (𝑁𝑐 ), if 𝑁 is an internal node,
+    The specifics of how these anchor and quantized BBs are repre-                          𝐶 (𝑁 ) =
+                                                                                                       𝑐𝑖 |𝑁 |,                   otherwise.
+sented are detailed next.
+                                                                                        Here, 𝑁𝑐 refers to the children of node 𝑁 , and 𝑐𝑡 and 𝑐𝑖 are the costs
+4.2     Bounding Box Quantization                                                       of a traversal step and a ray-triangle intersection, respectively. |𝑁 |
+                                                                                        denotes the number of triangles in the leaf node 𝑁 . By expanding
+In our quantized BVH tree, each anchor BB is defined by its min-
+                                                                                        this recurrence relation, the total cost of a BVH tree can be unrolled
+imum and maximum coordinates, represented using six 32-bit
+                                                                                        into:
+floating-point (FP32) values, consistent with the approach used
+in standard BVH trees. Each cluster contains a single anchor BB,
+                                                                                                                                                         
+                                                                                                               1  ∑︁                    ∑︁              
+which serves as the spatial reference for all quantized BBs within                                𝐶 (𝑁 ) =           𝑐 𝑡   𝑆 (𝑁 𝑖 ) + 𝑐 𝑖    𝑆 (𝑁𝑙 )|𝑁𝑙 | ,
+                                                                                                            𝑆 (𝑁 )                                      
+that cluster. The cluster operates within its own local coordinate                                                   𝑁𝑖                  𝑁𝑙              
+                                                                                                                                                          
+                                                                                                Í                                                Í
+system, spanning the range [0, 255] for the 𝑥, 𝑦, and 𝑧 axes, with                      where 𝑁𝑖 iterates over all internal nodes, and 𝑁𝑙 iterates over
+256 evenly spaced values. Quantized BBs are encoded using six                           all leaf nodes in the subtree rooted at 𝑁 .
+8-bit integers (INT8), with their coordinates expressed in this [0,                         To incorporate the concept of clusters into the cost function, the
+255] coordinate system.                                                                 cost of a traversal step (𝑐𝑡 ) is modified as a function of the node 𝑁𝑖 .
+
+
+
+
+                                                                                  378
+

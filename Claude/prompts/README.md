@@ -7,7 +7,8 @@ Fill the `<ANGLE BRACKETS>` before sending. Everything else is deliberate.
 
 | Prompt | Use it when | Scale |
 |---|---|---|
-| [`01-read-one-paper.md`](01-read-one-paper.md) | **The main one.** One paper, close read → updated `ANALYSIS.md` with a `For the note` section | 1 paper, 1 agent |
+| [`01-read-one-paper-v2.md`](01-read-one-paper-v2.md) | **The main one.** One paper, close read → updated `ANALYSIS.md` + drafted `paper-note.md`. Self-contained; folds in every standing correction through 2026-09-14 | 1 paper, 1 agent |
+| [`01-read-one-paper.md`](01-read-one-paper.md) | Superseded by v2. Kept for reference | — |
 | [`02-read-thread.md`](02-read-thread.md) | A cluster that only makes sense together (the outlier thread, the LUT line) — cross-comparison is the point | 3–6 papers, 1 agent |
 | [`03-audit-numbers.md`](03-audit-numbers.md) | After papers are read: check the results tables and fairness lines against the PDFs | 5–10 papers, 1 agent |
 | [`04-tag-mapping.md`](04-tag-mapping.md) | Once, to build our-tags → their-axes mapping and draft all 40 ISCA rows | whole corpus |
@@ -16,9 +17,10 @@ Fill the `<ANGLE BRACKETS>` before sending. Everything else is deliberate.
 ## Rules every prompt repeats, because they are the ones that matter
 
 1. **`QuantArchSurvey/` is read-only.** Six other people own venues in it.
-2. **The agent never writes `paper-note.md`.** Step 1 (reading assistance, `ANALYSIS.md`)
-   is the agent's; step 2 (writing the note) and step 3 (copying it into the shared repo)
-   are the human's. See [AGENT-GUIDE §0b](../instructions/AGENT-GUIDE.md).
+2. **The agent drafts `paper-note.md` but never places it.** Changed 2026-09-03: the agent
+   now writes both files into `survey/papers/<Name>/`. **Copying the note into
+   `QuantArchSurvey/venues/ISCA/notes/` is still the human's step**, and `## 6. Claude notes`
+   is stripped before it goes. See [AGENT-GUIDE §0b](../instructions/AGENT-GUIDE.md).
 3. **PDFs from arXiv only.** The full text is already extracted and committed — you
    should not need to download anything.
 4. **Mark verified vs. inferred**, and never move a number without its frame.

@@ -1,0 +1,104 @@
+Cambricon-SR: An Accelerator for Neural Scene Representation with Sparse Encoding Table                                                                 ISCA ’25, June 21–25, 2025, Tokyo, Japan
+
+
+      Forward&                               Encoding Module                          MLP Module                    a bitonic sorter and cascaded bidirectional insertion sorting units,
+      Backward                                    Sparse Index Unit                                                 the Update Module performs top-k sorting on DT and updates
+                                                                                          MLP Unit
+       Update                              Request       Compar.      Sequential               MAC Loss             the sparsity threshold.
+
+
+
+
+                                                                                    Prefetch
+                                           Buffer        Network      Access Unit              Unit Unit
+
+
+
+
+                                                                                     Buffer
+                                                                                                                       Encoding Module. The Encoding Module is responsible for
+                                     Routing Interpolate                                        PGS Unit
+                  Pre-process Unit
+
+
+
+      Sampling                       Crossbar   Unit
+                                                                          …                                         performing memory access to the sparse tables and executing the
+       Module                                                                                   Address             interpolation for each sampled point. Inside the encoding module,
+                                                                                                Crossbar
+
+
+
+
+                                                                   …
+                                                    Sparse
+                                           SRAM
+
+
+
+                                                                                                                    the Pre-process Unit is responsible for calculating the addresses
+                                     CAM
+
+
+
+
+       Update                                       Update                            Weight       Activa.
+       Update                                        Unit
+        Unit
+       Module                                                 Sparse Table Array      Buffer       Buffer           of the vertices surrounding the sampled points in the table at each
+                                                                                                                    level. The Sparse Index Unit (SIU) is responsible for eliminating
+                                                       Global Buffer
+                                                                                                                    invalid memory access requests for entries that have been sparsified.
+                                                             DRAM                                                   Details of SIU will be discussed in Section 4.4.
+                                                                                                                       Sparse Table Array (STA). The encoding module is composed
+       Figure 8: Overall Architecture of Cambricon-SR.                                                              of 16 STAs, corresponding to 16 levels of encoding tables,with a
+                                                                                                                    total of 40 MB SRAM. The STA performs high-throughput memory
+                                                                                                                    access to the the sparse table and its gradients. STA is implemented
+forward & backward stage. Subsequently, the DT is read to compute                                                   based on the Auto-Interpolation Bank Array of Cambricon-R [42]
+the sparsity threshold, and then each DT entry is compared with                                                     since it achieves SOTA throughput of encoding in NSR. Specifically,
+this threshold to update the on-chip ST. The optimization of this                                                   nodes in the array are interconnected in a mesh NoC. Each node
+process is introduced in Section 4.3.                                                                               contains an SRAM bank that stores a part of sparse tables and
+    We observe minor changes in the sparsity threshold between iter-                                                gradients. During the encoding process, memory access requests
+ations. To avoid waiting for the computing of the sparsity threshold,                                               are transmitted between nodes via the NoC. And data access and
+Cambricon-SR utilizes the sparsity threshold from the last iteration                                                interpolation computations are performed when the request arrives
+during the update process of the sparse table. Previously, the thresh-                                              at the corresponding node. This approach resolves bank conflict
+old update process was performed between the DT and ST updates,                                                     issues through asynchronous control of different nodes. Compared
+but our dataflow shifts this operation to run in parallel with the                                                  to Cambricon-R, we modify the structure of node to efficiently
+forward and backward stage. However, the computes of threshold                                                      support ST-NSR algorithm. As shown in Figure 8, CAM and Sparse
+takes longer time than the forward and backward process because                                                     Update Unit (detailed in Section 4.3) are integrated into the STA.
+it requires read the entire DT. We propose imprecise computation                                                       Content Addressable Memory (CAM). To improve space uti-
+of the threshold by using only half of the DT. As a result, the time                                                lization of the STA, we compactly store the valid entries of the
+taken for sparsity threshold computation is shorter than the time                                                   sparse table in SRAM. However, each access to an entry in the
+for the forward and backward stage. Due to the randomization                                                        sparse table (ST) requires the translation of the original address
+of DT access addresses through hash functions, we consider the                                                      in the dense table (DT) to the address in the sparse table, to cor-
+data distribution in DT to be approximately uniform. Therefore,                                                     rectly access the entry from the on-chip SRAM. We propose the
+we simply use the first half of the DT to calculate the threshold.                                                  use of CAM to implement this address translation. CAM is a type
+Experimental evaluations show that this mechanism of updating                                                       of memory device that, upon inputting its stored content, returns
+threshold has negligible impact on the representation accuracy of                                                   the corresponding address of the content. Each node in STA has a
+ST-NSR (less than 0.1).                                                                                             corresponding CAM to perform address translation. As shown in
+                                                                                                                    Figure 9 (left), the entry at DT address 3 is accessed, translated to
+4.2     Overall Architecture of Cambricon-SR                                                                        the corresponding ST address 1 via the CAM, and then the entry
+The overall architecture of Cambricon-SR is optimized for the ST-                                                   13 at SRAM address 1 is retrieved.
+NSR algorithm based on a fully fused on-chip processing architec-                                                      In our hardware configuration, each node in the STA can store
+ture, as illustrated in Figure 8.                                                                                   up to approximately 2,500 table entries and table gradients in to-
+   In Cambricon-SR, the Global Buffer primarily stores the train-                                                   tal. To reduce the significant area and energy overhead associated
+ing data for each training iteration, the weights of the MLP, and                                                   with the parallel match of such a large number of entries in the
+the accumulated gradients of the MLP. The Sampling Module                                                           CAM, we adopt a blocking strategy, a technique commonly used
+is responsible for performing the conversion from pixels to rays,                                                   in the design of large CAM [41]. Specifically, each node includes
+as well as sampling points along the rays. The MLP Module han-                                                      16 blocks of CAM, each with 160 entries. Each block operates in-
+dles the training of the MLP. The MLP module comprises 512 MLP                                                      dependently, handling search, read, and write operations. When a
+units, each consisting of two 32 × 32 MAC (Multiply Accumulate)                                                     request with an address from the dense tables arrives at the CAMs.
+arrays. The optimized design of the MLP Module will be discussed                                                    The corresponding block of CAMs is determined by the upper 4
+in Section 4.5. To enable sparsity in the backward stage of the ST-                                                 bits of the address, and only the selected block is activated. We eval-
+NSR algorithm, the MLP unit includes a Point Gradients Sparse                                                       uate the CAM design using Synopsys Design Compiler. According
+Unit (PGS Unit), which is designed to prune the gradients of the                                                    to our experimental results, the total area of the 15 MB CAM in
+encoded features obtained during the backpropagation of MLP.                                                        Cambricon-SR is 33.56𝑚𝑚 2 , accounting for 14.29% of the total chip
+The Update Module gathers and accumulates the weight gradi-                                                         area.
+ents from the MLP module, then updates the weights in the global                                                       Off-chip Memory. We observe that the dense table used in
+buffer. Based on the architecture of [8], which is constructed with                                                 the update stage is not only the largest in size but also accessed
+
+
+
+
+                                                                                                             1260
+

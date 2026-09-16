@@ -1,0 +1,76 @@
+ISCA ’25, June 21–25, 2025, Tokyo, Japan                                                                                                     Liu et al.
+
+
+   Hardware Implementation. The aforementioned content of                    even in extreme cases, the training of the ray with the maximum
+this section describes the structure and process of one SIU block. In        number of sampled points can be fully fused on the chip, while
+the implementation of SIU, multiple blocks are contained in SIU to           also avoiding the wastage of buffer capacity that occurs with most
+increase parallelism. Input requests are assigned to the correspond-         smaller rays.
+ing SIU block based on the high bits of the addresses.                           The storage of the shared buffer is divided into two categories
+   To choose an adequate configuration of SIU, we evaluate the area          based on the type of data. Weights and the accumulated weight
+of SIU under different configurations and the results are shown in           gradients, which are small in volume, are shared among all MLP
+Figure 11. For different SIU configurations, we simulate the execu-          units and stored in the weight buffer. In the forward stage, we
+tion process of the SIU using a cycle-accurate simulator. Requests           use prefetching and merge memory accesses for the same address.
+are input into SIU with the target throughput of SIU. By ensuring            In the backward stage, gradients computed by the MLP units are
+that no backpressure occurs during SIU execution, we determine               accumulated into the corresponding weight buffer using atomic
+the buffer size and the number of comparators in the SIU. Then, the          operations. The activation data and their gradients for different
+area of the SIU is evaluated through EDA tools. According to the             rays are independent from each other. Each MLP unit occupy a
+evaluation results, to achieve the lowest area, the SIU is divided into      larger volume for the activation and gradient data. And the volume
+32 blocks, each containing 16 SAUs. Each request buffer correspond-          varies for different rays. These data are stored in the activation
+ing to one SAU needs to store up to 192 memory access requests,              buffer.
+and the total area of the SIU is 20.17𝑚𝑚 2 . If SIU is divided into more         To simplify the management, the activation buffer is divided
+blocks, the grouping crossbar incurs significant area overheads. If          into multiple blocks. Each block is used to store training data for
+SIU is divided into fewer blocks, larger request buffers and more            32 points belonging to the same ray. Additionally, the processing
+comparators are needed to prevent performance degradation due                of each ray is divided into multiple batches, each consisting of 32
+to backpressure.                                                             points. This prevents conflicts when multiple MLP units access the
+   Overall, compared to the naive crossbar approach, SIU increase            shared activation buffer. Each group of MLP units is managed by a
+throughput by 5.88×. Compared to scenarios without using SIU                 control unit, which contains a group of flag registers to maintain
+to filter out ineffective memory accesses, SIU achieves a 7.54×              the states of each block of activation buffer. When processing a new
+throughput improvement during the encoding stage, at the cost of             batch of points, the MLP unit is first assigned a buffer block whose
+8.59% of the total chip area.                                                corresponding state register equals to 0 and changes it into 1. Then,
+                                                                             the MLP unit record the index of this buffer block in a queue, thus
+4.5     MLP Units with Dynamic Shared Buffer                                 it knows where to access each batch of points. After the finishing
+Following the aforementioned optimizations, the encoding stage               of each ray, the MLP unit change the state registers of the index in
+is accelerated by 7.54×, making MLP units the new bottleneck. To             its queue into 0, and then free the queue.
+improve the overall throughput, it is necessary to increase the num-         4.5.2 Dynamic Buffer Management. The aforementioned scheme
+ber of MLP units. We find that the number of MLP units needs to be           utilizes the dynamic sharing of the activation buffer among different
+increased by at least 4× to match the throughput of the optimized            MLP units to improve buffer utilization. Furthermore, we propose
+encoding stage. However, since each MLP unit of Cambricon-R                  dynamic space management in the training of a single ray to reduce
+contains a large local buffer to store the training data of a ray, di-       the capacity requirement of each block of activation buffer.
+rectly increasing the number of MLP units by 4× would require an                The baseline solution for performing MLP training is to allocate
+additional total buffer capacity of 144 MB, significantly raising the        independent storage space to the activation and its gradient of all
+cost of the chip. As illustrated in Figure 8, we propose a design with       layers. However, each tensor in the MLP network has a different life
+dynamic shared buffers that reduces the average buffer capacity              period, which is an period from the first write of this data to the last
+required per MLP unit, so that we can largely increase the number            read of it. We observe that the life period of some tensors begins
+of MLP units to improve performance.                                         after the end of some other tensors. For example, after computing
+                                                                             the weight gradient and input gradient for the 5-th layer during
+4.5.1 Shared Buffer. Since the minimum unit to compute loss is a
+                                                                             the backward pass, the input activation of the 5-th layer can be
+ray, each MLP unit performs MLP training with the granularity of
+                                                                             deleted and the corresponding storage space can be released and
+all points along a single ray. Since the number of sampled points
+                                                                             reallocated to the input gradient of the 5-th layer. This inspire us
+for each ray in the NSR algorithm varies, Cambricon-R designs the
+                                                                             that the later tensor can use the space released by the former tensor
+capacity of the local buffer in each MLP unit based on the maximum
+                                                                             to save the use of memory space.
+number of effective sampled points. This ensures support for fully
+                                                                                Based on this observation, we adopt dynamic buffer manage-
+fused on-chip training of the MLP. We observe that the number
+                                                                             ment, which dynamically allocates and releases storage space for
+of sampled points for most rays is much less than the maximum,
+                                                                             different tensor within a block of the activation buffer. Experimen-
+resulting in an average utilization rate of the local buffer being only
+                                                                             tal results show that this approach can reduce the size of each block
+20.29%.
+                                                                             of activation buffer by 49.42%.
+   Based on this observation, we propose a design scheme where
+multiple MLP units share a buffer to enhance buffer utilization. The         4.5.3 Design Space Exploration. We conduct design space explo-
+capacity of the shared buffer is greater than the maximum capacity           ration to analyze the trade-off between performance and area. In
+required by a single ray, yet less than the total capacity if each of        Figure 12a, increasing the number of MLP units that share one
+these MLP units had their own buffer. This design ensures that               buffer improves buffer utilization and reduces required total buffer
+
+
+
+
+                                                                      1263
+

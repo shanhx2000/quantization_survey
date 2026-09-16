@@ -10,7 +10,7 @@ NY, USA, 15 pages. https://doi.org/10.1145/3695053.3731043"* (**verified**).
 Archived here: **arXiv:2504.16339v1** (2025-04-23), 15 pages — **the preprint, not the
 published ISCA version**; the two were **not compared**.
 
-Status: **analysis ready** ｜ Last updated: 2026-09-03
+Status: **note ready** ｜ Last updated: 2026-09-03
 Tags: `analytical-dtype` `non-analytical-dtype` `mixed-precision` `multi-bitwidth-hw`
 `lut-accelerator` `accelerator`
 (**Proposed additions**: `mixed-precision` — the scheme is INT8 activations with INT4 *or*
