@@ -207,6 +207,12 @@ A single-paper deep read has its own brief: **[`PAPER-READING.md`](PAPER-READING
 Read it instead of improvising. Ready-made prompts for launching such agents are in
 [`../prompts/`](../prompts/).
 
+
+> **Version control:** see [`G06-VERSION-CONTROL.md`](G06-VERSION-CONTROL.md).
+> The one to remember: **never `git add -A` / `-u` / `.`** — name the paths you changed.
+> Several agents work in these repos at once and a wildcard add commits their
+> unfinished work under your message.
+
 ## 4. How to record
 
 - **Conclusions first.** Every file opens with its conclusions; details follow.
