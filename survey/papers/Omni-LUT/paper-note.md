@@ -8,7 +8,7 @@
 |---|---|
 | **Level** | `ALGO+ARCH` |
 | **Q-oriented** | `Q-ORIENTED` |
-| **Data type** | `LUT` `VQ` `INT4` `INT3` `FP16` `MIXED` |
+| **Data type** | `LUT` `INT4` `INT3` `FP16` `MIXED` |
 | **Generation** | `G3` (codebook + KV-cache threads) |
 | **Optimization** | LUT-GEMM · KV cache · BCQ · AA-GEMM · scale-aware LUT · sensitivity-based bit allocation · hybrid stationary · phase-adaptive systolic |
 

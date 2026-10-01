@@ -8,7 +8,7 @@
 |---|---|
 | **Level** | `ALGO+ARCH` |
 | **Q-oriented** | `Q-ORIENTED` |
-| **Data type** | `INT8` `INT4` `MIXED` |
+| **Data type** | `INT8` `INT4` |
 | **Generation** | `G3` (LLM activation-outlier thread) |
 | **Optimization** | outlier-aware · channel decomposition · power-of-two scale ratio · implicit requantization · shift-based rescale · systolic · commodity-friendly |
 
@@ -22,7 +22,7 @@ plain symmetric-INT systolic array whose only extension over commodity hardware 
 ## 2. Data type
 
 **Formats.** `W8A8` and `W4A4`, plain **symmetric linear INT** both sides, applied to AW *and* AA matmuls (attention `X_Q·X_K^T` included). No custom datatype, no mixed precision, no outlier encoding — that restraint is the contribution.
-**Granularity.** Channels binned by `CMax` into `G` geometric bands (`TMax/2^g < CMax_i ≤ TMax/2^(g-1)`), one scale per band. **Group size is not fixed** — band membership is data-dependent; outlier bands hold few channels, inlier bands many.
+**Granularity.** Channels binned by `CMax` into `G` geometric bands (`TMax/2^g < CMax_i ≤ TMax/2^(g-1)`), one scale per band — i.e. **block (group-wise) quantization**, where the blocks are clusters of channels grouped by magnitude rather than contiguous runs, and each cluster carries its own scale. **Group size is not fixed** — band membership is data-dependent; outlier bands hold few channels, inlier bands many.
 **Outliers.** Isolated by grouping only — own scale, not own datatype/precision/lane. Cheapest outlier mechanism in the corpus.
 **Accumulator.** **32-bit** per PE (internal `Acc` register). Each band transition **left-shifts** it 1 bit, so headroom is consumed upward and band count `G` is bounded by it — the paper asserts the width is "sufficiently large" rather than deriving a bound. Baselines forced to 32-bit too, "due to the large reduction length" in LLMs.
 **Escape hatch.** Per-channel bias must be added back (`bias × W` into the output); FP16 final dequant; 64-FPU VPU; 1-cycle bubble per band transition. **PTQ**, calibrated offline on 128 Pile samples.

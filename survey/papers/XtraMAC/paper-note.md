@@ -8,7 +8,7 @@
 |---|---|
 | **Level** | `ARCH` |
 | **Q-oriented** | `Q-ORIENTED` |
-| **Data type** | `INT8` `INT4` `FP8` `FP4` `BF16` `MX` `MIXED` |
+| **Data type** | `INT8` `INT4` `FP16` `FP8` `FP4` `BF16` `MX` `MIXED` |
 | **Generation** | `G3` |
 | **Optimization** | mixed-precision MAC · DSP bit-space packing · unified mantissa product · datatype-specific accumulation · runtime datatype switching · constant II · FPGA |
 

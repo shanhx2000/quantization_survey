@@ -8,7 +8,7 @@
 |---|---|
 | **Level** | `SYS+ARCH` |
 | **Q-oriented** | `Q-ORIENTED` |
-| **Data type** | `FP4` `FP8` `MIXED` |
+| **Data type** | `FP4` `FP8` `FP16` `MIXED` |
 | **Generation** | `G2` |
 | **Optimization** | NDP · group-wise scaling · compiler · scale-value interleaved layout · DRAM row locality · dequant hiding · free-slot scheduling · compilation-space search |
 

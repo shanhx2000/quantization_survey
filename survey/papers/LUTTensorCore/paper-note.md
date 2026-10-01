@@ -8,7 +8,7 @@
 |---|---|
 | **Level** | `ALGO+SYS+ARCH` |
 | **Q-oriented** | `Q-ORIENTED` |
-| **Data type** | `LUT` `INT1` `INT2` `INT4` `FP16` `FP8` `MIXED` |
+| **Data type** | `LUT` `INT1` `INT2` `INT4` `INT8` `FP16` `FP8` `MIXED` |
 | **Generation** | `G3` (weight-only + codebook threads) |
 | **Optimization** | LUT-GEMM · mpGEMM · bit-serial · table quantization · weight reinterpretation · operator fusion · elongated tiling · LMMA |
 

@@ -8,7 +8,7 @@
 |---|---|
 | **Level** | `ALGO+ARCH` |
 | **Q-oriented** | `Q-ORIENTED` |
-| **Data type** | `MX` `FP4` `INT2` `INT4` `MIXED` |
+| **Data type** | `MX` `FP4` `FP8` `INT2` `INT4` `MIXED` |
 | **Generation** | `G3` (outlier thread) |
 | **Optimization** | outlier-aware · microscaling · pruning · Hessian · N:M structured sparsity · aligned memory · NoC (ReCoN) · systolic · multi-precision PE |
 

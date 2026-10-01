@@ -6,9 +6,9 @@
 
 | | |
 |---|---|
-| **Level** | `ARCH` |
+| **Level** | `ALGO+ARCH` |
 | **Q-oriented** | `NON-Q-ORIENTED` |
-| **Data type** | `BINARY` `VQ` |
+| **Data type** | `BINARY` `VQ` `LUT` |
 | **Generation** | — (see §6 — I'd leave it unassigned) |
 | **Optimization** | SNN · pattern-based sparsity · k-means patterns · precomputed products · exact two-level decomposition · Hamming-distance clustering · PWP prefetch · optional PAFT |
 

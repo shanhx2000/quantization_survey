@@ -60,9 +60,10 @@ standard library plus the system `poppler-utils` (`pdftotext` / `pdfinfo`), so
 **40 papers filed**, all with full text, from the source list
 [`survey/Quantization Architecture Survey - ISCA.csv`](survey/Quantization%20Architecture%20Survey%20-%20ISCA.csv).
 Every one has both an `ANALYSIS.md` and a `paper-note.md`, and **all 40 are `note ready` and
-published**. `venues/ISCA` is complete at **34 rows** — every tag from a full read — after the
-six out-of-scope papers were removed (see below). They stay filed here, so this repo holds 40
-readings and the venue holds 34.
+published**. `venues/ISCA` stands at **35 rows** (2026-10-01) — every tag from a full read:
+six out-of-scope papers were removed on 2026-09-14 (see below), the two SNN papers of Group B
+were restored on 2026-10-01, and upstream moved `RingCNN` to `legacy/` on 2026-09-23 (its Pass 9).
+Everything stays filed here, so this repo holds 40 readings and the venue holds 35.
 Master table: [`survey/README.md`](survey/README.md).
 
 **Scope** is the taxonomy in that file: data type (**traditional / new data type / lookup
@@ -98,7 +99,9 @@ LLM. Likely beyond our interested range."* (SpZip).
 [`Phi`](survey/papers/Phi/) (ISCA'25) are **spiking-neural-network** architectures, ruled out by
 the human on 2026-09-14. Their low-precision story is *spikes*, not quantized tensors, so the
 data-type axis has nothing to say about them. `ELSA`'s `ANALYSIS.md` carries the ruling in its
-status line. Do not re-litigate their tags.
+status line. Do not re-litigate their tags. **Restored by the human on 2026-10-01** (ISCA
+Pass 11): both rows and notes are back in `venues/ISCA/`, tagged `non-Q` with Stage `—`, and
+they are no longer `EXCLUDED` in `sync_notes.py`.
 
 **The two groups are decided by different tests**, which is worth stating rather than hiding:
 Group A fails *"does the paper change what a number is?"*; Group B fails *"is this our axis?"*
@@ -154,7 +157,13 @@ Papers are done **one at a time**:
 4. `python3 Claude/scripts/sync_notes.py` publishes exactly the `note ready` entries into
    `QuantArchSurvey/venues/ISCA/notes/`, verbatim minus the agent's §6.
 
-That script is the **only** thing in this project that writes into `QuantArchSurvey/`.
+Two scripts write into `QuantArchSurvey/`, and nothing else does:
+
+- `Claude/scripts/sync_notes.py` -> `venues/ISCA/notes/*.md`
+- `Claude/scripts/build_index.py` -> `guidelines/INDEXING.md` (the whole-repo paper
+  index, rebuilt from the seven venue READMEs; the `abbr` column is hand-editable
+  there and is read back, so a teammate's correction survives regeneration)
+
 Everything else there is edited by hand, with the human's permission for the specific change.
 
 Next: [`Claude/prompts/01-read-one-paper.md`](Claude/prompts/01-read-one-paper.md).

@@ -8,7 +8,7 @@
 |---|---|
 | **Level** | `ARCH` |
 | **Q-oriented** | `Q-ORIENTED` |
-| **Data type** | `INT16` `INT8` `INT4` `INT2` `INT1` `MIXED` |
+| **Data type** | `INT16` `INT8` `INT4` `INT2` `INT1` `TERNARY` `MIXED` |
 | **Generation** | `G2` |
 | **Optimization** | bit-flexible MAC · BitBrick · spatial fusion · shift-add tree · shared accumulator · Fusion-ISA · per-layer bitwidth · mixed operand widths · systolic |
 

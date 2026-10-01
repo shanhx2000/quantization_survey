@@ -162,7 +162,8 @@ if that happens, `thorough ready` wins and the note is tracked by the file's pre
 **Where the corpus stands (2026-09-14):** all 40 at `note ready`; **34 published**
 to the team repo, the other six withdrawn as out of scope (`Cambricon-SR`, `SpZip`,
 `IBMCompressionAccelerator`, `CommutativeDataReordering`, `ELSA`, `Phi`) — they stay filed
-here but are `EXCLUDED` in `sync_notes.py`. None at `thorough ready` — no entry has been cross-checked against released code.
+here but are `EXCLUDED` in `sync_notes.py`. **Update 2026-10-01:** `ELSA` and `Phi` were
+restored to the venue (35 rows), and upstream has since moved `RingCNN` to its `legacy/`. None at `thorough ready` — no entry has been cross-checked against released code.
 No `Key numbers` table has been filled for a `brief ready` entry, and no entry has reached
 `thorough ready`.
 

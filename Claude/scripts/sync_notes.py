@@ -37,8 +37,7 @@ EXCLUDED = {
     "SpZip",                     # lossless sparse-traversal compression; no quantization
     "IBMCompressionAccelerator", # Deflate engine; no AI content at all
     "CommutativeDataReordering", # DRAM bus switching activity; no value changes
-    "ELSA",                      # SNN -- different axis
-    "Phi",                       # SNN -- different axis
+    # ELSA and Phi (SNN) were excluded 2026-09-14 and restored 2026-10-01 (ISCA Pass 11).
 }
 
 # survey/papers directory name -> published note filename

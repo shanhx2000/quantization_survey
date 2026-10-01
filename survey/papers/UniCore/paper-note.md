@@ -8,7 +8,7 @@
 |---|---|
 | **Level** | `ARCH` |
 | **Q-oriented** | `Q-ORIENTED` |
-| **Data type** | `FP8` `FP4` `ADAPTIVE` `MIXED` |
+| **Data type** | `FP16` `FP8` `FP4` `ADAPTIVE` `MIXED` |
 | **Generation** | `G2` |
 | **Optimization** | composable FPMA · Mitchell logarithmic approximation · uniform adder slices · linear scaling · dual-path compensation · DynFP · bit-width scalable GEMM |
 

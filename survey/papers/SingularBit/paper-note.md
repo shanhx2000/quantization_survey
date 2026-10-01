@@ -8,7 +8,7 @@
 |---|---|
 | **Level** | `ALGO+ARCH` |
 | **Q-oriented** | `Q-ORIENTED` |
-| **Data type** | `SVD` `INT2` `INT1` `MIXED` |
+| **Data type** | `SVD` `INT4` `INT3` `INT2` `INT1` `FP16` `LUT` `MIXED` |
 | **Generation** | `G3` |
 | **Optimization** | SVD · rank-aware mixed precision · analytical precision allocation · token-and-rank importance · offline decomposition · shared compression engine · dual memory wall · weight + KV |
 

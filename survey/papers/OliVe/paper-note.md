@@ -10,7 +10,7 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `ADAPTIVE` `INT4` `INT8` `FP4` `MIXED` |
 | **Generation** | `G3` (outlier thread) |
-| **Optimization** | outlier-victim pair · abfloat · adaptive-bias float · memory-aligned encoding · local decoding · tensor-core integration · systolic · pruning |
+| **Optimization** | outlier-aware · outlier-victim pair · abfloat · adaptive-bias float · memory-aligned encoding · local decoding · tensor-core integration · systolic · pruning |
 
 ## 1. One-line summary
 
