@@ -28,7 +28,7 @@ The top level has **three directories**. Discuss before adding a fourth.
 | `QuantArchSurvey/` | Clone of the **shared team repo** (`shanhx2000/QuantArchSurvey`). **Read-only — the agent never modifies it**; see [AGENT-GUIDE §0b](Claude/instructions/AGENT-GUIDE.md). Not in git |
 
 Inside `Claude/`: `instructions/` (rules — including
-[PAPER-READING.md](Claude/instructions/PAPER-READING.md), the brief for a single-paper
+[LATEX.md](Claude/instructions/LATEX.md) (the Overleaf manuscript), [PAPER-READING.md](Claude/instructions/PAPER-READING.md), the brief for a single-paper
 deep-read agent), [`prompts/`](Claude/prompts/) (copy-paste prompts for launching agents),
 `notes/` (`Notes-NNN-<slug>.md`, reusable knowledge), `reports/`
 (`Reports-NNN-<slug>.md`, one task's conclusions), `scripts/` (reusable scripts +

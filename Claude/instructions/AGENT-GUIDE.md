@@ -201,6 +201,12 @@ In this order — **get the facts before forming an opinion**:
 - Ask a human before downloading anything large (datasets, model weights). This
   project should never need to; if you think it does, say why first.
 
+## 3a. The manuscript (LaTeX)
+
+The survey text lives in Overleaf, cloned to `QuantArchSurvey/latex/`. Before touching any
+`.tex` or `.bib` file, read **[`LATEX.md`](LATEX.md)**: Overleaf is the source of truth, pull
+and push are the human's steps, and nothing can be compiled on this host.
+
 ## 3b. Reading a paper in depth
 
 A single-paper deep read has its own brief: **[`PAPER-READING.md`](PAPER-READING.md)**.
