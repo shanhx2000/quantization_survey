@@ -31,8 +31,14 @@ Inside `Claude/`: `instructions/` (rules — including
 [LATEX.md](Claude/instructions/LATEX.md) (the Overleaf manuscript), [PAPER-READING.md](Claude/instructions/PAPER-READING.md), the brief for a single-paper
 deep-read agent), [`prompts/`](Claude/prompts/) (copy-paste prompts for launching agents),
 `notes/` (`Notes-NNN-<slug>.md`, reusable knowledge), `reports/`
-(`Reports-NNN-<slug>.md`, one task's conclusions), `scripts/` (reusable scripts +
-`templates/`).
+(`Reports-NNN-<slug>.md`, one task's conclusions, plus `reports-NNN-tmp.md` decision tables),
+`todo/` (`TODO-NNN-<slug>.md`, open items left for later), `scripts/` (reusable scripts +
+`templates/`). Where each kind of output goes:
+[REPO-ORGANIZATION.md](Claude/instructions/REPO-ORGANIZATION.md).
+
+**Open to-do:** [TODO-001](Claude/todo/TODO-001-isca-followups.md) — ISCA follow-ups from the
+2026-10-01/02 tag work (two Stage cells to decide, upstream items for other owners, the unsafe
+`sync_notes.py`).
 
 ## Quick start
 
@@ -50,7 +56,6 @@ python3 Claude/scripts/sync_notes.py --dry-run        # publish notes to QuantAr
 |---|---|
 | [Notes-001](Claude/notes/Notes-001-webpub-proceedings-package.md) | Reading a conference proceedings package: the publisher's own metadata is in `assets/data/data.js`, MessagePack-packed — decode it instead of opening PDFs to identify them |
 | [Notes-002](Claude/notes/Notes-002-paper-source-access.md) | What is fetchable from this host: arXiv yes, ACM DL and IEEE Xplore 403 even on landing pages — plus the arXiv-only provenance rule and what it cost |
-| [Notes-003](Claude/notes/Notes-003-todo-isca-followups.md) | **TODO list** — open ISCA follow-ups from the 2026-10-01/02 tag work: two Stage cells for the owner, upstream items to raise with other owners, and this repo's unsafe `sync_notes.py` |
 
 **No conda environment is needed.** The extraction scripts use only the Python
 standard library plus the system `poppler-utils` (`pdftotext` / `pdfinfo`), so

@@ -1,7 +1,8 @@
 # AGENT-GUIDE — rules for working in `quantization_survey/`
 
 For every Claude agent (and human) working in this repo. **Read this file,
-`ENVIRONMENT.md` and [`WRITING-STYLE.md`](WRITING-STYLE.md) before doing anything.** The conventions are adapted from
+`ENVIRONMENT.md`, [`WRITING-STYLE.md`](WRITING-STYLE.md) and
+[`REPO-ORGANIZATION.md`](REPO-ORGANIZATION.md) before doing anything.** The conventions are adapted from
 `~/moe_ws/moe_placement/Claude/instructions/AGENT-GUIDE.md`, retuned for a project
 whose only deliverable is **a written survey paper**.
 
@@ -113,6 +114,8 @@ quantization_survey/
 │   ├── prompts/            # copy-paste prompts for launching task-specific agents
 │   ├── notes/              # Notes-NNN-<slug>.md — reusable knowledge, appended over time
 │   ├── reports/            # Reports-NNN-<slug>.md — the result of one task
+│   │                       #   (+ reports-NNN-tmp.md, the human's decision table for it)
+│   ├── todo/               # TODO-NNN-<slug>.md — open items left for later
 │   └── scripts/            # reusable scripts + templates/. One-off commands do NOT go here
 ├── survey/
 │   ├── README.md           # the index: scope taxonomy, status table, gaps
@@ -130,10 +133,14 @@ quantization_survey/
 once filed, is either deleted (small — the extracted text is in git) or moved to the second
 (bulk, and the only copy of some paper's full text).
 
+**Where an agent's output goes, and what it is called, is
+[`REPO-ORGANIZATION.md`](REPO-ORGANIZATION.md)** — the full `Claude/` layout, naming, the
+report-plus-decision-table workflow, and the top-level directories as they actually are.
+
 Naming rules:
-- `Notes-NNN-<kebab-slug>.md` / `Reports-NNN-<kebab-slug>.md`, `NNN` zero-padded to
-  three digits, globally monotonic, **numbers are never reused**.
-  Run `ls Claude/notes Claude/reports` before creating one.
+- `Notes-NNN-<kebab-slug>.md` / `Reports-NNN-<kebab-slug>.md` / `TODO-NNN-<kebab-slug>.md`,
+  `NNN` zero-padded to three digits, monotonic within its kind, **numbers are never reused**.
+  Run `ls Claude/notes Claude/reports Claude/todo` before creating one.
 - `survey/papers/<PaperShortName>/` — the paper's short name with spaces removed
   (`GPTQ`, `SmoothQuant`, `AWQ`, `LLM-FP4`). Not the arXiv id: the id goes on the
   PDF and the extracted files, the directory name has to be readable in a diff.
@@ -147,6 +154,7 @@ Naming rules:
 |---|---|---|
 | `notes/` | Reusable knowledge: a tool's real limits, a trap we hit, a version constraint, a root cause | "Will the next person waste time if this is not written down?" |
 | `reports/` | One task: its input, method, result, conclusion, leftovers | "What did this task deliver, and how far was it verified?" |
+| `todo/` | Open items someone still has to act on | "Is this still to be **done**?" — delete the file when every box is ticked |
 
 ## 2. How to read a paper (the actual work)
 

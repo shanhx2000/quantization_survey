@@ -1,4 +1,7 @@
-# Notes-003 — TODO: open ISCA follow-ups (2026-10-02)
+# TODO-001 — open ISCA follow-ups (2026-10-02)
+
+*Created as `Claude/notes/Notes-003-todo-isca-followups.md` and moved here on 2026-10-02; the
+number Notes-003 is retired.*
 
 **A to-do list, not a finding.** Everything below was left open on purpose during the ISCA tag
 audit ([Reports-001](../reports/Reports-001-isca-tag-audit.md)) and the two Stage-type batches
