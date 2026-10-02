@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `SVD` `INT4` `INT3` `INT2` `INT1` `FP16` `LUT` `MIXED` |
 | **Generation** | `G3` |
+| **Stage type** | `S2T2` · `S2T5` · `S3T1a` |
 | **Optimization** | SVD · rank-aware mixed precision · analytical precision allocation · token-and-rank importance · offline decomposition · shared compression engine · dual memory wall · weight + KV |
+
+## Stage-type tags
+
+**`S2T2` · `S2T5` · `S3T1a`** (the **Stage type** row in Tags) — most-matched first. Precision allocated by rank — 4/3/2/1-bit regions inside one matmul — is the contribution (`S2T2`); the SingularBit Tensor Core executes it as bit-serial mixed-precision GEMM (`S2T5`) using lookups of precomputed FP16 partial sums over four input channels, selected by weight bits (`S3T1a`; paper p. 8).
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

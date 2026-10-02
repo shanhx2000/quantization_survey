@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `ADAPTIVE` `INT4` `INT8` `FP4` `MIXED` |
 | **Generation** | `G3` (outlier thread) |
+| **Stage type** | `S2T4` |
 | **Optimization** | outlier-aware · outlier-victim pair · abfloat · adaptive-bias float · memory-aligned encoding · local decoding · tensor-core integration · systolic · pruning |
+
+## Stage-type tags
+
+**`S2T4`** (the **Stage type** row in Tags) — most-matched first. The outlier-victim pair gives each outlier its own encoding in its victim's slot. Its abfloat element and the int4/flint4/int8 modes are part of that one mechanism, so no further tags are carried.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 1).*
 
 ## 1. One-line summary
 

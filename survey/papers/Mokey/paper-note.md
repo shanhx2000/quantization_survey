@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `VQ` `LUT` `FIXED` `INT4` |
 | **Generation** | `G3` (codebook thread — **pre-LLM root, deliberate**) |
+| **Stage type** | `S2T4` · `S3T3a` |
 | **Optimization** | codebook · golden dictionary · exponential centroid fit · histogram-of-exponents · index-domain accumulation · outlier dictionary + pointer list · PTQ · memory-compression plug-in |
+
+## Stage-type tags
+
+**`S2T4` · `S3T3a`** (the **Stage type** row in Tags) — most-matched first. An outlier dictionary with a pointer list, its products sent to a real MAC (`S2T4`), around codebook arithmetic: centroids on `a^int+b` turn a multiply into an index addition against the table (`S3T3a`).
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 1).*
 
 ## 1. One-line summary
 

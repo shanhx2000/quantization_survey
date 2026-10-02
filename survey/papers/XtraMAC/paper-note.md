@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `INT8` `INT4` `FP16` `FP8` `FP4` `BF16` `MX` `MIXED` |
 | **Generation** | `G3` |
+| **Stage type** | `S1` |
 | **Optimization** | mixed-precision MAC · DSP bit-space packing · unified mantissa product · datatype-specific accumulation · runtime datatype switching · constant II · FPGA |
+
+## Stage-type tags
+
+**`S1`** (the **Stage type** row in Tags) — most-matched first. A MAC-level design: every supported format, INT×FP included, is reduced to sign, exponent and one shared integer mantissa product inside the multiplier, with datatype-specific accumulation — the decision is made for one value in one PE.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

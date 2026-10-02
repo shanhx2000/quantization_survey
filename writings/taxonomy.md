@@ -39,7 +39,9 @@ is recorded rather than left implicit:
 **ELSA and Phi were in this table until 2026-10-01**, as spiking work out of scope. The owner
 restored both to the venue (ISCA Pass 11), so they are entered below. Neither changes what a
 number is in the usual sense — ELSA re-codes a quantized integer in time, Phi decomposes a
-binary matrix exactly — so they enter through the encoding and lookup leaves, not the format ones.
+binary matrix exactly — so they enter through the encoding and lookup leaves, not the format ones. **ELSA was removed from the corpus again on 2026-10-02 (ISCA Pass 13)** and carries Stage type
+`—`: it may not fit this survey's topic, since its quantization is inherited. Its entries below are
+**kept on purpose**, each marked *(may not fit)*, so the spiking question stays visible in the figure.
 A paper appears in **every** leaf its mechanism touches. The tree is not a
 partition, and forcing one paper into one leaf is what made the earlier
 `Optimization` column unusable.
@@ -63,7 +65,7 @@ partition, and forcing one paper into one leaf is what made the earlier
 | **TPUv4i** | 2021 | *PTQ as a deployment constraint*, stated as a lesson rather than a result: lesson ⑥ of ten is that TPUv1 **required** quantization and that was a mistake — developers pre-agreed a 1% quality budget and then refused it. The clearest industrial evidence that the constraint, not the error metric, decides. |
 | **LoKA** | 2026 | *Error metrics* operationalised: LoKA Probe learns activation/weight statistics and quantifies per-layer error to locate where FP8 is numerically safe and where it is merely fast. |
 | **ENEC** | 2026 | *Fixed- vs. variable-length encodings*, decided by the substrate: replaces the entropy coder Ascend's branch-free SIMD cannot run with a frequency-rank affine remap `y = (2ⁿ − x + b) mod 2ⁿ` plus a two-level **fixed-length** group pack. |
-| **ELSA** | 2026 | *Fixed- vs. variable-length encodings* taken to the limit: a 4-bit-weight quantized ANN run as an **exactly equivalent** spiking network, the activation re-coded from a binary-weighted integer into a **temporal unary train** of ternary {−1,0,+1} events over up to T = 32 time-steps. The conversion is exact, so the 2.57-point ImageNet drop is the quantization, not the spiking. |
+| **ELSA** *(may not fit)* | 2026 | *Fixed- vs. variable-length encodings* taken to the limit: a 4-bit-weight quantized ANN run as an **exactly equivalent** spiking network, the activation re-coded from a binary-weighted integer into a **temporal unary train** of ternary {−1,0,+1} events over up to T = 32 time-steps. The conversion is exact, so the 2.57-point ImageNet drop is the quantization, not the spiking. |
 
 ### Shipped scalar formats 2017--2025 (§3.2)
 
@@ -137,7 +139,7 @@ partition, and forcing one paper into one leaf is what made the earlier
 | **LoKA** | 2026 | The search done statistically and online — probe, adapt, dispatch the fastest FP8 kernel that still meets the accuracy requirement. |
 | **AQuant** | 2026 | Per-token top-25% to INT4 and the rest to INT2 against INT8 bases, with INT16 weights. |
 | **FATE** | 2025 | Width chosen per dimension by a fuzzing-distance importance measure, with the ratio set workload-aware. |
-| **ELSA** | 2026 | Precision chosen **per input, at runtime**: confidence-based early termination truncates the unary code — average T = 6.2 of an allowed 32, 21.9% mean latency saved for <0.2% accuracy. The spiking code supplies a monotone precision ladder for free; nothing in the hardware decides T. |
+| **ELSA** *(may not fit)* | 2026 | Precision chosen **per input, at runtime**: confidence-based early termination truncates the unary code — average T = 6.2 of an allowed 32, 21.9% mean latency saved for <0.2% accuracy. The spiking code supplies a monotone precision ladder for free; nothing in the hardware decides T. |
 | **P3-LLM** | 2026 | A flexible mixed-precision scheme over hybrid numerical formats, one per LLM operand. |
 | **TPUv4i** | 2021 | The negative result this leaf needs: int8 at the same peak as bf16 means the mixed-precision argument is about footprint, not throughput, unless the array is widened for it. |
 
@@ -394,7 +396,7 @@ should stay standing until another venue's owner fills it.
 | KV cache | **Ecco** (2025), **Oaken** (2025), **Omni-LUT** (2026), **SingularBit** (2026), **P3-LLM** (2026) |
 | diffusion and video | *[add papers]* — none in the ISCA set |
 | others | **AQB8** (2025, ray tracing / BVH), **FATE** (2025, hyperdimensional computing), **LightNobel** (2025, protein structure prediction), **LoKA** (2026, recommendation) |
-| SNN (named in `others`) | **Phi** (2025), **ELSA** (2026) — both ISCA, both restored 2026-10-01. See [`QuantArchSurvey/survey/snn.md`](../QuantArchSurvey/survey/snn.md) for the open question of whether the Stage axis applies to them |
+| SNN (named in `others`) | **Phi** (2025), **ELSA** (2026, *may not fit* — out of the corpus since 2026-10-02) — both ISCA, both restored 2026-10-01. See [`QuantArchSurvey/survey/snn.md`](../QuantArchSurvey/survey/snn.md) for the open question of whether the Stage axis applies to them |
 
 The "others" row is the one to watch: four of the last two years' ISCA
 quantization papers target a workload the taxonomy's `others` list does not

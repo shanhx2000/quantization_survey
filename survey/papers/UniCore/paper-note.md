@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `FP16` `FP8` `FP4` `ADAPTIVE` `MIXED` |
 | **Generation** | `G2` |
+| **Stage type** | `S2T2` |
 | **Optimization** | composable FPMA · Mitchell logarithmic approximation · uniform adder slices · linear scaling · dual-path compensation · DynFP · bit-width scalable GEMM |
+
+## Stage-type tags
+
+**`S2T2`** (the **Stage type** row in Tags) — most-matched first. A composable floating-point multiply (FPMA) built from uniform adder slices, so fusing to higher precision scales linearly rather than quadratically — the Bit Fusion problem solved for floats, evaluated from W4A4 to W16A16. Untagged but worth knowing: the multiply is Mitchell's log approximation (integer addition on the exponent-mantissa field), and DynFP adapts each format's exponent/mantissa split.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

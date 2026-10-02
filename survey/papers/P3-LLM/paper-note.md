@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `FP4` `INT4` `FP8` `MIXED` |
 | **Generation** | `G3` |
+| **Stage type** | `S2T3` · `S2T1` · `(PIM)` |
 | **Optimization** | PIM · NDP · operand-dependent formats · dynamic input-aware smoothing · calibration-free · operator fusion · temporal weight reuse · pre/post-RoPE offload · KV cache |
+
+## Stage-type tags
+
+**`S2T3` · `S2T1` · `(PIM)`** (the **Stage type** row in Tags) — most-matched first. A different format per operand — BitMoD FP4 weights, FP8-E4M3 activations, per-head INT4-Asym KV, unsigned FP8-S0E4M4 attention scores — executed by DRAM-side PIM units built for exactly those formats (`S2T3`); each operand has its own scale granularity — per-group-128 weights, per-token activations, per-head KV, and no scale at all for the scores (`S2T1`). `(PIM)`: the compute units sit beside the DRAM banks. The derived FP8-S0E4M4 element is part of the format choice and is not tagged on its own.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

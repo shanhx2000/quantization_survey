@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `INT4` `INT8` `INT16` `MIXED` |
 | **Generation** | `G2` |
+| **Stage type** | `S2T4` |
 | **Optimization** | token-wise adaptive quantization · runtime top-k outliers · dynamic per-token scaling · calibration-free · multi-precision MPU · activation-only · granularity chosen for dataflow |
+
+## Stage-type tags
+
+**`S2T4`** (the **Stage type** row in Tags) — most-matched first. INT4/INT8 inliers with per-token runtime scales and INT16 outliers picked by runtime top-k with adaptive k. The per-token scale and the three widths belong to that outlier path, so nothing else is carried.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

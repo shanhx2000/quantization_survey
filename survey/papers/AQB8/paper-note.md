@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `INT8` `FP14` `INT32` `FP32` `MIXED` |
 | **Generation** | `G2` |
+| **Stage type** | `S2T3` · `S2T2` |
 | **Optimization** | ray tracing · BVH · anchor + INT8 offset · per-cluster scale · **quantize the ray, not the box** · hierarchical local frames · SAH-derived clustering DP · custom FP14 · power-of-two ray scale · conservative outward rounding |
+
+## Stage-type tags
+
+**`S2T3` · `S2T2`** (the **Stage type** row in Tags) — most-matched first. FP32 anchor boxes, INT8 offsets, an FP14 inverse ray direction and an INT32 origin term meet in one ray-box datapath (`S2T3`); the operand widths differ with them (`S2T2`). The per-cluster scale and the custom FP14 element are left untagged.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 1).*
 
 ## 1. One-line summary
 

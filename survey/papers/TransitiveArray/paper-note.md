@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `LUT` `INT4` `INT8` `MIXED` |
 | **Generation** | `G3` (weight-only + codebook threads) |
+| **Stage type** | `S2T5` · `S3T1a` |
 | **Optimization** | LUT-GEMM · result reuse · bit-slice · Hasse-graph scheduling · multiplication-free · group-wise scaling (g=128) |
+
+## Stage-type tags
+
+**`S2T5` · `S3T1a`** (the **Stage type** row in Tags) — most-matched first. Bit-sliced weights with prefix partial-sum reuse over a Hasse graph (`S2T5`), pushed until the GEMM is a lookup into a table of products (`S3T1a`).
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 1).*
 
 ## 1. One-line summary
 

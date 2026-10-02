@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `MX` `FP4` `FP8` `INT2` `INT4` `MIXED` |
 | **Generation** | `G3` (outlier thread) |
+| **Stage type** | `S2T4` |
 | **Optimization** | outlier-aware · microscaling · pruning · Hessian · N:M structured sparsity · aligned memory · NoC (ReCoN) · systolic · multi-precision PE |
+
+## Stage-type tags
+
+**`S2T4`** (the **Stage type** row in Tags) — most-matched first. Outliers at twice the inlier width in MX-FP, paid for by Hessian-chosen pruning inside the same micro-block. The MX-INT/MX-FP format split, the micro-block scales and the 2× width are all part of that outlier path, so no further Stage-2 tags are carried.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 1).*
 
 ## 1. One-line summary
 

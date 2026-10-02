@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `BF16` `FP16` `FP32` |
 | **Generation** | `G3` |
+| **Stage type** | `S2T2` · `S2T1` |
 | **Optimization** | lossless compression · exponent-only coding · fixed-length block coding · frequency-rank affine remap · two-level bit-width packing · hierarchical halving bit-packing · dependency-decoupled scan · branch-free SIMD · Ascend NPU · weight-only · CPU-NPU offload |
+
+## Stage-type tags
+
+**`S2T2` · `S2T1`** (the **Stage type** row in Tags) — most-matched first. Each group of 16 exponents is stored at one of two widths, 3 or 6 bits, flagged by a mask bit — two widths coexisting in one tensor (`S2T2`); what is shared is a stated design choice — one remap pivot `b` per tensor, one width per group of 16, blocks of 16,384 sized to the 192 KB buffer (`S2T1`). The re-encoded exponent `y = (2ⁿ − x + b) mod 2ⁿ` is analytic — recoverable by formula with the shared `b`, like a zero-point — so this is not a Stage-3 decode. Not tagged but noted: the value is split by field (sign and mantissa verbatim, exponent coded) and a 6-bit group sends its high bits to a side buffer — a bit-dimension split of the *stored* value, not of the multiply, which is why `S2T5` is left to this comment. No arithmetic changes anywhere: the Cube unit multiplies full BF16.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

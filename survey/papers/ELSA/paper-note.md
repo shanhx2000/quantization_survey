@@ -10,7 +10,14 @@
 | **Q-oriented** | `NON-Q-ORIENTED` |
 | **Data type** | `TERNARY` `INT4` `MIXED` |
 | **Generation** | `—` |
+| **Stage type** | — |
 | **Optimization** | SNN · elastic inference · spine/token-wise pipeline · bundled AER · early termination · input-adaptive time-steps · mini-batch Gustavson-product · membrane-stationary dataflow · addition-only · near-SRAM · ANN-to-SNN conversion (SpikeZIP-TF) · NoC mapping + multi-path routing |
+
+## Stage-type tags
+
+**—** (the **Stage type** row in Tags). **No Stage-type tag.** ELSA may not fit this survey's topic: it runs an already-quantized 4-bit ANN as an exactly equivalent spiking network, so its quantization is inherited, and its contribution — a spine/token-wise pipeline, bundled AER and a membrane-stationary dataflow — does not change what a number is. Removed from the corpus on 2026-10-02 (ISCA Pass 13); kept in `legacy/` and on `survey/snn.md` so the spiking question stays visible.
+
+*Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

@@ -80,7 +80,7 @@ Every change, in this order:
 | | Keys | State on 2026-10-01 |
 |---|---|---|
 | `latex/refs.bib` | `firstauthor-shorttitle-year` (`park-olaccel-2018`) | 12 entries, written to make §1 compile; several marked `% VERIFY` |
-| `QuantArchSurvey/bibtex/<CONF>.bib` | Google Scholar `authorYearFirstword`, per [`guidelines/BIBITEM.md`](../../QuantArchSurvey/guidelines/BIBITEM.md) | **every file is empty** |
+| `QuantArchSurvey/bibtex/<CONF>.bib` | Google Scholar `authorYearFirstword`, per [`legacy/guidelines/BIBITEM.md`](../../QuantArchSurvey/legacy/guidelines/BIBITEM.md) | **every file is empty** |
 
 **Do not `\cite` a key that is not in `refs.bib`** — it prints `[?]` and Overleaf only warns.
 This is why the ISCA fill of `taxonomy.tex` uses plain paper names rather than `\cite`. Which

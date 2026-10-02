@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `INT8` `INT4` |
 | **Generation** | `G3` (LLM activation-outlier thread) |
+| **Stage type** | `S2T4` |
 | **Optimization** | outlier-aware · channel decomposition · power-of-two scale ratio · implicit requantization · shift-based rescale · systolic · commodity-friendly |
+
+## Stage-type tags
+
+**`S2T4`** (the **Stage type** row in Tags) — most-matched first. Outlier channels are isolated into magnitude bands, each with its own power-of-two-related scale; the band grouping is how the outlier gets its own path.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 1).*
 
 ## 1. One-line summary
 

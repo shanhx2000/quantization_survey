@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `FP8` `BF16` `TF32` `MIXED` |
 | **Generation** | `G2` |
+| **Stage type** | `S2T2` |
 | **Optimization** | production deployment · FP8 training · recommendation models · distribution-aware profiling · per-layer sensitivity · per-operator kernel dispatch · model-hardware co-design · BlockNorm · bias removal · Hard Swish · GPU · PyTorch |
+
+## Stage-type tags
+
+**`S2T2`** (the **Stage type** row in Tags) — most-matched first. Which layers run in FP8 and which stay in TF32/BF16 is decided per layer from the error measured on each layer's learned input distribution — mixed precision across one model, in production on stock GPUs. The per-operator choice of tensorwise/rowwise/blockwise scaling is recorded in the note but not tagged.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

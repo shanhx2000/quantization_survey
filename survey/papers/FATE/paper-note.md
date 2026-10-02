@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `INT8` `INT4` `TERNARY` `BINARY` `MIXED` |
 | **Generation** | `G2` |
+| **Stage type** | `S2T2` |
 | **Optimization** | FPGA · per-dimension mixed precision · DSP/LUT resource split · fuzzing-distance importance measure · pruning as INT0 · power-of-two shift alignment · segment-balanced reordering · HDC |
+
+## Stage-type tags
+
+**`S2T2`** (the **Stage type** row in Tags) — most-matched first. Every hypervector dimension carries its own type — INT8 on DSPs, INT4/ternary/binary as FPGA logic, pruned as `INT0` — mixed inside one vector and realigned by a fixed shift into one adder tree: different widths in one array, placed on different resources.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

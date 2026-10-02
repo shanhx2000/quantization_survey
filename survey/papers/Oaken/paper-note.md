@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `INT4` `INT5` `MIXED` |
 | **Generation** | `G3` (KV-cache + outlier threads) |
+| **Stage type** | `S2T4` |
 | **Optimization** | KV cache · outlier-aware · offline threshold profiling · group-shift · dense-and-sparse · COO · DMA-integrated |
+
+## Stage-type tags
+
+**`S2T4`** (the **Stage type** row in Tags) — most-matched first. Large and small KV outliers leave the INT4 inliers for an INT5 dense-and-sparse path, with thresholds profiled offline.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 1).*
 
 ## 1. One-line summary
 

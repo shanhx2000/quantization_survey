@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `VQ` `LUT` `INT4` `INT3` `FP16` `MIXED` |
 | **Generation** | `G3` (codebook + outlier threads) |
+| **Stage type** | `S2T4` · `S3T3a` |
 | **Optimization** | LUT-GEMM · Cartesian-product LUT · dual-side quantization · NU-WAQ · learned codebook · outlier-aware · look-ahead compensation · top-k engine |
+
+## Stage-type tags
+
+**`S2T4` · `S3T3a`** (the **Stage type** row in Tags) — most-matched first. The top and bottom 0.5% of activations go to a concurrent FP16 compensation branch, found by twin tournament trees (`S2T4`), around dual-side codebook arithmetic: both operands are 4-bit learned codebooks, so GEMM is counting index pairs against a 256-entry Cartesian-product table (`S3T3a`).
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

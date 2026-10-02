@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `VQ` `FP8` `INT8` `MIXED` |
 | **Generation** | `G3` |
+| **Stage type** | `S3T2` · `S2T4` |
 | **Optimization** | GPU L2 · k-means codebook · Huffman · entropy coding · parallel decoder · clip-and-pad outliers · fixed-block variable-rate · KV cache |
+
+## Stage-type tags
+
+**`S3T2` · `S2T4`** (the **Stage type** row in Tags) — most-matched first. k-means patterns and Huffman codes in memory, decoded between L1 and L2 so the SMs compute in FP16 (`S3T2`); under-budget blocks re-store their largest values as FP8 outliers (`S2T4`).
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 1).*
 
 ## 1. One-line summary
 

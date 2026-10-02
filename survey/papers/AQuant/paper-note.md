@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `INT2` `INT4` `INT8` `INT16` `MIXED` |
 | **Generation** | `G3` |
+| **Stage type** | `S2T5` · `S2T2` · `S2T1` |
 | **Optimization** | CODEC reuse · base-delta quantization · visual-token similarity · exponent-only L1 distance · per-row top-k mixed precision · workload-balanced dual MAC arrays · activation-only · KV cache · VLM |
+
+## Stage-type tags
+
+**`S2T5` · `S2T2` · `S2T1`** (the **Stage type** row in Tags) — most-matched first. Each token is split into a base and a narrow delta, and only the delta is quantized (`S2T5`); the delta is INT4 for the top 25% of each row and INT2 for the rest, against INT8 bases (`S2T2`); tokens are grouped around a positional base, the middle of every 18 (`S2T1`).
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

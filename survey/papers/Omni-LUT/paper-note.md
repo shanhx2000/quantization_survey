@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `LUT` `INT4` `INT3` `FP16` `MIXED` |
 | **Generation** | `G3` (codebook + KV-cache threads) |
+| **Stage type** | `S3T1a` · `S2T5` |
 | **Optimization** | LUT-GEMM · KV cache · BCQ · AA-GEMM · scale-aware LUT · sensitivity-based bit allocation · hybrid stationary · phase-adaptive systolic |
+
+## Stage-type tags
+
+**`S3T1a` · `S2T5`** (the **Stage type** row in Tags) — most-matched first. Q, or the post-softmax scores, build a table of partial sums that the KV bit-planes index, so attention runs on the same LUT datapath as A×W (`S3T1a`); weights and KV are stored as ±1 bit-planes (BCQ), with cost linear in bit-planes (`S2T5`).
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `VQ` `LUT` `FP16` `INT8` |
 | **Generation** | `G3` |
+| **Stage type** | `S3T3a` |
 | **Optimization** | weight-only · VQ · GEMV→GEMM · output codebook · conflict-free lookup · additive VQ (AQLM) · codebook-stationary · decode-specialised, prefill-compatible |
+
+## Stage-type tags
+
+**`S3T3a`** (the **Stage type** row in Tags) — most-matched first. Dot products are taken against the codebook itself (`O = XB`, all 256 input-centroid products), then the output is assembled by structured lookups — the multiply happens against the table and is never decoded into a GEMM.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

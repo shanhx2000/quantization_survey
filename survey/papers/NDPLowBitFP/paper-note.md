@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `FP4` `FP8` `FP16` `MIXED` |
 | **Generation** | `G2` |
+| **Stage type** | `S2T2` · `(PIM)` |
 | **Optimization** | NDP · group-wise scaling · compiler · scale-value interleaved layout · DRAM row locality · dequant hiding · free-slot scheduling · compilation-space search |
+
+## Stage-type tags
+
+**`S2T2` · `(PIM)`** (the **Stage type** row in Tags) — most-matched first. The NDP processing unit decomposes an FP32 mantissa multiplier into four 12-bit and sixteen 6-bit parts so FP4 and FP8 run in parallel on one unit, and both weight-activation and weight-only low-bit configurations are evaluated — different widths in one datapath. `(PIM)`: near-data processing in DRAM is the substrate.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

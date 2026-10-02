@@ -10,7 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `MX` `FP4` `FP8` `ADAPTIVE` `MIXED` |
 | **Generation** | `G2` |
+| **Stage type** | `S2T1` · `S2T2` |
 | **Optimization** | microscaling · flexible exponent/mantissa split · sub-block configuration · 1-bit config selector · bit mapper · quadratic-weighted counting rule · decoupled scale/format granularity · tensor core · PTQ · calibration-free |
+
+## Stage-type tags
+
+**`S2T1` · `S2T2`** (the **Stage type** row in Tags) — most-matched first. The block keeps OCP MX's shared E8M0 scale while the per-block or per-sub-block configuration bit is set at a separate, finer granularity — scale granularity decoupled from format granularity, which lets the block grow to 256 (`S2T1`); the design is evaluated at 4, 6 and 8 bits (`S2T2`).
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 

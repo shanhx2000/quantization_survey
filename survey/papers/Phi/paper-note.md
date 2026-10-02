@@ -10,7 +10,14 @@
 | **Q-oriented** | `NON-Q-ORIENTED` |
 | **Data type** | `BINARY` `VQ` `LUT` |
 | **Generation** | — (see §6 — I'd leave it unassigned) |
+| **Stage type** | `S3T1a` · `S3T3f(SNN)` |
 | **Optimization** | SNN · pattern-based sparsity · k-means patterns · precomputed products · exact two-level decomposition · Hamming-distance clustering · PWP prefetch · optional PAFT |
+
+## Stage-type tags
+
+**`S3T1a` · `S3T3f(SNN)`** (the **Stage type** row in Tags) — most-matched first. k-means binary patterns whose products with the weights are precomputed offline, so a pattern index is a memory read into a table of products (`S3T1a`), on a spiking substrate — stage3.md's reserved spiking slot (`S3T3f`, SNN). Placing it on the Stage axis answers snn.md's open question for this record.
+
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 2).*
 
 ## 1. One-line summary
 
