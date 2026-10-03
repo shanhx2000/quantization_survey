@@ -10,14 +10,14 @@
 | **Q-oriented** | `Q-ORIENTED` |
 | **Data type** | `INT` `ADAPTIVE` `MIXED` |
 | **Generation** | `G2` |
-| **Stage type** | `S2T5` · `S3T2` · `(PIM)` |
+| **Stage type** | `S2T5` · `S3T2` |
 | **Optimization** | analog PIM · ReRAM crossbar · Center+Offset encoding · adaptive weight slicing · dynamic input slicing · speculation and recovery · ADC-resolution reduction · no retraining |
 
 ## Stage-type tags
 
-**`S2T5` · `S3T2` · `(PIM)`** (the **Stage type** row in Tags) — most-matched first. Adaptive weight slicing and dynamic input slicing split the multiply along the bit dimension (`S2T5`) on an analog ReRAM crossbar whose ADC is the return to ordinary numbers (`S3T2`). `(PIM)`: the substrate is an analog ReRAM crossbar — one separate tag after the others, the form set on 2026-10-02 (batch 2).
+**`S2T5` · `S3T2`** (the **Stage type** row in Tags) — most-matched first. Adaptive weight slicing and dynamic input slicing split the multiply along the bit dimension (`S2T5`) on an analog ReRAM crossbar whose ADC is the return to ordinary numbers (`S3T2`). No `(PIM)` tag: the substrate is already in the Platform column (`PIM`); owner's ruling 2026-10-03, when the record's Stage was also set to `—`.
 
-*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 1); `(PIM)` split out into its own tag the same day.*
+*Tag form `S{stage}T{type}`, vocabulary from `survey/stage2.md` and `survey/stage3.md`. Added 2026-10-02 (ISCA Stage-type batch 1); `(PIM)` split out into its own tag the same day and removed on 2026-10-03.*
 
 ## 1. One-line summary
 

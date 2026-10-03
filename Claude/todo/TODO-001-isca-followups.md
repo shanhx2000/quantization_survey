@@ -13,12 +13,13 @@ Abbreviations: PIM (processing-in-memory), NDP (near-data processing), SNN (spik
 
 ## Needs the owner's decision
 
-- [ ] **RAELLA venue Stage.** Venue row `—`, published note `S2`. The Stage-type tags
-      `S2T5` · `S3T2` · `(PIM)` imply venue `S2` with path `S3→S2` (pim.md already gives that
-      path). Set it, or keep `—` for the PIM owner.
-- [ ] **XtraMAC venue Stage.** Venue row `—` (the 2026-09-22 FPGA owner reset), note `S2`; the
-      Stage-type tag is `S1` and the path classifier's `OVERRIDE` already says `S1→S2`. Pick `S1`,
-      `S2`, or leave `—` for the FPGA owner.
+- [x] **RAELLA venue Stage.** Done 2026-10-03: Stage and Type stay `—`, the published note's
+      Stage row now says `—` too, `(PIM)` dropped (tag `S2T5` · `S3T2`), `Audit A` ticked.
+      pim.md still gives it `S3→S2` — that page is the PIM owner's.
+- [x] **XtraMAC venue Stage.** Done 2026-10-03: `S1` in the venue row, the note and the classifier
+      `OVERRIDE` (was `S1→S2`, from the 2026-09-21 stage1.md §4 audit); removed from stages.md's
+      `S1→S2` table; `Audit A` ticked. The earlier `—` was Cong Guo's bulk reset (4f55edc), not an
+      FPGA-owner ruling. Its row in stage2.md's T5 table is kept as that page's own example.
 
 ## Shared repo (`QuantArchSurvey/`) — other owners' items, raise with them
 
