@@ -1,6 +1,6 @@
 # Taxonomy of Quantization Hardware for LLMs — ISCA fill
 
-Transcription of [`QuantArchSurvey/latex/figures/taxonomy.tex`](../QuantArchSurvey/latex/figures/taxonomy.tex)
+Transcription of [`latex/figures/taxonomy.tex`](../latex/figures/taxonomy.tex)
 (Fig. 1), with the ISCA branch of the corpus filled in.
 
 The tree text is reproduced **exactly** as it stands in the `forest` source — same

@@ -103,7 +103,8 @@ reflected in AGENT-GUIDE:
 | `figures/`, `scripts/`, `tables/` | **no** (untracked) | The owner's figure data, plotting scripts and generated figures |
 | `quantization_survey_paper_pdf/` | **no**, and **not in `.gitignore`** | ~85 MB of paper PDFs. Never `git add` it |
 | `archieve/` | no (ignored) | Cold storage for bulk sources |
-| `QuantArchSurvey/` | no (ignored; its own repo) | The shared team repo — AGENT-GUIDE §0b; manuscript in its `latex/`, see [LATEX.md](LATEX.md) |
+| `QuantArchSurvey/` | no (ignored; its own repo) | The shared team repo — AGENT-GUIDE §0b |
+| `latex/` | no (ignored; its own repo) | The manuscript — a clone of the Overleaf project, see [LATEX.md](LATEX.md). Moved here from `QuantArchSurvey/latex/` on 2026-10-15 |
 
 **Do not tidy these on your own initiative.** Moving, renaming or committing the owner's untracked
 directories is the owner's call; say what you see and ask.

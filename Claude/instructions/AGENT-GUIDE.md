@@ -126,6 +126,7 @@ quantization_survey/
 │   │       └── ANALYSIS.md
 │   └── uploads/            # drop box for PDFs a human downloaded by hand; kept EMPTY
 ├── archieve/               # backup of filed bulk sources (proceedings zips). NOT in git
+├── latex/                  # the manuscript: clone of the Overleaf project, its own repo -- see LATEX.md. NOT in git
 └── QuantArchSurvey/        # clone of the SHARED team repo. **READ-ONLY** -- see 0b. NOT in git
 ```
 
@@ -211,7 +212,7 @@ In this order — **get the facts before forming an opinion**:
 
 ## 3a. The manuscript (LaTeX)
 
-The survey text lives in Overleaf, cloned to `QuantArchSurvey/latex/`. Before touching any
+The survey text lives in Overleaf, cloned to `latex/` at the top of this repo. Before touching any
 `.tex` or `.bib` file, read **[`LATEX.md`](LATEX.md)**: Overleaf is the source of truth, pull
 and push are the human's steps, and nothing can be compiled on this host.
 

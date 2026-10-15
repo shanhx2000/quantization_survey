@@ -8,10 +8,11 @@ the manuscript. Read [`AGENT-GUIDE.md`](AGENT-GUIDE.md) §0b and
 
 1. **Overleaf is the single source of truth.** The manuscript lives in one Overleaf project;
    every local copy is a clone of it, and nothing else holds the text.
-2. **The local clone is `QuantArchSurvey/latex/`.** It is its own git repo, not a submodule,
-   and both outer repos ignore it — `QuantArchSurvey/.gitignore` has `/latex/`, and ours
-   ignores the whole of `QuantArchSurvey/`. **Never commit manuscript files to either outer
-   repo.**
+2. **The local clone is `latex/`, at the top of this repo.** It is its own git repo, not a
+   submodule, and our `.gitignore` has `/latex/`. **Never commit manuscript files to this
+   repo.** It was moved here from `QuantArchSurvey/latex/` on 2026-10-15; that repo's
+   `.gitignore` still has `/latex/` and its README still lists `latex/`, both left as they are
+   (§0b of AGENT-GUIDE: read-only).
 3. **Pull and push are human steps.** Overleaf asks for a git token, and agent sessions here
    cannot answer the prompt. Verified 2026-10-01: `git fetch` fails with
    `could not read Password for 'https://git@git.overleaf.com': terminal prompts disabled`.
@@ -23,7 +24,7 @@ the manuscript. Read [`AGENT-GUIDE.md`](AGENT-GUIDE.md) §0b and
 ## Source
 
 ```bash
-cd ~/moe_ws/quantization_survey/QuantArchSurvey
+cd ~/moe_ws/quantization_survey
 git clone https://git@git.overleaf.com/6a98c3ae3305c3abab2c1b63 latex
 ```
 
@@ -57,7 +58,7 @@ changes `main.tex` and breaks every co-author's open editor tab at the same mome
 
 Every change, in this order:
 
-1. **Human pulls first:** `git -C QuantArchSurvey/latex pull`. Co-authors edit Overleaf
+1. **Human pulls first:** `git -C latex pull`. Co-authors edit Overleaf
    directly, so a stale clone is the normal state, not the exception. Run `git status` in
    `latex/` and say what is already modified before you add to it.
 2. **Agent edits only the files the human named**, in English, defining every abbreviation in
