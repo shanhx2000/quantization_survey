@@ -26,6 +26,7 @@ The top level has **three directories**. Discuss before adding a fourth.
 | `survey/` | The reading work: [`papers/`](survey/papers/) (one directory per paper), [`README.md`](survey/README.md) (the index), [`uploads/`](survey/uploads/) (drop box for hand-downloaded PDFs, kept empty) |
 | `archieve/` | [Backup](archieve/README.md) of bulk sources already filed — proceedings packages and the like. Not in git |
 | `QuantArchSurvey/` | Clone of the **shared team repo** (`shanhx2000/QuantArchSurvey`). **Read-only — the agent never modifies it**; see [AGENT-GUIDE §0b](Claude/instructions/AGENT-GUIDE.md). Not in git |
+| `hardware/` | Hardware cost data. `pe_sweep/` and `buffer_sweep/` are working copies of the synthesis sweeps on `cmp00` (not in git); [`mac_lut_tradeoff/`](hardware/mac_lut_tradeoff/README.md) (in git) holds a snapshot of their results and the MAC-vs-LUT discussions |
 
 Inside `Claude/`: `instructions/` (rules — including
 [LATEX.md](Claude/instructions/LATEX.md) (the Overleaf manuscript), [PAPER-READING.md](Claude/instructions/PAPER-READING.md), the brief for a single-paper
