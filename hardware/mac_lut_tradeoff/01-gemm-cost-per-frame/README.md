@@ -7,7 +7,7 @@ snapshot; see [`../README.md`](../README.md)). Edit the script, not this file.
 (wq ∈ {int1, ter, int2, int3, int4, int6, int8} × wa ∈ {int8, fp16}), one row per method and one
 column per v. **Cell: area (µm²) / power (mW)** at 500 MHz, for hardware that consumes one
 v-element slice of a dot product for every batch row each cycle. Power × 2 = energy per cycle in
-pJ. **`#` = no data yet**, for area and power separately.
+pJ. `#` = no data yet. `*` = upper bound: an SRAM table under 64 bytes, costed as the smallest table at or above that. `—` = not costed: ternary register-file tables above v = 6. `#` and `*` apply to area and power separately.
 
 ## Missing data
 
@@ -15,12 +15,10 @@ pJ. **`#` = no data yet**, for area and power separately.
 |---|---|---|---|
 | Mixed-type multiplier | area + power | `mul_int2xfp16`, `mul_int2xint8`, `mul_int3xfp16`, `mul_int3xint8`, `mul_int4xfp16`, `mul_int4xint8`, `mul_int6xfp16`, `mul_int6xint8`, `mul_int8xfp16` | pe_sweep has only same-type multipliers (`mul_int4` is int4 × int4) |
 | Reg LUT, 1 read port | power | W = 16: N = 8, 16, 32, 64, 128, 256 | no read-only power run (measured at 80% read / 20% write) |
-| Reg LUT, 1 read port | area + power | W = 8: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 16: N = 512, 1024, 2048, 4096, 8192<br>W = 32: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 64: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 128: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 | only W = 16, N ≤ 256 tables were run |
-| Reg LUT, wq read ports | area + power | W = 8: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 16: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 32: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 64: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 128: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8 | no multi-read-port table was run |
-| SRAM LUT, 1 read port | area + power | W = 8: N = 8, 16, 32<br>W = 16: N = 8, 16<br>W = 32: N = 8 | below the CACTI floor of 64 bytes |
-| SRAM LUT, 1 read port | area + power | W = 8: N = 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 16: N = 512, 1024, 2048, 4096, 8192<br>W = 32: N = 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 64: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 128: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 | only W = 16, N ≤ 256 tables were run |
-| SRAM LUT, wq read ports | area + power | W = 8: N = 8, 16, 32, R = 2/3/4/6/8<br>W = 16: N = 8, 16, R = 2/3/4/6/8<br>W = 32: N = 8, R = 2/3/4/6/8 | below the CACTI floor of 64 bytes |
-| SRAM LUT, wq read ports | area + power | W = 8: N = 64, 128, 256, R = 2/3/4/6/8<br>W = 16: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 32: N = 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 64: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 128: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8 | no multi-read-port table was run |
+| Reg LUT, 1 read port | area + power | W = 10: N = 8, 16, 64, 128<br>W = 11: N = 32, 64, 128, 256, 512, 1024<br>W = 16: N = 512, 1024<br>W = 20: N = 8, 16, 64, 128<br>W = 22: N = 32, 64, 128, 256, 512, 1024<br>W = 32: N = 8, 16, 32, 64, 128, 256, 512, 1024<br>W = 40: N = 8, 16, 64, 128<br>W = 44: N = 32, 64, 128, 256, 512, 1024<br>W = 64: N = 8, 16, 32, 64, 128, 256, 512, 1024<br>W = 80: N = 8, 16, 64, 128<br>W = 88: N = 32, 64, 128, 256, 512, 1024<br>W = 128: N = 8, 16, 32, 64, 128, 256, 512, 1024 | only W = 16, N ≤ 256 tables were run |
+| Reg LUT, wq read ports | area + power | W = 10: N = 8, 16, R = 2/3/4/6/8<br>W = 11: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 16: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 20: N = 8, 16, R = 2/3/4/6/8<br>W = 22: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 32: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 40: N = 8, 16, R = 2/3/4/6/8<br>W = 44: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 64: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 80: N = 8, 16, R = 2/3/4/6/8<br>W = 88: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 128: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8 | no multi-read-port table was run |
+| SRAM LUT, 1 read port | area + power | W = 16: N = 512, 1024, 2048, 4096, 8192<br>W = 24: N = 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 32: N = 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 40: N = 16, 64, 128<br>W = 48: N = 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 64: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 80: N = 8, 16, 64, 128<br>W = 88: N = 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 128: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 | only W = 16, N ≤ 256 tables were run |
+| SRAM LUT, wq read ports | area + power | W = 16: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 24: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 32: N = 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 40: N = 16, R = 2/3/4/6/8<br>W = 48: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 64: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 80: N = 8, 16, R = 2/3/4/6/8<br>W = 88: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 128: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8 | no multi-read-port table was run |
 
 What to run to fill these: `cmp00:~/isca26hw/micro26rcf/playground/todo/mac_lut_data_to_collect.md`.
 
@@ -47,10 +45,17 @@ What to run to fill these: `cmp00:~/isca26hw/micro26rcf/playground/todo/mac_lut_
     with symm.
   * *dup*: one table copy per read, one read port each. *multi-port*: one table with one read
     port per read. With one read (int1, ter) the two are the same.
-  * *reg*: flip-flop register file (synthesized). *SRAM*: CACTI.
-  * **Entry width**: 8 bits for wa = int8, 16 bits for wa = fp16, times bs: one entry holds the
-    partial sums of all bs batch rows, so a batch makes entries bs times wider, keeps the
-    number of tables and reads, and multiplies the fp16 adds by bs.
+  * **Entry width** per batch row: 16 bits for wa = fp16; 8 + ⌈log2 v⌉ bits for wa = int8,
+    which holds the exact sum of v int8 activations
+    (10 bits at v = 4, 11 bits at v = 6, 11 bits at v = 7, 11 bits at v = 8). Times bs: one entry
+    holds the partial sums of all bs batch rows, so a batch makes entries bs times wider, keeps
+    the number of tables and reads, and multiplies the fp16 adds by bs.
+  * *reg*: flip-flop register file (synthesized) at the exact entry width. Ternary
+    register-file tables are costed only up to v = 6 (`—` above).
+  * *SRAM*: CACTI, which sizes entries in whole bytes, so widths round up
+    (10 → 16, 11 → 16, 20 → 24, 22 → 24, 44 → 48 bits). A table
+    under CACTI's 64-byte floor takes the numbers of the smallest table at or
+    above the floor with the same width and ports (`*`, an upper bound).
 
 | LUT entries | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|
@@ -83,10 +88,10 @@ Only primitives with at least one number; the rest are in *Missing data*.
 | `reg_lut_n64_w16_r1` | 2,630.9 | # | `buffer_n64` (synthesized u_buf) |
 | `reg_lut_n128_w16_r1` | 5,193.5 | # | `buffer_n128` (synthesized u_buf) |
 | `reg_lut_n256_w16_r1` | 10,386.1 | # | `buffer_n256` (synthesized u_buf) |
-| `sram_lut_n32_w16_r1` | 139.7 | 0.110 | CACTI 1RW, N = 32: leakage + 500 MHz × E_read |
-| `sram_lut_n64_w16_r1` | 242.3 | 0.172 | CACTI 1RW, N = 64: leakage + 500 MHz × E_read |
-| `sram_lut_n128_w16_r1` | 451.8 | 0.293 | CACTI 1RW, N = 128: leakage + 500 MHz × E_read |
-| `sram_lut_n256_w16_r1` | 790.1 | 0.469 | CACTI 1RW, N = 256: leakage + 500 MHz × E_read |
+| `sram_lut_n32_w16_r1` | 139.7 | 0.110 | CACTI 1RW, N = 32, 2 bytes/entry: leakage + 500 MHz × E_read |
+| `sram_lut_n64_w16_r1` | 242.3 | 0.172 | CACTI 1RW, N = 64, 2 bytes/entry: leakage + 500 MHz × E_read |
+| `sram_lut_n128_w16_r1` | 451.8 | 0.293 | CACTI 1RW, N = 128, 2 bytes/entry: leakage + 500 MHz × E_read |
+| `sram_lut_n256_w16_r1` | 790.1 | 0.469 | CACTI 1RW, N = 256, 2 bytes/entry: leakage + 500 MHz × E_read |
 
 ## Notes
 
@@ -97,15 +102,15 @@ Only primitives with at least one number; the rest are in *Missing data*.
 2. **SRAM read-only power** is a few percent under the 80/20 number the earlier version used
    (N = 32: 0.110 vs 0.114 mW; N = 256: 0.469 vs 0.482 mW), because CACTI's write energy is
    higher than its read energy.
-3. **8-bit entries for wa = int8.** An exact partial sum of v int8 activations needs
-   8 + ⌈log2 v⌉ bits (11 at v = 8), so 8-bit entries assume the partial sums are requantized.
-   The adds stay fp16, as specified.
+3. **wa = int8 entries are exact** (8 + ⌈log2 v⌉ bits), so no partial sum overflows. The adds
+   stay fp16, as specified.
 4. **MAC opt with wa = int8 excludes the converter**, as specified. It is not what made the
    pe_sweep MAC large: inside `mac_mulint8_addfp16` the converter's cells are 272 µm² of
    1,763 µm², and most of the rest is upsizing to close timing in one cycle
    ([02](../02-int-to-fp-converter-cost/README.md)).
 5. **Ternary tables are large**: 128, 1,024, 4,096, 8,192 entries
-   at v = 4, 6, 7, 8 (half with symm), so most ternary LUT cells need tables
-   beyond the 256-entry sweep.
+   at v = 4, 6, 7, 8 (half with symm), beyond the 256-entry sweep for
+   v ≥ 6. Register files are costed only up to v = 6
+   (1,024 entries); SRAM at every v.
 6. **fp16 units close timing at ~0 ps slack** (`mul_fp16` 0 ps,
    `add_fp16` 1 ps), so their area includes upsizing.
