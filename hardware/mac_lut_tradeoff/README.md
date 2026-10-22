@@ -55,4 +55,4 @@ reused.
 
 | # | Discussion | Status |
 |---|---|---|
-| — | *none yet* | |
+| 01 | [MAC-GEMM vs LUT-GEMM cost per quantization frame](01-gemm-cost-per-frame/README.md): area / power for wq ∈ {3, 4, 6, 8} × wa ∈ {int8, fp16}, v ∈ {4, 6, 7, 8}, built by `make_tables.py` | Tables built; `#` cells wait on 7 mixed int × int8 / int × fp16 multipliers and on SRAM LUTs with N = 8 and 16 |
