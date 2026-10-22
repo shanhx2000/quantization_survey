@@ -105,7 +105,7 @@ reflected in AGENT-GUIDE:
 | `archieve/` | no (ignored) | Cold storage for bulk sources |
 | `QuantArchSurvey/` | no (ignored; its own repo) | The shared team repo — AGENT-GUIDE §0b |
 | `latex/` | no (ignored; its own repo) | The manuscript — a clone of the Overleaf project, see [LATEX.md](LATEX.md). Moved here from `QuantArchSurvey/latex/` on 2026-10-15 |
-| `hardware/` | only `mac_lut_tradeoff/` | Added 2026-10-21 at the owner's request. `pe_sweep/`, `buffer_sweep/`: ~800 MB working copies of the synthesis sweeps on `cmp00` (ignored). [`mac_lut_tradeoff/`](../../hardware/mac_lut_tradeoff/README.md): a snapshot of their results plus the MAC-vs-LUT discussions |
+| `hardware/` | only `mac_lut_tradeoff/` | Added 2026-10-21 at the owner's request. `pe_sweep/`, `buffer_sweep/`, `todo/`: multi-GB working copies of the synthesis sweeps on `cmp00` and their data-collection queue (ignored). [`mac_lut_tradeoff/`](../../hardware/mac_lut_tradeoff/README.md): a snapshot of their results plus the MAC-vs-LUT discussions |
 
 **Do not tidy these on your own initiative.** Moving, renaming or committing the owner's untracked
 directories is the owner's call; say what you see and ask.

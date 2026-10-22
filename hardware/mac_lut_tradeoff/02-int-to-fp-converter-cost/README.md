@@ -56,16 +56,40 @@ int4 with int8 have magnitude at most 512 or 1,024, which fp16 holds exactly (11
 bits). So for wq ≤ 4 the converter needs no rounding, only sign handling, a leading-zero
 count and a shift. For wq = 6 and 8 (magnitude up to 4,096 and 16,384), it must round.
 
-## Not known yet
+## Standalone converter and pipelined MAC (added 2026-10-22)
 
-* **A standalone converter.** All numbers above come from inside a timing-bound MAC. A
-  registered `CW_fp_i2flt` with isize = 11, 12, 14 and 16 (the int-wq × int8 products for
-  wq = 3, 4, 6, 8) → fp16 would give a converter cost to add to 01's *MAC opt* row.
-* **A pipelined MAC** (a register between multiplier/converter and adder) would show how much
-  of the 4× multiplier growth goes away once timing is relaxed.
+Run on cmp00 after the first version of this note (items 9 and 10 of
+[`mac_lut_data_to_collect.md`](../results/todo/mac_lut_data_to_collect.md)); numbers from
+[`pe_summary.csv`](../results/pe_sweep/pe_summary.csv). Both confirm the answer above.
 
-Both are in the data-collection list on cmp00:
-`~/isca26hw/micro26rcf/playground/todo/mac_lut_data_to_collect.md`.
+**Standalone converter**, registered like every pe_sweep design, int → fp16:
+
+| Input (product of) | `CW_fp_i2flt`: logic µm² / mW / slack | Exact RTL, no rounding: logic µm² / mW |
+|---|---|---|
+| int10 (int2 × int8) | 69.9 / 0.200 / 151 ps | 52.7 / 0.133 |
+| int11 (int3 × int8) | 73.6 / 0.210 / 104 ps | 63.6 / 0.158 |
+| int12 (int4 × int8) | 82.3 / 0.243 / 28 ps | 73.0 / 0.181 |
+| int14 (int6 × int8) | 111.1 / 0.284 / 18 ps | — (needs rounding) |
+| int16 (int8 × int8) | 120.2 / 0.303 / 7 ps | — (needs rounding) |
+
+So the int16 → fp16 converter is **120 µm² on its own**, against 272 µm² of converter cells
+inside the single-cycle MAC.
+
+**Pipelined MAC** (`mac_mulint8_addfp16_pipe`: a 16-bit register between converter and
+adder), split with `mac_area_breakdown.py`:
+
+| Block | Single-cycle MAC | Pipelined MAC | Standalone |
+|---|---|---|---|
+| Multiplier | 588.4 | 297.1 | 142.3 (`mul_int8`) |
+| Converter | 271.5 | 131.5 | 120.2 (`cvt_int16_fp16`) |
+| fp16 adder | 702.2 | 501.6 | 515.1 (`add_fp16`) |
+| Glue | 201.1 | 115.3 | — |
+| **Logic** | **1,763.2** | **1,045.5** | |
+| Flops (accumulator; + pipeline register) | 37.3 | 73.1 | |
+
+The pipeline register takes 41% off the logic. The converter and the adder come back to
+their standalone size; the multiplier is still 2.1× its standalone size. The design still ends
+at 0 ps slack, now on the fp16 add + accumulator loop.
 
 ## Method
 
@@ -80,5 +104,5 @@ applies them to every instance in `gate/<design>.v`, and groups the instances in
 # from quantization_survey/hardware/
 python3 mac_lut_tradeoff/02-int-to-fp-converter-cost/mac_area_breakdown.py pe_sweep \
     mac_mulint4_addfp16 mac_mulint8_addfp16 mac_mulint16_addfp16 mac_mulint8_addfp32 \
-    mac_mulint8_addint16 mac_mulfp16_addfp16
+    mac_mulint8_addint16 mac_mulfp16_addfp16 mac_mulint8_addfp16_pipe
 ```

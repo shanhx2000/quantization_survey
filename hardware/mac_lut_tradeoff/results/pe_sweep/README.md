@@ -28,6 +28,14 @@ clock-gating cells. See `REPORT.md`.
 | `mac_mul<x>_add<y>` | `acc <= acc + conv_y(mul_x(a, b))`, y in int16, fp16, fp32 (conversion per design in `designs.txt`) |
 | `add_fp16_rtl` | the RTL fp adder used for fp8, built at fp16 to compare with `CW_fp_add` |
 | `cnt_up_w<W>`, `cnt_updn_w<W>` | +1 / +-1 counter with enable (and direction), W in 4, 6, 8, 10, wraps |
+| `mul_int<q>xint8` | q in 2, 3, 4, 6: signed int-q x int8, full (q+8)-bit product |
+| `mul_int<q>xfp16` | q in 2, 3, 4, 6, 8: int-q -> fp16 (`CW_fp_i2flt`, exact) then `CW_fp_mult`, fp16 result |
+| `cvt_int<k>_fp16` | k in 10, 11, 12, 14, 16: `CW_fp_i2flt` to fp16 (RNE); `_rtl` (k <= 12): exact leading-one + shift |
+| `mac_mulint8_addfp16_pipe` | `mac_mulint8_addfp16` with a register between the converted product and the adder |
+
+Run variants (environment of `scripts/run_syn.sh`, appended to the run folder name):
+`SYN_PERIOD=<ns>`, `SYN_ACT=<activity profile>`, `SYN_CLK_TRAN=<ns>`. `collect.py` reports the
+default variant under the design name and others as `<design>@<variant>` rows.
 
 * FP blocks are Genus ChipWare (`CW_fp_add`, `CW_fp_mult`, `CW_fp_i2flt`, `CW_fp_flt2i`) with
   `ieee_compliance=0` (denormals read as zero, no NaN handling) and round-to-nearest-even.
