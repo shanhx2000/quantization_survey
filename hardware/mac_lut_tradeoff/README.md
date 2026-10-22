@@ -55,4 +55,5 @@ reused.
 
 | # | Discussion | Status |
 |---|---|---|
-| 01 | [MAC-GEMM vs LUT-GEMM cost per quantization frame](01-gemm-cost-per-frame/README.md): area / power for wq ∈ {3, 4, 6, 8} × wa ∈ {int8, fp16}, v ∈ {4, 6, 7, 8}, built by `make_tables.py` | Tables built; `#` cells wait on 7 mixed int × int8 / int × fp16 multipliers and on SRAM LUTs with N = 8 and 16 |
+| 01 | [MAC-GEMM vs LUT-GEMM cost per quantization frame](01-gemm-cost-per-frame/README.md): area / read-only power for wq ∈ {int1, ter, int2, int3, int4, int6, int8} × wa ∈ {int8, fp16} × bs ∈ {1, 2, 4, 8}, v ∈ {4, 6, 7, 8}; LUT as duplicated or multi-port tables, register file or SRAM. Built by `make_tables.py` | Tables built; most LUT cells are `#` until the data in `cmp00:~/isca26hw/micro26rcf/playground/todo/mac_lut_data_to_collect.md` is collected |
+| 02 | [How large is the int → fp16 converter after the multiplier?](02-int-to-fp-converter-cost/README.md) | Answered from the existing netlists: 272 µm² of 1,763 in `mac_mulint8_addfp16`; the rest of the gap is timing upsizing. A standalone converter run is still wanted |

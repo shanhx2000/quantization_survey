@@ -1,207 +1,111 @@
 # 01 — MAC-GEMM vs LUT-GEMM cost per quantization frame
 
-Generated 2026-10-22 by `make_tables.py` from [`../results/`](../results/) (the
-cmp00 sweep snapshot; see [`../README.md`](../README.md)). Edit the script, not this file.
+Generated 2026-10-22 by `make_tables.py` from [`../results/`](../results/) (the cmp00 sweep
+snapshot; see [`../README.md`](../README.md)). Edit the script, not this file.
 
-**Cell format: area (µm²) / power (mW)** at 500 MHz, for hardware that consumes one
-v-element slice of a dot product every cycle. Power × 2 = energy per cycle in pJ.
+**Tables, one file per batch size: [bs = 1](tables-bs1.md) · [bs = 2](tables-bs2.md) · [bs = 4](tables-bs4.md) · [bs = 8](tables-bs8.md).** Each file has one table per frame
+(wq ∈ {int1, ter, int2, int3, int4, int6, int8} × wa ∈ {int8, fp16}), one row per method and one
+column per v. **Cell: area (µm²) / power (mW)** at 500 MHz, for hardware that consumes one
+v-element slice of a dot product for every batch row each cycle. Power × 2 = energy per cycle in
+pJ. **`#` = no data yet**, for area and power separately.
 
 ## Missing data
 
-`#` in a cell means at least one primitive has no number in the snapshot:
+| Data | Missing | Configurations | Why |
+|---|---|---|---|
+| Mixed-type multiplier | area + power | `mul_int2xfp16`, `mul_int2xint8`, `mul_int3xfp16`, `mul_int3xint8`, `mul_int4xfp16`, `mul_int4xint8`, `mul_int6xfp16`, `mul_int6xint8`, `mul_int8xfp16` | pe_sweep has only same-type multipliers (`mul_int4` is int4 × int4) |
+| Reg LUT, 1 read port | power | W = 16: N = 8, 16, 32, 64, 128, 256 | no read-only power run (measured at 80% read / 20% write) |
+| Reg LUT, 1 read port | area + power | W = 8: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 16: N = 512, 1024, 2048, 4096, 8192<br>W = 32: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 64: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 128: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 | only W = 16, N ≤ 256 tables were run |
+| Reg LUT, wq read ports | area + power | W = 8: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 16: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 32: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 64: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 128: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8 | no multi-read-port table was run |
+| SRAM LUT, 1 read port | area + power | W = 8: N = 8, 16, 32<br>W = 16: N = 8, 16<br>W = 32: N = 8 | below the CACTI floor of 64 bytes |
+| SRAM LUT, 1 read port | area + power | W = 8: N = 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 16: N = 512, 1024, 2048, 4096, 8192<br>W = 32: N = 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 64: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192<br>W = 128: N = 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 | only W = 16, N ≤ 256 tables were run |
+| SRAM LUT, wq read ports | area + power | W = 8: N = 8, 16, 32, R = 2/3/4/6/8<br>W = 16: N = 8, 16, R = 2/3/4/6/8<br>W = 32: N = 8, R = 2/3/4/6/8 | below the CACTI floor of 64 bytes |
+| SRAM LUT, wq read ports | area + power | W = 8: N = 64, 128, 256, R = 2/3/4/6/8<br>W = 16: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 32: N = 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 64: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 128: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8 | no multi-read-port table was run |
 
-| Primitive | Needed by | Frames | v | Why it is missing |
-|---|---|---|---|---|
-| `mul_int3xint8` | MAC opt | wq=3 wa=int8 | all | pe_sweep has only same-type multipliers (`mul_int4` is int4 × int4) |
-| `mul_int4xint8` | MAC opt | wq=4 wa=int8 | all | pe_sweep has only same-type multipliers (`mul_int4` is int4 × int4) |
-| `mul_int6xint8` | MAC opt | wq=6 wa=int8 | all | pe_sweep has only same-type multipliers (`mul_int4` is int4 × int4) |
-| `mul_int3xfp16` | MAC opt | wq=3 wa=fp16 | all | pe_sweep has only same-type multipliers (`mul_int4` is int4 × int4) |
-| `mul_int4xfp16` | MAC opt | wq=4 wa=fp16 | all | pe_sweep has only same-type multipliers (`mul_int4` is int4 × int4) |
-| `mul_int6xfp16` | MAC opt | wq=6 wa=fp16 | all | pe_sweep has only same-type multipliers (`mul_int4` is int4 × int4) |
-| `mul_int8xfp16` | MAC opt | wq=8 wa=fp16 | all | pe_sweep has only same-type multipliers (`mul_int4` is int4 × int4) |
-| `sram_lut_n8` | LUT SRAM, pre-ignore+symm | every frame | 4 | CACTI does not model arrays under 64 bytes (N < 32 at 16 bits) |
-| `sram_lut_n16` | LUT SRAM, pre-ignore | every frame | 4 | CACTI does not model arrays under 64 bytes (N < 32 at 16 bits) |
-
-The script looks for the multipliers under the names in the first column, so a pe_sweep
-design with that name fills the cells on the next run.
+What to run to fill these: `cmp00:~/isca26hw/micro26rcf/playground/todo/mac_lut_data_to_collect.md`.
 
 ## Methods and cost model
 
-* **wq**: weight bits (int: 3, 4, 6, 8). **wa**: activation format (int8 or fp16).
-  **v**: vector length, the number of activations combined per step.
-* **MAC-GEMM**: v multipliers and v adders.
-  * *fp16*: v × fp16 mul + v × fp16 add. Same in every frame.
-  * *opt*: v × (int-wq × wa) mul + v × fp16 add.
-  * *int8*: v × int8 mul + v × int16 add. Same in every frame.
+* **wq**: weight format: int1, ter, int2, int3, int4, int6, int8. int-b = b-bit integer; **ter** = ternary
+  {−1, 0, +1}. **wa**: activation format (int8 or fp16). **v**: vector length, the number of
+  activations combined per step. **bs**: batch size (1, 2, 4, 8).
+* **MAC-GEMM**: bs·v multipliers and bs·v adders (a batch of bs needs bs times the resources).
+  * *fp16*: v × fp16 mul + v × fp16 add.
+  * *opt*: v × (int-wq × wa) mul + v × fp16 add. The int → fp16 conversion that wa = int8
+    needs is not counted; see
+    [02-int-to-fp-converter-cost](../02-int-to-fp-converter-cost/README.md) for its size.
+  * *int8*: v × int8 mul + v × int16 add.
+  * **wq = int1 and ter: no multiplier in any MAC row**, only the adds. The weight just
+    selects, negates or zeroes the activation, and that is not counted. So for these two,
+    *fp16* and *opt* are the same row.
 * **LUT-GEMM** (lookup table): the table holds the partial sums of v activations for every
-  v-bit weight pattern; each of the wq weight bit-planes reads one entry, and wq fp16 adders
-  combine them. Entries are 16 bits (fp16), matching the 16-bit buffer sweep.
-  * *pre-ignore*: 2^v entries; the cost of building the table is ignored.
-  * *pre-ignore+symm*: 2^v / 2 entries; the other half is a sign flip of the stored half,
-    and the flip is ignored.
-  * *reg*: the table is a flip-flop register file (`buffer_n<N>`, synthesized).
-    *SRAM*: the table is a CACTI 1RW SRAM.
+  weight pattern. **Reads per slice:** int-b weights read once per bit-plane (b reads, b fp16
+  adds; one for int1); ternary weights index one table with all v trits (1 read, 1 add).
+  * *pre-ignore*: the cost of building the table is ignored. *pre-ignore+symm*: half the
+    table is stored and the other half is a sign flip of it; the flip is ignored.
+  * **Entries**: int-b: 2^v, or 2^v / 2 with symm. ter: the smallest 2^k ≥ 3^v, or ≥ ⌊3^v / 2⌋
+    with symm.
+  * *dup*: one table copy per read, one read port each. *multi-port*: one table with one read
+    port per read. With one read (int1, ter) the two are the same.
+  * *reg*: flip-flop register file (synthesized). *SRAM*: CACTI.
+  * **Entry width**: 8 bits for wa = int8, 16 bits for wa = fp16, times bs: one entry holds the
+    partial sums of all bs batch rows, so a batch makes entries bs times wider, keeps the
+    number of tables and reads, and multiplies the fp16 adds by bs.
 
-| v | 4 | 6 | 7 | 8 |
+| LUT entries | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|
-| LUT entries, pre-ignore (2^v) | 16 | 64 | 128 | 256 |
-| LUT entries, pre-ignore+symm (2^v / 2) | 8 | 32 | 64 | 128 |
+| int-b, pre-ignore | 16 | 64 | 128 | 256 |
+| int-b, pre-ignore+symm | 8 | 32 | 64 | 128 |
+| ter, pre-ignore | 128 | 1,024 | 4,096 | 8,192 |
+| ter, pre-ignore+symm | 64 | 512 | 2,048 | 4,096 |
 
 * **Area** = Σ count × unit area. Adders and multipliers: logic-only area of `u_core` from
   pe_sweep. Reg LUT: the whole `u_buf` (flops, address decode, read mux, clock gating).
   SRAM LUT: CACTI area.
-* **Power** = Σ count × unit power, every unit doing one operation per cycle.
+* **Power** = Σ count × unit power, every unit busy every cycle. **LUT power is read-only**:
+  for SRAM, leakage + 500 MHz × E_read per read port; for reg, not measured yet (`#`).
 * **Not counted:** table precompute, the sign flip, the 2^b weighting between bit-planes, and
   any int → fp conversion.
 
-## Tables
-
-### wq = int3, wa = int8
-
-| Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
-|---|---|---|---|---|---|
-| MAC fp16 | v × fp16 mul + v × fp16 add | 3,595 / 10.38 | 5,393 / 15.56 | 6,291 / 18.16 | 7,190 / 20.75 |
-| MAC opt | v × int3×int8 mul + v × fp16 add | # | # | # | # |
-| MAC int8 | v × int8 mul + v × int16 add | 700 / 1.19 | 1,050 / 1.79 | 1,225 / 2.08 | 1,400 / 2.38 |
-| LUT reg, pre-ignore | 3 × LUT[2^v] read + 3 × fp16 add | 3,593 / 6.11 | 9,438 / 7.65 | 17,126 / 9.41 | 32,703 / 16.41 |
-| LUT reg, pre-ignore+symm | 3 × LUT[2^v/2] read + 3 × fp16 add | 2,617 / 5.83 | 5,565 / 6.74 | 9,438 / 7.65 | 17,126 / 9.41 |
-| LUT SRAM, pre-ignore | 3 × LUT[2^v] read + 3 × fp16 add | # | 2,272 / 5.13 | 2,901 / 5.52 | 3,916 / 6.03 |
-| LUT SRAM, pre-ignore+symm | 3 × LUT[2^v/2] read + 3 × fp16 add | # | 1,964 / 4.93 | 2,272 / 5.13 | 2,901 / 5.52 |
-
-### wq = int4, wa = int8
-
-| Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
-|---|---|---|---|---|---|
-| MAC fp16 | v × fp16 mul + v × fp16 add | 3,595 / 10.38 | 5,393 / 15.56 | 6,291 / 18.16 | 7,190 / 20.75 |
-| MAC opt | v × int4×int8 mul + v × fp16 add | # | # | # | # |
-| MAC int8 | v × int8 mul + v × int16 add | 700 / 1.19 | 1,050 / 1.79 | 1,225 / 2.08 | 1,400 / 2.38 |
-| LUT reg, pre-ignore | 4 × LUT[2^v] read + 4 × fp16 add | 4,791 / 8.15 | 12,584 / 10.20 | 22,834 / 12.54 | 43,605 / 21.88 |
-| LUT reg, pre-ignore+symm | 4 × LUT[2^v/2] read + 4 × fp16 add | 3,489 / 7.77 | 7,419 / 8.99 | 12,584 / 10.20 | 22,834 / 12.54 |
-| LUT SRAM, pre-ignore | 4 × LUT[2^v] read + 4 × fp16 add | # | 3,030 / 6.84 | 3,868 / 7.36 | 5,221 / 8.05 |
-| LUT SRAM, pre-ignore+symm | 4 × LUT[2^v/2] read + 4 × fp16 add | # | 2,619 / 6.57 | 3,030 / 6.84 | 3,868 / 7.36 |
-
-### wq = int6, wa = int8
-
-| Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
-|---|---|---|---|---|---|
-| MAC fp16 | v × fp16 mul + v × fp16 add | 3,595 / 10.38 | 5,393 / 15.56 | 6,291 / 18.16 | 7,190 / 20.75 |
-| MAC opt | v × int6×int8 mul + v × fp16 add | # | # | # | # |
-| MAC int8 | v × int8 mul + v × int16 add | 700 / 1.19 | 1,050 / 1.79 | 1,225 / 2.08 | 1,400 / 2.38 |
-| LUT reg, pre-ignore | 6 × LUT[2^v] read + 6 × fp16 add | 7,186 / 12.22 | 18,876 / 15.30 | 34,251 / 18.81 | 65,407 / 32.81 |
-| LUT reg, pre-ignore+symm | 6 × LUT[2^v/2] read + 6 × fp16 add | 5,234 / 11.66 | 11,129 / 13.48 | 18,876 / 15.30 | 34,251 / 18.81 |
-| LUT SRAM, pre-ignore | 6 × LUT[2^v] read + 6 × fp16 add | # | 4,544 / 10.26 | 5,801 / 11.04 | 7,831 / 12.07 |
-| LUT SRAM, pre-ignore+symm | 6 × LUT[2^v/2] read + 6 × fp16 add | # | 3,929 / 9.86 | 4,544 / 10.26 | 5,801 / 11.04 |
-
-### wq = int8, wa = int8
-
-| Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
-|---|---|---|---|---|---|
-| MAC fp16 | v × fp16 mul + v × fp16 add | 3,595 / 10.38 | 5,393 / 15.56 | 6,291 / 18.16 | 7,190 / 20.75 |
-| MAC opt | v × int8×int8 mul + v × fp16 add | 2,629 / 7.10 | 3,944 / 10.65 | 4,601 / 12.42 | 5,259 / 14.19 |
-| MAC int8 | v × int8 mul + v × int16 add | 700 / 1.19 | 1,050 / 1.79 | 1,225 / 2.08 | 1,400 / 2.38 |
-| LUT reg, pre-ignore | 8 × LUT[2^v] read + 8 × fp16 add | 9,581 / 16.29 | 25,168 / 20.40 | 45,668 / 25.08 | 87,209 / 43.75 |
-| LUT reg, pre-ignore+symm | 8 × LUT[2^v/2] read + 8 × fp16 add | 6,978 / 15.54 | 14,839 / 17.97 | 25,168 / 20.40 | 45,668 / 25.08 |
-| LUT SRAM, pre-ignore | 8 × LUT[2^v] read + 8 × fp16 add | # | 6,059 / 13.68 | 7,735 / 14.72 | 10,442 / 16.09 |
-| LUT SRAM, pre-ignore+symm | 8 × LUT[2^v/2] read + 8 × fp16 add | # | 5,239 / 13.15 | 6,059 / 13.68 | 7,735 / 14.72 |
-
-### wq = int3, wa = fp16
-
-| Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
-|---|---|---|---|---|---|
-| MAC fp16 | v × fp16 mul + v × fp16 add | 3,595 / 10.38 | 5,393 / 15.56 | 6,291 / 18.16 | 7,190 / 20.75 |
-| MAC opt | v × int3×fp16 mul + v × fp16 add | # | # | # | # |
-| MAC int8 | v × int8 mul + v × int16 add | 700 / 1.19 | 1,050 / 1.79 | 1,225 / 2.08 | 1,400 / 2.38 |
-| LUT reg, pre-ignore | 3 × LUT[2^v] read + 3 × fp16 add | 3,593 / 6.11 | 9,438 / 7.65 | 17,126 / 9.41 | 32,703 / 16.41 |
-| LUT reg, pre-ignore+symm | 3 × LUT[2^v/2] read + 3 × fp16 add | 2,617 / 5.83 | 5,565 / 6.74 | 9,438 / 7.65 | 17,126 / 9.41 |
-| LUT SRAM, pre-ignore | 3 × LUT[2^v] read + 3 × fp16 add | # | 2,272 / 5.13 | 2,901 / 5.52 | 3,916 / 6.03 |
-| LUT SRAM, pre-ignore+symm | 3 × LUT[2^v/2] read + 3 × fp16 add | # | 1,964 / 4.93 | 2,272 / 5.13 | 2,901 / 5.52 |
-
-### wq = int4, wa = fp16
-
-| Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
-|---|---|---|---|---|---|
-| MAC fp16 | v × fp16 mul + v × fp16 add | 3,595 / 10.38 | 5,393 / 15.56 | 6,291 / 18.16 | 7,190 / 20.75 |
-| MAC opt | v × int4×fp16 mul + v × fp16 add | # | # | # | # |
-| MAC int8 | v × int8 mul + v × int16 add | 700 / 1.19 | 1,050 / 1.79 | 1,225 / 2.08 | 1,400 / 2.38 |
-| LUT reg, pre-ignore | 4 × LUT[2^v] read + 4 × fp16 add | 4,791 / 8.15 | 12,584 / 10.20 | 22,834 / 12.54 | 43,605 / 21.88 |
-| LUT reg, pre-ignore+symm | 4 × LUT[2^v/2] read + 4 × fp16 add | 3,489 / 7.77 | 7,419 / 8.99 | 12,584 / 10.20 | 22,834 / 12.54 |
-| LUT SRAM, pre-ignore | 4 × LUT[2^v] read + 4 × fp16 add | # | 3,030 / 6.84 | 3,868 / 7.36 | 5,221 / 8.05 |
-| LUT SRAM, pre-ignore+symm | 4 × LUT[2^v/2] read + 4 × fp16 add | # | 2,619 / 6.57 | 3,030 / 6.84 | 3,868 / 7.36 |
-
-### wq = int6, wa = fp16
-
-| Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
-|---|---|---|---|---|---|
-| MAC fp16 | v × fp16 mul + v × fp16 add | 3,595 / 10.38 | 5,393 / 15.56 | 6,291 / 18.16 | 7,190 / 20.75 |
-| MAC opt | v × int6×fp16 mul + v × fp16 add | # | # | # | # |
-| MAC int8 | v × int8 mul + v × int16 add | 700 / 1.19 | 1,050 / 1.79 | 1,225 / 2.08 | 1,400 / 2.38 |
-| LUT reg, pre-ignore | 6 × LUT[2^v] read + 6 × fp16 add | 7,186 / 12.22 | 18,876 / 15.30 | 34,251 / 18.81 | 65,407 / 32.81 |
-| LUT reg, pre-ignore+symm | 6 × LUT[2^v/2] read + 6 × fp16 add | 5,234 / 11.66 | 11,129 / 13.48 | 18,876 / 15.30 | 34,251 / 18.81 |
-| LUT SRAM, pre-ignore | 6 × LUT[2^v] read + 6 × fp16 add | # | 4,544 / 10.26 | 5,801 / 11.04 | 7,831 / 12.07 |
-| LUT SRAM, pre-ignore+symm | 6 × LUT[2^v/2] read + 6 × fp16 add | # | 3,929 / 9.86 | 4,544 / 10.26 | 5,801 / 11.04 |
-
-### wq = int8, wa = fp16
-
-| Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
-|---|---|---|---|---|---|
-| MAC fp16 | v × fp16 mul + v × fp16 add | 3,595 / 10.38 | 5,393 / 15.56 | 6,291 / 18.16 | 7,190 / 20.75 |
-| MAC opt | v × int8×fp16 mul + v × fp16 add | # | # | # | # |
-| MAC int8 | v × int8 mul + v × int16 add | 700 / 1.19 | 1,050 / 1.79 | 1,225 / 2.08 | 1,400 / 2.38 |
-| LUT reg, pre-ignore | 8 × LUT[2^v] read + 8 × fp16 add | 9,581 / 16.29 | 25,168 / 20.40 | 45,668 / 25.08 | 87,209 / 43.75 |
-| LUT reg, pre-ignore+symm | 8 × LUT[2^v/2] read + 8 × fp16 add | 6,978 / 15.54 | 14,839 / 17.97 | 25,168 / 20.40 | 45,668 / 25.08 |
-| LUT SRAM, pre-ignore | 8 × LUT[2^v] read + 8 × fp16 add | # | 6,059 / 13.68 | 7,735 / 14.72 | 10,442 / 16.09 |
-| LUT SRAM, pre-ignore+symm | 8 × LUT[2^v/2] read + 8 × fp16 add | # | 5,239 / 13.15 | 6,059 / 13.68 | 7,735 / 14.72 |
-
 ## Unit costs used
 
-| Primitive | Area (µm²) | Power (mW) | Source | Slack (ps) |
-|---|---|---|---|---|
-| `mul_fp16` | 383.7 | 1.064 | `mul_fp16` | 0 |
-| `add_fp16` | 515.1 | 1.530 | `add_fp16` | 1 |
-| `mul_int8` | 142.3 | 0.244 | `mul_int8` | 730 |
-| `add_int16` | 32.8 | 0.053 | `add_int16` | 715 |
-| `mul_int3xint8` | # | # | `mul_int3xint8` |  |
-| `mul_int4xint8` | # | # | `mul_int4xint8` |  |
-| `mul_int6xint8` | # | # | `mul_int6xint8` |  |
-| `mul_int3xfp16` | # | # | `mul_int3xfp16` |  |
-| `mul_int4xfp16` | # | # | `mul_int4xfp16` |  |
-| `mul_int6xfp16` | # | # | `mul_int6xfp16` |  |
-| `mul_int8xfp16` | # | # | `mul_int8xfp16` |  |
-| `reg_lut_n8` | 357.2 | 0.413 | `buffer_n8` (synthesized, 1RW) | 951 |
-| `reg_lut_n16` | 682.5 | 0.507 | `buffer_n16` (synthesized, 1RW) | 849 |
-| `reg_lut_n32` | 1,339.8 | 0.717 | `buffer_n32` (synthesized, 1RW) | 812 |
-| `reg_lut_n64` | 2,630.9 | 1.020 | `buffer_n64` (synthesized, 1RW) | 780 |
-| `reg_lut_n128` | 5,193.5 | 1.605 | `buffer_n128` (synthesized, 1RW) | 816 |
-| `reg_lut_n256` | 10,386.1 | 3.939 | `buffer_n256` (synthesized, 1RW) | 789 |
-| `sram_lut_n8` | # | # | CACTI 1RW, N = 8 |  |
-| `sram_lut_n16` | # | # | CACTI 1RW, N = 16 |  |
-| `sram_lut_n32` | 139.7 | 0.114 | CACTI 1RW, N = 32 |  |
-| `sram_lut_n64` | 242.3 | 0.181 | CACTI 1RW, N = 64 |  |
-| `sram_lut_n128` | 451.8 | 0.310 | CACTI 1RW, N = 128 |  |
-| `sram_lut_n256` | 790.1 | 0.482 | CACTI 1RW, N = 256 |  |
+Only primitives with at least one number; the rest are in *Missing data*.
+
+| Primitive | Area (µm²) | Power (mW) | Source |
+|---|---|---|---|
+| `add_fp16` | 515.1 | 1.530 | `add_fp16`, logic only |
+| `add_int16` | 32.8 | 0.053 | `add_int16`, logic only |
+| `mul_fp16` | 383.7 | 1.064 | `mul_fp16`, logic only |
+| `mul_int8` | 142.3 | 0.244 | `mul_int8`, logic only |
+| `reg_lut_n8_w16_r1` | 357.2 | # | `buffer_n8` (synthesized u_buf) |
+| `reg_lut_n16_w16_r1` | 682.5 | # | `buffer_n16` (synthesized u_buf) |
+| `reg_lut_n32_w16_r1` | 1,339.8 | # | `buffer_n32` (synthesized u_buf) |
+| `reg_lut_n64_w16_r1` | 2,630.9 | # | `buffer_n64` (synthesized u_buf) |
+| `reg_lut_n128_w16_r1` | 5,193.5 | # | `buffer_n128` (synthesized u_buf) |
+| `reg_lut_n256_w16_r1` | 10,386.1 | # | `buffer_n256` (synthesized u_buf) |
+| `sram_lut_n32_w16_r1` | 139.7 | 0.110 | CACTI 1RW, N = 32: leakage + 500 MHz × E_read |
+| `sram_lut_n64_w16_r1` | 242.3 | 0.172 | CACTI 1RW, N = 64: leakage + 500 MHz × E_read |
+| `sram_lut_n128_w16_r1` | 451.8 | 0.293 | CACTI 1RW, N = 128: leakage + 500 MHz × E_read |
+| `sram_lut_n256_w16_r1` | 790.1 | 0.469 | CACTI 1RW, N = 256: leakage + 500 MHz × E_read |
 
 ## Notes
 
-1. **LUT area counts wq separate tables.** The spec counts wq LUT reads, and each read is
-   costed as one whole table. All wq bit-planes of a weight index the *same* activation
-   table, so one table with wq read ports, or one table shared across output channels,
-   would need less storage. The sweep has no multi-read-port buffer, so that case is not
-   costed. The LUT rows are an upper bound on area and on flop power.
-2. **Reg LUT power is an upper bound.** It was measured with 80% reads / 20% writes; a LUT
-   is read-only during the GEMM, and read-only power was not measured. The flow's 5 ns
-   clock transition also inflates flip-flop power: on `buffer_n4`, 0.05 ns cut `u_buf` power
-   from 0.375 to 0.153 mW (buffer REPORT note 2).
-3. **SRAM LUT power** uses the same 80/20 mix. Read-only (static + 500 MHz × E_read) is a
-   little lower: N = 32: 0.110 vs 0.114 mW; N = 64: 0.172 vs 0.181 mW; N = 128: 0.293 vs 0.310 mW; N = 256: 0.469 vs 0.482 mW.
-4. **Reg LUT at N = 256** (v = 8, pre-ignore) carries the logic-power step that the
-   buffer report flags in its note 4. Treat that column with care.
-5. **The LUT rows do not depend on wa** because the spec uses 16-bit entries and fp16 adds in
-   both frames. With wa = int8, the entries could be integer partial sums (8 + ⌈log2 v⌉ bits)
-   added in int16. That variant is not in the spec and is not costed.
-6. **MAC opt with wa = int8** adds an integer product in fp16, which needs an int → fp16
-   conversion that the spec does not count. In pe_sweep it is not free:
-   `mac_mulint8_addfp16` has 1,763 µm² of logic against 657 µm² for
-   `mul_int8` + `add_fp16`, although part of that gap is upsizing to close timing in one
-   cycle (pe REPORT note 2).
-7. **fp16 units close timing at ~0 ps slack** (`mul_fp16` 0 ps,
+1. **Reg LUT power is `#` everywhere.** The buffer sweep measured 80% reads / 20% writes; a
+   LUT is read-only during the GEMM. When a read-only run is added, check the clock
+   transition too: the flow's 5 ns setting inflates flip-flop power (on `buffer_n4`, 0.05 ns
+   cut `u_buf` power from 0.375 to 0.153 mW; buffer REPORT note 2).
+2. **SRAM read-only power** is a few percent under the 80/20 number the earlier version used
+   (N = 32: 0.110 vs 0.114 mW; N = 256: 0.469 vs 0.482 mW), because CACTI's write energy is
+   higher than its read energy.
+3. **8-bit entries for wa = int8.** An exact partial sum of v int8 activations needs
+   8 + ⌈log2 v⌉ bits (11 at v = 8), so 8-bit entries assume the partial sums are requantized.
+   The adds stay fp16, as specified.
+4. **MAC opt with wa = int8 excludes the converter**, as specified. It is not what made the
+   pe_sweep MAC large: inside `mac_mulint8_addfp16` the converter's cells are 272 µm² of
+   1,763 µm², and most of the rest is upsizing to close timing in one cycle
+   ([02](../02-int-to-fp-converter-cost/README.md)).
+5. **Ternary tables are large**: 128, 1,024, 4,096, 8,192 entries
+   at v = 4, 6, 7, 8 (half with symm), so most ternary LUT cells need tables
+   beyond the 256-entry sweep.
+6. **fp16 units close timing at ~0 ps slack** (`mul_fp16` 0 ps,
    `add_fp16` 1 ps), so their area includes upsizing.
