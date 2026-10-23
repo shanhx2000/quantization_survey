@@ -19,7 +19,7 @@ YELLOW = '#eda100'  # categorical slot 4, after figstyle's three
 SHOWN = [('LUT SRAM dup, pre-ignore+symm', 'LUT-GEMM, SRAM (sign-symmetric)', SERIES[0], False),
          ('LUT SRAM dup, pre-ignore', 'LUT-GEMM, SRAM (full table)', SERIES[0], True),
          ('MAC fp16', 'MAC-GEMM fp16', SERIES[1], False),
-         ('MAC opt', 'MAC-GEMM, int-$w_q$ × $w_a$ multiplier', SERIES[2], False),
+         ('MAC opt', 'MAC-GEMM, int-$q_W$ × $w_a$ multiplier', SERIES[2], False),
          ('MAC int8', 'MAC-GEMM int8 (int16 accumulate)', YELLOW, False)]
 
 
@@ -54,7 +54,7 @@ def figure(metric, ylabel, name, fmt):
         ax.set_title(f'$w_a$ = {wa}', color=INK_2)
         ax.set_xticks(range(len(mt.WQ)))
         ax.set_xticklabels([w.replace('int', '') if w != 'ter' else 'ter' for w in mt.WQ])
-        ax.set_xlabel('weight bits $w_q$')
+        ax.set_xlabel('weight bits $q_W$')
         ax.set_ylim(bottom=0)
         ax.grid(axis='x', visible=False)
         ax.yaxis.set_major_formatter(FuncFormatter(fmt))

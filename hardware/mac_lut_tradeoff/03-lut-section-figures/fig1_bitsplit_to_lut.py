@@ -1,18 +1,19 @@
-# Fig. 1: from bit-splitting MAC-GEMM to LUT-GEMM, on a toy tile: v = 2 activations,
-# mu = 4-bit weights, N = 6 output columns. (a) the weights split into bit-planes; (b) the
-# bit-serial GEMM forms one partial sum per (plane, column) and recomputes x0 + x1 every time
-# both bits are set; (c) the 2^v distinct sums, precomputed once; (d) LUT-GEMM looks them up
-# and shift-adds over the planes. Everything drawn is computed from W below.
+# Fig. 1: from bit-splitting MAC-GEMM to LUT-GEMM, on a toy tile: v = 2 activations (vector
+# length; mu in FIGLUT), q_W = 4-bit weights (q in FIGLUT), N = 6 output columns. (a) the
+# weights split into bit-planes; (b) the bit-serial GEMM forms one partial sum per (plane,
+# column) and recomputes x0 + x1 every time both bits are set; (c) the 2^v distinct sums,
+# precomputed once; (d) LUT-GEMM looks them up and shift-adds over the planes. Everything
+# drawn is computed from W below.
 # Usage: python3 fig1_bitsplit_to_lut.py   ->  fig1_bitsplit_to_lut.{pdf,png}
 from matplotlib.patches import FancyArrowPatch, Rectangle
 
 from figstyle import INK, INK_2, MUTED, NEUTRAL_FILL, SERIES, plt, save
 
-V, MU = 2, 4
+V, QW = 2, 4
 W = [[13, 7, 10, 15, 6, 9],   # weights that multiply x0
      [11, 7, 12, 13, 3, 14]]  # weights that multiply x1
 N = len(W[0])
-PLANES = list(range(MU - 1, -1, -1))  # b = 3 (MSB) at the top
+PLANES = list(range(QW - 1, -1, -1))  # b = 3 (MSB) at the top
 
 # pattern (bit of w0, bit of w1) -> partial sum and fill
 SUM = {(0, 0): '0', (1, 0): '$x_0$', (0, 1): '$x_1$', (1, 1): '$x_0{+}x_1$'}
@@ -50,7 +51,7 @@ def grid(x0, y_top, label_of, cw, col_labels=False):
     if col_labels:
         for n in range(N):
             ax.text(x0 + (n + 0.5) * cw, y_top + 0.4, f'$n{n}$', ha='center', va='bottom', fontsize=6, color=MUTED)
-    return y_top - MU * CH
+    return y_top - QW * CH
 
 
 def text(x, y, s, size=6.5, color=INK_2, **kw):
@@ -72,13 +73,13 @@ def bits(b, n):
 # ---- row 1: (a) weights and bit-planes, (b) the partial sums ----------------------------
 XA, XB = 5.0, 52.0
 head(0.3, 55.5, '(a) Bit-splitting MAC-GEMM')
-text(0.3, 52.6, f'activations $x = (x_0, x_1)$, $v$ = {V}; {MU}-bit weights, $N$ = {N} columns',
+text(0.3, 52.6, f'activations $x = (x_0, x_1)$, $v$ = {V}; {QW}-bit weights, $N$ = {N} columns',
      size=6, va='top')
 for k in range(V):
     text(XA - 0.6, 48.4 - (k + 0.5) * CH, f'$w_{{{k},n}}$', ha='right', va='center')
     for n in range(N):
         cell(XA + n * CW_BITS, 48.4 - (k + 1) * CH, str(W[k][n]))
-text(XA, 42.4, f'$\\downarrow$ split into {MU} bit-planes', size=6, va='top')
+text(XA, 42.4, f'$\\downarrow$ split into {QW} bit-planes', size=6, va='top')
 G1 = 39.6
 bottom_a = grid(XA, G1, bits, CW_BITS)
 text(XA, bottom_a - 0.6, 'cell: bit of $w_{0,n}$, bit of $w_{1,n}$', size=6, color=MUTED, va='top')
@@ -89,7 +90,7 @@ arrow((XA + N * CW_BITS + 13.4, G1 - 2 * CH), (XB - 3.6, G1 - 2 * CH))
 head(XB - 3.6, 55.5, '(b) The partial sums repeat')
 text(XB - 3.6, 52.6, 'each cell: $x_0 w^{(b)}_{0,n} + x_1 w^{(b)}_{1,n}$', size=6, va='top')
 text(XB - 3.6, 48.6,
-     f'{MU * N} partial sums, but only $2^v$ = {2 ** V} distinct values:\n'
+     f'{QW * N} partial sums, but only $2^v$ = {2 ** V} distinct values:\n'
      f'$x_0{{+}}x_1$ is added again in {repeats} cells', size=6.5, color=INK, va='top')
 bottom_b = grid(XB, G1, lambda b, n: SUM[pats[(b, n)]], CW_SUM, col_labels=True)
 
@@ -102,7 +103,7 @@ for i, p in enumerate([(0, 0), (0, 1), (1, 0), (1, 1)]):
     y = 19.0 - (i + 1) * CH
     cell(XC, y, f'{p[0]}{p[1]}', p)
     cell(XC + CW_BITS, y, SUM[p], p, w=6.6)
-text(XC + 11.6, 19.0 - 2 * CH, f'$2^v$ = {2 ** V} entries,\nbuilt with 1 add,\nread by all {MU * N}\ncells',
+text(XC + 11.6, 19.0 - 2 * CH, f'$2^v$ = {2 ** V} entries,\nbuilt with 1 add,\nread by all {QW * N}\ncells',
      size=6.5, color=INK, va='center')
 arrow((XC + 24.0, 19.0 - 2 * CH), (XD - 3.6, 19.0 - 2 * CH))
 
@@ -115,7 +116,7 @@ for n in range(N):
     cell(XD + n * CW_BITS, bottom_d - 1.4 - CH, f'$y_{n}$')
 text(XD + N * CW_BITS + 3.0, G2 - 2 * CH,
      r'$y_n = \sum_b \, 2^b \cdot \mathrm{LUT}[\,w^{(b)}_{0,n} w^{(b)}_{1,n}\,]$' '\n\n'
-     f'{MU * N} lookups and shift-adds:\nno multiplies, no repeated sums',
+     f'{QW * N} lookups and shift-adds:\nno multiplies, no repeated sums',
      size=6.5, color=INK, va='center')
 
 # (b) -> (c): the distinct values of (b) become the LUT
