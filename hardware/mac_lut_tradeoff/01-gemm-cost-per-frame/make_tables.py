@@ -20,15 +20,19 @@ LUT_RE = r'(reg|sram)_lut_n(\d+)_w(\d+)_r(\d+)'
 STATUS = '../results/todo/mac_lut_status.md'
 
 pe = {r['design']: r for r in csv.DictReader(open(f'{RES}/pe_sweep/pe_summary.csv'))}
-reg, reg_5ns, sram = {}, {}, {}  # (N, W bits, read ports) -> row of lut_buffer_costs.csv
+reg, sram = {}, {}  # (N, W bits, read ports) -> row of lut_buffer_costs.csv
 for r in csv.DictReader(open(f'{RES}/buffer_sweep/lut_buffer_costs.csv')):
     key = (int(r['N']), int(r['W']), int(r['R']))
     if r['model'] == 'sram':
         sram[key] = r
     elif r['status'] == 'ok' and r['clk_transition_ns'] == REG_CT:
         reg[key] = r
-    elif r['status'] == 'ok' and float(r['clk_transition_ns']) == 5:
-        reg_5ns[key] = r
+# register-file power: the read-only corner of the power-only re-analysis (owner, 2026-10-23).
+# The "ro" power in lut_buffer_costs.csv kept the idle write port's data toggling and
+# overstates read-only power 2-4x, so it is not used.
+corner = {(int(r['N']), int(r['W']), int(r['R'])): r
+          for r in csv.DictReader(open(f'{RES}/buffer_sweep/rf_corner_costs.csv'))
+          if r['org'] == '1rw' or re.fullmatch(r'1w\d+r', r['org'])}
 
 
 def lut(kind, n, w, r):
@@ -36,15 +40,12 @@ def lut(kind, n, w, r):
     table read through r ports every cycle; area and power are None when there is no data."""
     key = (n, w, r)
     if kind == 'reg':
-        if key in reg:
-            row, bound = reg[key], False
-        elif key in reg_5ns:
-            # only the 5 ns clock-transition run so far: its flip-flop power is too high
-            row, bound = reg_5ns[key], True
-        else:
+        row, c = reg.get(key), corner.get(key)
+        if not row:
             return None, None, False, False, ''
-        return (float(row['area_um2']), float(row['syn_ro_total_mW']), False, bound,
-                f"`{row['design']}`, {row['clk_transition_ns']} ns clock transition")
+        return (float(row['area_um2']), float(c['ro_total_mW']) if c else None, False, False,
+                f"`{row['design']}`, {row['clk_transition_ns']} ns clock transition"
+                + ('; power: read-only corner' if c else '; read-only corner pending'))
     row, bound, src = sram.get(key), False, f'CACTI, {w // 8} B/entry'
     if row and row['status'] in ('below 64 B', 'failed'):
         # CACTI cannot model it: take the smallest modelled table of the same width and ports
@@ -167,7 +168,9 @@ def reason(p):
     family = f"{'Reg' if m[1] == 'reg' else 'SRAM'} LUT, {'1 read port' if m[4] == '1' else 'wq read ports'}"
     if m[1] == 'sram':
         return family, 'not in the CACTI grid'
-    return family, f'no run in this snapshot; queue state in [`mac_lut_status.md`]({STATUS})'
+    if (int(m[2]), int(m[3]), int(m[4])) in reg:
+        return family, f'read-only corner not computed yet (queue `rf_corners`, [`mac_lut_status.md`]({STATUS}))'
+    return family, f'not synthesized (W = 40, 44, 80, 88, 128 wait for an owner decision; [`mac_lut_status.md`]({STATUS}))'
 
 
 def configs(prims):
@@ -216,26 +219,17 @@ def span(vals, spec='.2f'):
 
 
 # multi-port vs copies, where both are in the snapshot
-def area_of(key):
-    row = reg.get(key) or reg_5ns.get(key)
-    return float(row['area_um2']) if row else None
-
-
-reg_mp = [area_of(k) / (k[2] * area_of((k[0], k[1], 1))) for k in set(reg) | set(reg_5ns)
-          if k[2] > 1 and area_of((k[0], k[1], 1))]
+reg_mp = [float(reg[k]['area_um2']) / (k[2] * float(reg[(k[0], k[1], 1)]['area_um2']))
+          for k in reg if k[2] > 1 and (k[0], k[1], 1) in reg]
 sram_mp_area = [float(r['area_vs_R_copies']) for r in sram.values() if r['area_vs_R_copies']]
 sram_mp_power = [float(r['power_vs_R_copies']) for r in sram.values() if r['power_vs_R_copies']]
-ct_ratio = [float(r['syn_ro_total_mW']) / float(reg_5ns[(n, 16, 1)]['syn_ro_total_mW'])
-            for r in csv.DictReader(open(f'{RES}/buffer_sweep/lut_buffer_costs.csv'))
-            for n in [int(r['N'])]
-            if r['model'] == 'regfile' and r['clk_transition_ns'] == '0.05' and (n, 16, 1) in reg_5ns]
+pe_ct = sorted({pe[d]['clk_transition_ns'] for d in ('add_fp16', 'mul_fp16', 'mul_int8', 'add_int16')})
 cvt = [float(pe[f'cvt_int{i}_fp16']['logic_area_um2']) for i in (10, 11, 12, 14, 16) if f'cvt_int{i}_fp16' in pe]
 cvt_rtl = [float(pe[f'cvt_int{i}_fp16_rtl']['logic_area_um2']) for i in (10, 11, 12) if f'cvt_int{i}_fp16_rtl' in pe]
 
 today = datetime.date.today()
 LEGEND = ('`#` = no data yet. `*` = upper bound: an SRAM table CACTI cannot model (under 64 bytes, '
-          'or N = 8, 16), costed as the smallest modelled table of the same width and ports; or '
-          'register-file power from a 5 ns clock-transition run whose 0.1 ns rerun is not done yet. '
+          'or N = 8, 16), costed as the smallest modelled table of the same width and ports. '
           f'`—` = not costed: ternary register-file tables above v = {TER_REG_MAX_V}.')
 for bs in BS:
     tables = '\n\n'.join(f'## wq = {wq}, wa = {wa}\n\n{frame_table(wq, wa, bs)}' for wa in WA for wq in WQ)
@@ -276,7 +270,7 @@ The data is being collected on cmp00; the snapshot of its plan and status is in
 * **MAC-GEMM**: bs·v multipliers and bs·v adders (a batch of bs needs bs times the resources).
   * *fp16*: v × fp16 mul + v × fp16 add.
   * *opt*: v × (int-wq × wa) mul + v × fp16 add. int × fp16 multipliers output fp16. The
-    int → fp16 conversion that wa = int8 needs is not counted (note 5).
+    int → fp16 conversion that wa = int8 needs is not counted (note 6).
   * *int8*: v × int8 mul + v × int16 add.
   * **wq = int1 and ter: no multiplier in any MAC row**, only the adds. The weight just
     selects, negates or zeroes the activation, and that is not counted. So for these two,
@@ -311,8 +305,9 @@ The data is being collected on cmp00; the snapshot of its plan and status is in
   pe_sweep. Register file: the whole `u_buf` (flops, address decode, read muxes, clock gating).
   SRAM: CACTI area.
 * **Power** = Σ count × unit power, every unit busy every cycle. **LUT power is read-only**:
-  register files, Genus vectorless power with writes held at 0; SRAM, CACTI leakage +
-  R × 500 MHz × E_read.
+  register files, the read-only corner (every read port reads every cycle, write port idle
+  with its data and address held) of a power-only Genus re-analysis of the {REG_CT} ns
+  netlist; SRAM, CACTI leakage + R × 500 MHz × E_read.
 * **Not counted:** table precompute, the sign flip, the 2^b weighting between bit-planes, and
   any int → fp conversion.
 
@@ -324,31 +319,38 @@ Only primitives with at least one number; the rest are in *Missing data*.
 
 ## Notes
 
-1. **Register-file power** comes from the {REG_CT} ns clock-transition run, the flow's setting
-   since 2026-10-22. Where only the earlier 5 ns run exists, the power is marked `*`: 5 ns
-   inflates flip-flop power, and the 16-bit tables run at 0.05 ns draw {span(ct_ratio)}× their
-   5 ns power. Area moves by under 1%, so it is not marked. A 0.1 ns rerun of those tables is
-   queued on cmp00.
-2. **CACTI cannot model N = 8 or 16 at any width** ("no valid data array organizations
+1. **Register-file power is mostly `#` in this snapshot.** On 2026-10-23 the cmp00 agent
+   found that the earlier read-only runs left the idle write port's data toggling every
+   cycle, which overstates read-only power 2–4×; those numbers are no longer used. The
+   corrected read-only corner is computed by a power-only re-analysis of every {REG_CT} ns
+   netlist (queue `rf_corners`), and had reached {len(corner)} tables at this sync. Areas
+   are final: every register file has a {REG_CT} ns run, and activity doesn't change the
+   netlist.
+2. **The baselines are at a different clock transition from the rest.** `add_fp16`,
+   `mul_fp16`, `mul_int8` and `add_int16` are {"/".join(pe_ct)} ns runs; the register files
+   and the pe designs added on 2026-10-22 are {REG_CT} ns. Logic area moves by up to ±10%
+   between the two for designs at ~0 ps slack. A pe_sweep rebuild at {REG_CT} ns (with
+   the owner's revised MAC precision and names) is pending on cmp00.
+3. **CACTI cannot model N = 8 or 16 at any width** ("no valid data array organizations
    found"), nor tables under 64 bytes. Those cells use the smallest modelled table (`*`).
-3. **Multi-port vs copies.** In CACTI, one table with R read ports has {span(sram_mp_area)}×
+4. **Multi-port vs copies.** In CACTI, one table with R read ports has {span(sram_mp_area)}×
    the area of R single-port copies (all {len(sram_mp_area)} cases) and {span(sram_mp_power)}×
    the read-only power. For register files, one table with R read ports has
    {span(reg_mp)}× the area of R copies ({len(reg_mp)} cases so far): the flip-flops are shared
    and only the read muxes are replicated.
-4. **wa = int8 entries are exact** (8 + ⌈log2 v⌉ bits), so no partial sum overflows. The adds
+5. **wa = int8 entries are exact** (8 + ⌈log2 v⌉ bits), so no partial sum overflows. The adds
    stay fp16, as specified.
-5. **The converter MAC opt leaves out is small.** A standalone `CW_fp_i2flt` → fp16 is
+6. **The converter MAC opt leaves out is small.** A standalone `CW_fp_i2flt` → fp16 is
    {span(cvt, '.0f')} µm² of logic for the int-wq × int8 products (10 to 16 bits), and an
    exact RTL converter {span(cvt_rtl, '.0f')} µm² where no rounding is needed (≤ 12 bits).
    See [02](../02-int-to-fp-converter-cost/README.md).
-6. **`mul_int2xfp16` is only {float(pe['mul_int2xfp16']['logic_area_um2']):.0f} µm²**: every int2
+7. **`mul_int2xfp16` is only {float(pe['mul_int2xfp16']['logic_area_um2']):.0f} µm²**: every int2
    value converts to fp16 with an all-zero mantissa, so Genus removes the significand
    multiplier and only sign and exponent logic remain. From int3 up there is a real multiplier.
-7. **Ternary tables are large**: {", ".join(f"{entries('ter', v, False):,}" for v in VS)} entries
+8. **Ternary tables are large**: {", ".join(f"{entries('ter', v, False):,}" for v in VS)} entries
    at v = {", ".join(map(str, VS))} (half with symm). Register files are costed only up to
    v = {TER_REG_MAX_V} ({entries('ter', TER_REG_MAX_V, False):,} entries); SRAM at every v.
-8. **fp16 units close timing at ~0 ps slack** at 2 ns (`mul_fp16` {pe['mul_fp16']['slack_ps']} ps,
+9. **fp16 units close timing at ~0 ps slack** at 2 ns (`mul_fp16` {pe['mul_fp16']['slack_ps']} ps,
    `add_fp16` {pe['add_fp16']['slack_ps']} ps), so their area includes upsizing. At a 4 ns clock,
    `add_fp16` is {float(pe['add_fp16@Periodclk4']['logic_area_um2']):.0f} µm² and `mul_fp16`
    {float(pe['mul_fp16@Periodclk4']['logic_area_um2']):.0f} µm²; the tables use the 2 ns numbers.

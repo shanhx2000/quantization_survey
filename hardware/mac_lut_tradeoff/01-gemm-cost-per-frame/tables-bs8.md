@@ -1,7 +1,7 @@
 # 01 — MAC-GEMM vs LUT-GEMM cost, batch size 8
 
-Generated 2026-10-22 by `make_tables.py`. Cost model, missing data and notes:
-[README.md](README.md). **Cell: area (µm²) / read-only power (mW)** at 500 MHz. `#` = no data yet. `*` = upper bound: an SRAM table CACTI cannot model (under 64 bytes, or N = 8, 16), costed as the smallest modelled table of the same width and ports; or register-file power from a 5 ns clock-transition run whose 0.1 ns rerun is not done yet. `—` = not costed: ternary register-file tables above v = 6.
+Generated 2026-10-23 by `make_tables.py`. Cost model, missing data and notes:
+[README.md](README.md). **Cell: area (µm²) / read-only power (mW)** at 500 MHz. `#` = no data yet. `*` = upper bound: an SRAM table CACTI cannot model (under 64 bytes, or N = 8, 16), costed as the smallest modelled table of the same width and ports. `—` = not costed: ternary register-file tables above v = 6.
 LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa = int8; × 8.
 
 ## wq = int1, wa = int8
@@ -41,7 +41,7 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|---|
 | MAC fp16 | 8·v × fp16 mul + 8·v × fp16 add | 28,760 / 83.01 | 43,140 / 124.51 | 50,330 / 145.26 | 57,521 / 166.01 |
-| MAC opt | 8·v × int2×int8 mul + 8·v × fp16 add | 17,555 / 51.93 | 26,333 / 77.90 | 30,722 / 90.88 | 35,111 / 103.87 |
+| MAC opt | 8·v × int2×int8 mul + 8·v × fp16 add | 17,555 / 51.94 | 26,333 / 77.91 | 30,722 / 90.90 | 35,111 / 103.88 |
 | MAC int8 | 8·v × int8 mul + 8·v × int16 add | 5,600 / 9.52 | 8,401 / 14.28 | 9,801 / 16.66 | 11,201 / 19.04 |
 | LUT reg dup, pre-ignore | 2 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 16 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg dup, pre-ignore+symm | 2 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 16 × fp16 add | # / # | # / # | # / # | # / # |
@@ -57,7 +57,7 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|---|
 | MAC fp16 | 8·v × fp16 mul + 8·v × fp16 add | 28,760 / 83.01 | 43,140 / 124.51 | 50,330 / 145.26 | 57,521 / 166.01 |
-| MAC opt | 8·v × int3×int8 mul + 8·v × fp16 add | 17,995 / 52.42 | 26,992 / 78.63 | 31,491 / 91.73 | 35,990 / 104.83 |
+| MAC opt | 8·v × int3×int8 mul + 8·v × fp16 add | 18,003 / 52.45 | 27,004 / 78.68 | 31,505 / 91.79 | 36,006 / 104.90 |
 | MAC int8 | 8·v × int8 mul + 8·v × int16 add | 5,600 / 9.52 | 8,401 / 14.28 | 9,801 / 16.66 | 11,201 / 19.04 |
 | LUT reg dup, pre-ignore | 3 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 24 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg dup, pre-ignore+symm | 3 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 24 × fp16 add | # / # | # / # | # / # | # / # |
@@ -73,7 +73,7 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|---|
 | MAC fp16 | 8·v × fp16 mul + 8·v × fp16 add | 28,760 / 83.01 | 43,140 / 124.51 | 50,330 / 145.26 | 57,521 / 166.01 |
-| MAC opt | 8·v × int4×int8 mul + 8·v × fp16 add | 18,535 / 52.73 | 27,803 / 79.09 | 32,436 / 92.28 | 37,070 / 105.46 |
+| MAC opt | 8·v × int4×int8 mul + 8·v × fp16 add | 18,539 / 52.75 | 27,809 / 79.12 | 32,443 / 92.31 | 37,078 / 105.50 |
 | MAC int8 | 8·v × int8 mul + 8·v × int16 add | 5,600 / 9.52 | 8,401 / 14.28 | 9,801 / 16.66 | 11,201 / 19.04 |
 | LUT reg dup, pre-ignore | 4 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 32 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg dup, pre-ignore+symm | 4 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 32 × fp16 add | # / # | # / # | # / # | # / # |
@@ -89,7 +89,7 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|---|
 | MAC fp16 | 8·v × fp16 mul + 8·v × fp16 add | 28,760 / 83.01 | 43,140 / 124.51 | 50,330 / 145.26 | 57,521 / 166.01 |
-| MAC opt | 8·v × int6×int8 mul + 8·v × fp16 add | 19,817 / 54.83 | 29,726 / 82.24 | 34,680 / 95.95 | 39,635 / 109.66 |
+| MAC opt | 8·v × int6×int8 mul + 8·v × fp16 add | 19,886 / 55.43 | 29,829 / 83.14 | 34,800 / 97.00 | 39,772 / 110.85 |
 | MAC int8 | 8·v × int8 mul + 8·v × int16 add | 5,600 / 9.52 | 8,401 / 14.28 | 9,801 / 16.66 | 11,201 / 19.04 |
 | LUT reg dup, pre-ignore | 6 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 48 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg dup, pre-ignore+symm | 6 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 48 × fp16 add | # / # | # / # | # / # | # / # |
@@ -153,7 +153,7 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|---|
 | MAC fp16 | 8·v × fp16 mul + 8·v × fp16 add | 28,760 / 83.01 | 43,140 / 124.51 | 50,330 / 145.26 | 57,521 / 166.01 |
-| MAC opt | 8·v × int2×fp16 mul + 8·v × fp16 add | 17,696 / 52.15 | 26,545 / 78.22 | 30,969 / 91.26 | 35,393 / 104.29 |
+| MAC opt | 8·v × int2×fp16 mul + 8·v × fp16 add | 17,785 / 52.66 | 26,678 / 78.99 | 31,124 / 92.16 | 35,570 / 105.33 |
 | MAC int8 | 8·v × int8 mul + 8·v × int16 add | 5,600 / 9.52 | 8,401 / 14.28 | 9,801 / 16.66 | 11,201 / 19.04 |
 | LUT reg dup, pre-ignore | 2 × LUT[2^v × 8·16b, 1R] + 16 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg dup, pre-ignore+symm | 2 × LUT[2^v/2 × 8·16b, 1R] + 16 × fp16 add | # / # | # / # | # / # | # / # |
@@ -169,7 +169,7 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|---|
 | MAC fp16 | 8·v × fp16 mul + 8·v × fp16 add | 28,760 / 83.01 | 43,140 / 124.51 | 50,330 / 145.26 | 57,521 / 166.01 |
-| MAC opt | 8·v × int3×fp16 mul + 8·v × fp16 add | 22,015 / 65.64 | 33,022 / 98.46 | 38,526 / 114.87 | 44,029 / 131.29 |
+| MAC opt | 8·v × int3×fp16 mul + 8·v × fp16 add | 22,543 / 67.59 | 33,814 / 101.39 | 39,450 / 118.28 | 45,086 / 135.18 |
 | MAC int8 | 8·v × int8 mul + 8·v × int16 add | 5,600 / 9.52 | 8,401 / 14.28 | 9,801 / 16.66 | 11,201 / 19.04 |
 | LUT reg dup, pre-ignore | 3 × LUT[2^v × 8·16b, 1R] + 24 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg dup, pre-ignore+symm | 3 × LUT[2^v/2 × 8·16b, 1R] + 24 × fp16 add | # / # | # / # | # / # | # / # |
@@ -185,7 +185,7 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|---|
 | MAC fp16 | 8·v × fp16 mul + 8·v × fp16 add | 28,760 / 83.01 | 43,140 / 124.51 | 50,330 / 145.26 | 57,521 / 166.01 |
-| MAC opt | 8·v × int4×fp16 mul + 8·v × fp16 add | 23,680 / 72.83 | 35,520 / 109.24 | 41,440 / 127.45 | 47,360 / 145.65 |
+| MAC opt | 8·v × int4×fp16 mul + 8·v × fp16 add | 23,632 / 70.04 | 35,447 / 105.06 | 41,355 / 122.57 | 47,263 / 140.08 |
 | MAC int8 | 8·v × int8 mul + 8·v × int16 add | 5,600 / 9.52 | 8,401 / 14.28 | 9,801 / 16.66 | 11,201 / 19.04 |
 | LUT reg dup, pre-ignore | 4 × LUT[2^v × 8·16b, 1R] + 32 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg dup, pre-ignore+symm | 4 × LUT[2^v/2 × 8·16b, 1R] + 32 × fp16 add | # / # | # / # | # / # | # / # |
@@ -201,7 +201,7 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|---|
 | MAC fp16 | 8·v × fp16 mul + 8·v × fp16 add | 28,760 / 83.01 | 43,140 / 124.51 | 50,330 / 145.26 | 57,521 / 166.01 |
-| MAC opt | 8·v × int6×fp16 mul + 8·v × fp16 add | 27,236 / 78.78 | 40,854 / 118.17 | 47,663 / 137.87 | 54,472 / 157.56 |
+| MAC opt | 8·v × int6×fp16 mul + 8·v × fp16 add | 26,587 / 79.76 | 39,881 / 119.64 | 46,527 / 139.58 | 53,174 / 159.52 |
 | MAC int8 | 8·v × int8 mul + 8·v × int16 add | 5,600 / 9.52 | 8,401 / 14.28 | 9,801 / 16.66 | 11,201 / 19.04 |
 | LUT reg dup, pre-ignore | 6 × LUT[2^v × 8·16b, 1R] + 48 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg dup, pre-ignore+symm | 6 × LUT[2^v/2 × 8·16b, 1R] + 48 × fp16 add | # / # | # / # | # / # | # / # |
@@ -217,7 +217,7 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|---|
 | MAC fp16 | 8·v × fp16 mul + 8·v × fp16 add | 28,760 / 83.01 | 43,140 / 124.51 | 50,330 / 145.26 | 57,521 / 166.01 |
-| MAC opt | 8·v × int8×fp16 mul + 8·v × fp16 add | 30,034 / 85.91 | 45,052 / 128.87 | 52,560 / 150.35 | 60,069 / 171.83 |
+| MAC opt | 8·v × int8×fp16 mul + 8·v × fp16 add | 29,333 / 84.32 | 43,999 / 126.48 | 51,332 / 147.56 | 58,666 / 168.64 |
 | MAC int8 | 8·v × int8 mul + 8·v × int16 add | 5,600 / 9.52 | 8,401 / 14.28 | 9,801 / 16.66 | 11,201 / 19.04 |
 | LUT reg dup, pre-ignore | 8 × LUT[2^v × 8·16b, 1R] + 64 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg dup, pre-ignore+symm | 8 × LUT[2^v/2 × 8·16b, 1R] + 64 × fp16 add | # / # | # / # | # / # | # / # |

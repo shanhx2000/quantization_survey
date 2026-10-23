@@ -91,6 +91,13 @@ The pipeline register takes 41% off the logic. The converter and the adder come 
 their standalone size; the multiplier is still 2.1× its standalone size. The design still ends
 at 0 ps slack, now on the fp16 add + accumulator loop.
 
+**Clock transition.** Every number above is from the 5 ns clock-transition runs, so the
+single-cycle and pipelined MACs compare at one setting. The 0.1 ns reruns (2026-10-23) move
+designs near 0 ps slack: the pipelined MAC's logic is 949 µm² and `cvt_int16_fp16` 116 µm².
+The single-cycle MAC has no 0.1 ns run in `pe_summary.csv` yet; a pe_sweep rebuild at 0.1 ns
+is pending on cmp00. `mac_area_breakdown.py` follows `pe_summary.csv`'s main run, which is now
+the 0.1 ns one for the pipelined MAC.
+
 ## Method
 
 `mac_area_breakdown.py` reads the per-cell areas from each run's `rpt/<design>.gates.rpt`,

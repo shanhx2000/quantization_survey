@@ -17,6 +17,27 @@ a 2026-10-21 copy of `playground/pe_sweep` and `playground/buffer_sweep`.
 * wa = int8 LUT entries: **8 + ⌈log2 v⌉ bits** per batch row, enough for the exact sum of v
   int8 activations: 10 bits at v = 4, 11 bits at v = 6, 7, 8.
 
+## Assumption revisions (2026-10-23)
+
+The owner revised several modeling assumptions; details are in `mac_lut_status.md`
+(*Assumption revisions*) and `activity_assumptions.md`. Results produced before the revisions
+are **kept unchanged as the old results**: `compare_summary.csv`, `lut_buffer_costs.csv`,
+`pe_summary.csv` and the run folders. The revised results go to new files. Notes marked
+*Revised 2026-10-23* below show where an item changed.
+
+* **Register-file power:** three activity corners per design, read-only, write-only and idle,
+  interpolated for any read rate r (per read port) and write rate w:
+  P(r, w) = P_idle + r·(P_ro − P_idle) + w·(P_wo − P_idle).
+  * The read-only corner holds the write port's data and address.
+  * It is checked against direct 80/20 runs: 3.4–3.8% low.
+  * Output: `buffer_sweep/rf_corner_costs.csv`.
+* **Data and address activity:** random, 0.5 toggles/cycle (confirmed).
+* **MAC:** the product keeps its full precision. MACs whose integer accumulator can't hold the
+  exact product are dropped (`int16 × int16 → int16`, fp → int16).
+* **Names:** `op_{a}x{b}_{out}`, e.g. `mul_int8xint8_int16`, `mul_int4xfp16_fp16`,
+  `mac_int8xint8_fp16`. A `legacy_name` column keeps the names below for `make_tables.py`.
+* **fp8:** IEEE-style E4M3, unchanged (confirmed).
+
 ## What the tables need
 
 * Frames: wq ∈ {int1, ter (ternary), int2, int3, int4, int6, int8} × wa ∈ {int8, fp16};
@@ -33,6 +54,9 @@ a 2026-10-21 copy of `playground/pe_sweep` and `playground/buffer_sweep`.
   {2, 3, 4, 6, 8} read ports** (int1 and ter read once).
 * **LUT power must be read-only**: the table is written once (precompute, ignored) and then
   only read. Every buffer_sweep number so far is at 80% read / 20% write.
+  > *Revised 2026-10-23:* read-only power is the `ro` corner of `rf_corner_costs.csv` (write
+  > port idle). The earlier read-only runs (`ro` profile, `lut_buffer_costs.csv`) left the write
+  > data toggling and overstate it 2–4×; they are kept as old results only.
 
 Today only W = 16 with one read port exists: register file N = 4 … 256 (its area is used;
 its power is not, being 80/20), CACTI N = 32 … 256.
@@ -46,6 +70,9 @@ its power is not, being 80/20), CACTI N = 32 … 256.
    `set_clock_transition 0.05` instead of 5 ns in `my.constraints.tcl`): a buffer is mostly
    flip-flops, and on `buffer_n4` that setting alone cut `u_buf` power 0.375 → 0.153 mW.
    Report both, so the tables can say which one they use.
+   > *Revised 2026-10-23:* holding only `we` at 0 still left `wdata` random every cycle, which
+   > a read-only table never sees. The read-only corner now also holds the write data and
+   > address. Clock transition: the owner chose 0.1 ns for the flow (2026-10-22).
 2. **10- and 11-bit register files, 1RW, read-only power** (wa = int8, bs = 1):
    W = 10: N = 8, 16, 64, 128; W = 11: N = 32, 64, 128, 256, 512, 1024 (10 designs).
    `scripts/gen_rtl.py` hard-codes `.WIDTH(16)`; make the width a parameter and name the
@@ -66,6 +93,9 @@ its power is not, being 80/20), CACTI N = 32 … 256.
      `CW_fp_mult`; this is an upper bound. A direct 11-bit-significand × wq-bit-int multiplier
      with one normalize/round would be tighter.
 
+   > *Revised 2026-10-23:* new names `op_{a}x{b}_{out}`: `mul_int<wq>xint8_int<wq+8>`,
+   > `mul_int<wq>xfp16_fp16`. The names above stay in a `legacy_name` column.
+
 ## Priority 2 — multi-port tables and wider entries (bs > 1)
 
 6. **Multi-read-port register file**: one write port + R read ports, R ∈ {2, 3, 4, 6, 8}, new
@@ -73,6 +103,8 @@ its power is not, being 80/20), CACTI N = 32 … 256.
    weights read more than once, so N ≤ 256. Start with the bs = 1 widths: W = 10: N = 8, 16;
    W = 11: N = 32 … 256; W = 16: N = 8 … 256 → 12 tables × 5 port counts = 60 designs.
    Then the wider widths of item 7.
+   > *Revised 2026-10-23:* read-only power from the `ro` corner (all R ports reading, write
+   > port idle); write-only and idle corners are reported too.
 7. **Wider register files, 1RW**: W ∈ {20, 22, 32, 40, 44, 64, 80, 88, 128}, the N listed per
    W in the README's *Missing data* table (54 designs; ternary sizes stop at 1,024). After a
    few widths, check whether area is linear in W; if it is, whether to run the rest is the
@@ -93,6 +125,11 @@ its power is not, being 80/20), CACTI N = 32 … 256.
    so an RTL leading-zero-count + shift without rounding is also worth one run.
 10. **Pipelined MAC**: `mac_mulint8_addfp16` with a register after the converter, to measure
     how much of the 4.1× multiplier growth inside the MAC goes away.
+
+    > *Revised 2026-10-23 (items 9–10):* the MAC product now keeps its full precision. In
+    > `mac_mulint8_addfp16` the 16-bit int product was rounded to fp16 before the add. How
+    > int × int → fp MACs are rebuilt is still open, so the converter analysis may change.
+    > The old MAC rows are kept.
 11. *Optional:* `add_fp16` and `mul_fp16` at a relaxed clock (e.g. 4 ns). They close at
     0–1 ps slack, so their 2 ns area includes upsizing, and every MAC and LUT row uses them.
 12. *Optional:* the LUT precompute cost, which the tables ignore by spec ("pre-ignore"): a
@@ -104,3 +141,7 @@ Add `W` (bits) and `R` columns and a read-only power column (`syn_ro_total_mW`,
 `cacti_ro_total_mW`) to `compare_summary.csv`, or write a new CSV with those columns. Copy it
 into `quantization_survey/hardware/mac_lut_tradeoff/results/`. `make_tables.py` currently
 assumes W = 16 and R = 1 for every buffer row, so it needs a small update to read them.
+
+> *Revised 2026-10-23:* revised register-file power is in `buffer_sweep/rf_corner_costs.csv`
+> (corners plus per-access energies). `compare_summary.csv`, `lut_buffer_costs.csv` and
+> `pe_summary.csv` stay frozen as the old results.
