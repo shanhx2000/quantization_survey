@@ -28,11 +28,21 @@ Revised results go to new files.
 | 5 | Design names | `mul_int8`, `mac_mulint8_addfp16`, … | `op_{a}x{b}_{out}`, e.g. `mul_int8xint8_int16`, `mac_int8xint8_fp16` (owner). A `legacy_name` column keeps the old names, which `make_tables.py` reads |
 | 6 | fp8 format | IEEE-style E4M3 (max 240, subnormals flushed) | Unchanged, **confirmed** |
 
-Still open: the CACTI configuration (EVA's 360 K / ECC on, or 25 °C / ECC off); the structure
-of int × int → fp MACs; FP-accumulator combos whose product range can overflow the
-accumulator; whether to delete the 4 ns rows (kept so far).
+Later the same day the owner also decided:
 
-### Revised register-file power (in progress)
+| # | Assumption | Before (old results) | Revised |
+|---|---|---|---|
+| 7 | int × int → fp MAC | (same structure) | Confirmed: exact int product, converted once to the accumulator format, then added there, e.g. int8 × int8 → int16 → fp16 → fp16 + fp16 → fp16 |
+| 8 | fp × fp MAC, wider accumulator | Product rounded to the input format, then widened | a and b widened exactly, product formed in the accumulator format (exact for fp8 → fp16 / fp32 and fp16 → fp32) |
+| 9 | FP accumulators narrower than the operands | Built | Dropped: `int16 × int16 → fp16`, `fp32 × fp32 → fp16` |
+| 10 | Counters | Count every cycle (my choice) | Not needed; left out of v2 |
+| 11 | CACTI | EVA config: 360 K, ECC on | ECC on; temperature matched to the synthesis library's 25 °C → 300 K, CACTI's closest allowed setting |
+| 12 | 4 ns runs | `add_fp16`, `mul_fp16` at 4 ns | Not redone (500 MHz only); old rows kept |
+
+Still open: the write-corner measurement boundary (with or without input nets, below) and
+item 7.
+
+### Revised register-file power (done 2026-10-23 13:21)
 
 * **Corners** (`buffer_sweep/syn/synth/script/activity.tcl`):
   * `roq`: every read port reads every cycle; write data and address held.
@@ -57,15 +67,48 @@ accumulator; whether to delete the 4 ns rows (kept so far).
 
   Power in mW for `u_buf`. The old `rw` numbers are 25–100% higher than the direct run,
   because their write data changed every cycle.
-* **Queue `rf_corners`** (`rf_corners.sh`, log `logs/rf_corners.log`, started 10-23 12:09):
-  1. synthesize at 0.1 ns the 21 designs of the 80/20 sweep that only had 5 ns netlists;
-  2. re-analyze all 126 register files with a 0.1 ns netlist under the three corners.
+* **Queue `rf_corners`** (`rf_corners.sh`, log `logs/rf_corners.log`, 12:09–13:21):
+  1. synthesized at 0.1 ns the 21 designs of the 80/20 sweep that only had 5 ns netlists;
+  2. re-analyzed all 126 register files with a 0.1 ns netlist under the three corners.
 
-  Reports go under `<run>/rpt/power_corners/<corner>/`. The remaining item 7 widths have no
-  netlist (not synthesized).
-* **Result file:** `buffer_sweep/rf_corner_costs.csv` (`python buffer_sweep/scripts/collect_corners.py`).
-  It has area, corner powers (total, static, flip-flop / logic / clock-gate), `E_read_pJ_per_port`,
-  `E_write_pJ` and `P_r0.8_w0.2_mW`.
+  Reports are under `<run>/rpt/power_corners/<corner>/`. The remaining item 7 widths have no
+  netlist (not synthesized). All 126 are ok and PASS, min slack 501 ps.
+* **Result files** (`python buffer_sweep/scripts/collect_corners.py`):
+  * `buffer_sweep/rf_corner_costs.csv`: register files only. Columns: area; per corner, total,
+    static and flip-flop / logic / clock-gate power, `*_input_nets_mW` and
+    `*_incl_inputs_mW`; `E_read_pJ_per_port`, `E_write_pJ` and `P_r0.8_w0.2_mW`, each also
+    as `*_incl_inputs`.
+  * `buffer_sweep/buffer_costs_v2.csv`: the same register files plus 273 CACTI SRAM tables in
+    the same corner columns.
+* **CACTI, revised:** ECC on, temperature matched to the synthesis library (TT 0.9 V, 25 °C;
+  owner). CACTI only accepts 300–400 K in 10 K steps, so it runs at **300 K** (27 °C), the
+  closest setting. Files: `cacti_exp/lut_cacti_grid_300K.csv` and
+  `cacti_exp/buffer_cacti_summary_300K.csv` (`--temp 300`). The old 360 K files are
+  unchanged (checked by md5). At 300 K, area and access energies are identical, leakage is
+  0.31–0.35×, and read-only SRAM power is 0.37–0.93× of the 360 K value.
+* **Write corner, measurement boundary (decision open):** in the write corner `wdata`
+  toggles every cycle and fans out to all N entries.
+  * Up to N = 128 the switching power of those nets is charged to the wrapper's input
+    flip-flops, outside `u_buf`. From N = 256 Genus buffers them inside `u_buf`.
+  * Counted in `u_buf` only, the write power jumps 2.75× at N = 256 (16-bit 1RW:
+    1.18 → 3.24 mW; E_write 2.0 → 5.8 pJ).
+  * With the input nets added (`*_incl_inputs`), it grows smoothly (1.81 → 3.30 mW;
+    E_write 3.3 → 5.9 pJ).
+  * Read-only power changes little: only the address nets toggle, 0.01–0.07 mW, ≤ ~10% at the
+    smallest N. Idle has no input-net power.
+  * Both are in the CSVs. Which one is primary is the owner's call.
+* **Item 7, linearity rechecked on the corner data:**
+  * Area is still linear in W (within 1.8%).
+  * Power is **not** linear in W. The flow's `lp_clock_gating_max_flops 16` (original
+    `syn_RISC.scr` setting) gives each entry ⌈W/16⌉ clock gates. Every gate's clock pin
+    toggles each cycle, even idle, at 1.15 µW per gate (constant over all N and W). So idle
+    power steps at W = 16 → 20 and 32 → 64. Straight-line fits miss by up to 13.6% (read-only)
+    and 32% (idle).
+  * With a gate-count term, P = a + b·W + c·⌈W/16⌉ per N fits W ≤ 32 within 3.1%. It
+    predicts the W = 64 runs within 3.4% (read-only), 2.1% (write, incl. inputs) and 3.3%
+    (idle); area within 0.8%.
+  * The remaining widths (W = 40, 44 → 3 gates per entry; 80, 88 → 5–6; 128 → 8) can be
+    predicted this way or synthesized.
 * **Bug fixed in `activity.tcl`:** `array set ACT_OVERRIDE` never cleared earlier entries, so
   profiles leaked into each other when one Genus session sourced the file several times. Only
   the first re-analysis attempt was affected (since rerun). Synthesis runs source the file once
@@ -197,10 +240,18 @@ pe designs only have 5 ns runs.
 
 * ~~Rerun the read-only register files with `roq`~~: replaced by the corner re-analysis
   (2026-10-23, queue `rf_corners`), which needs no re-synthesis.
-* **pe_sweep rebuild** under the revised naming and MAC precision (assumption revisions 4–5):
-  waiting for the open MAC questions. All rebuilt pe designs will run at 0.1 ns, which also
-  settles the 5 ns-only MAC baselines.
-* **CACTI configuration**, the **4 ns rows** (kept), and **item 7**: extrapolate
-  W = 40, 44, 80, 88, 128, or synthesize those 28 designs.
+* **pe_sweep rebuild, `playground/pe_sweep_v2`** (owner's answers, 2026-10-23):
+  * int × int → fp MACs keep the chain int8 × int8 → int16 → fp16 → fp16 + fp16;
+  * fp × fp MACs with a wider accumulator widen a and b exactly and multiply in the
+    accumulator format;
+  * dropped: `int16 × int16 → int16`, fp → int16, `int16 × int16 → fp16`,
+    `fp32 × fp32 → fp16`, counters, and the 4 ns runs (the old rows stay in `pe_summary.csv`).
+
+  43 designs, all PASS their RTL tests. Synthesis queue `pe_v2` (`pe_v2_queue.sh`, log
+  `logs/pe_v2_queue.log`), started 13:21, all at 0.1 ns. Results →
+  `pe_sweep_v2/pe_summary_v2.csv`, with `legacy_name`.
+* **Write-corner boundary:** primary power with or without the input nets (see above).
+* **Item 7:** predict W = 40, 44, 80, 88, 128 with the gate-count model, or synthesize those
+  28 designs.
 * **Not done (optional in the todo):** a direct 11-bit × wq-bit multiplier for int × fp16
   (item 5, tighter than i2flt + `CW_fp_mult`); the LUT precompute builder (item 12).

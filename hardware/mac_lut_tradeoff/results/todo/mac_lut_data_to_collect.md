@@ -32,8 +32,17 @@ are **kept unchanged as the old results**: `compare_summary.csv`, `lut_buffer_co
   * It is checked against direct 80/20 runs: 3.4–3.8% low.
   * Output: `buffer_sweep/rf_corner_costs.csv`.
 * **Data and address activity:** random, 0.5 toggles/cycle (confirmed).
-* **MAC:** the product keeps its full precision. MACs whose integer accumulator can't hold the
-  exact product are dropped (`int16 × int16 → int16`, fp → int16).
+* **MAC:** the product keeps its full precision.
+  * int × int → fp: exact product, converted once to the accumulator format, e.g.
+    int8 × int8 → int16 → fp16 → fp16 + fp16.
+  * fp × fp into a wider accumulator: a and b are widened exactly, and the product is formed
+    in the accumulator format.
+  * Dropped: MACs whose integer accumulator can't hold the exact product
+    (`int16 × int16 → int16`, fp → int16), plus `int16 × int16 → fp16` and
+    `fp32 × fp32 → fp16`.
+  * Rebuilt in `playground/pe_sweep_v2` (all at 0.1 ns). `pe_sweep` keeps the old designs.
+* **CACTI:** ECC on, temperature matched to the synthesis library (25 °C). CACTI's closest
+  allowed setting is 300 K. Files: `cacti_exp/*_300K.csv`.
 * **Names:** `op_{a}x{b}_{out}`, e.g. `mul_int8xint8_int16`, `mul_int4xfp16_fp16`,
   `mac_int8xint8_fp16`. A `legacy_name` column keeps the names below for `make_tables.py`.
 * **fp8:** IEEE-style E4M3, unchanged (confirmed).

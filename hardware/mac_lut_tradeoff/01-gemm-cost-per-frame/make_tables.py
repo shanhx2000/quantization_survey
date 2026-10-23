@@ -15,24 +15,25 @@ VS = [4, 6, 7, 8]
 BS = [1, 2, 4, 8]
 F_GHZ = 0.5  # both sweeps ran at 500 MHz
 TER_REG_MAX_V = 6  # owner, 2026-10-22: ternary register-file tables only up to v = 6
-REG_CT = '0.1'  # clock transition (ns) of the flow since 2026-10-22 (micro26rcf/syn/synth/CHANGELOG.md)
 LUT_RE = r'(reg|sram)_lut_n(\d+)_w(\d+)_r(\d+)'
+LUT_ORG = r'1rw|1w\d+r'  # one read port, or one write + R read ports; other port types are 80/20-only
 STATUS = '../results/todo/mac_lut_status.md'
 
 pe = {r['design']: r for r in csv.DictReader(open(f'{RES}/pe_sweep/pe_summary.csv'))}
-reg, sram = {}, {}  # (N, W bits, read ports) -> row of lut_buffer_costs.csv
-for r in csv.DictReader(open(f'{RES}/buffer_sweep/lut_buffer_costs.csv')):
+# Tables from the revised buffer results (cmp00, 2026-10-23): register files at 0.1 ns clock
+# transition and CACTI SRAM at 300 K, both with power in activity corners. A LUT is read-only,
+# so its power is the read-only corner (`ro_total_mW`: every read port reads every cycle, the
+# write port idle, measured instance only). The older lut_buffer_costs.csv overstated
+# register-file read-only power 2-4x and is not used.
+reg, sram = {}, {}  # (N, W bits, read ports) -> row of buffer_costs_v2.csv
+for r in csv.DictReader(open(f'{RES}/buffer_sweep/buffer_costs_v2.csv')):
+    if not re.fullmatch(LUT_ORG, r['org']):
+        continue
     key = (int(r['N']), int(r['W']), int(r['R']))
     if r['model'] == 'sram':
         sram[key] = r
-    elif r['status'] == 'ok' and r['clk_transition_ns'] == REG_CT:
+    elif r['status'] == 'ok':
         reg[key] = r
-# register-file power: the read-only corner of the power-only re-analysis (owner, 2026-10-23).
-# The "ro" power in lut_buffer_costs.csv kept the idle write port's data toggling and
-# overstates read-only power 2-4x, so it is not used.
-corner = {(int(r['N']), int(r['W']), int(r['R'])): r
-          for r in csv.DictReader(open(f'{RES}/buffer_sweep/rf_corner_costs.csv'))
-          if r['org'] == '1rw' or re.fullmatch(r'1w\d+r', r['org'])}
 
 
 def lut(kind, n, w, r):
@@ -40,22 +41,21 @@ def lut(kind, n, w, r):
     table read through r ports every cycle; area and power are None when there is no data."""
     key = (n, w, r)
     if kind == 'reg':
-        row, c = reg.get(key), corner.get(key)
+        row = reg.get(key)
         if not row:
             return None, None, False, False, ''
-        return (float(row['area_um2']), float(c['ro_total_mW']) if c else None, False, False,
-                f"`{row['design']}`, {row['clk_transition_ns']} ns clock transition"
-                + ('; power: read-only corner' if c else '; read-only corner pending'))
-    row, bound, src = sram.get(key), False, f'CACTI, {w // 8} B/entry'
-    if row and row['status'] in ('below 64 B', 'failed'):
-        # CACTI cannot model it: take the smallest modelled table of the same width and ports
-        ok = sorted(m for (m, ww, rr), s in sram.items() if (ww, rr) == (w, r) and m > n and s['status'] == 'ok')
-        if not ok:
-            return None, None, False, False, ''
-        row, bound, src = sram[(ok[0], w, r)], True, f'{src}; N = {ok[0]} stands in'
-    elif not row or row['status'] != 'ok':
+        return (float(row['area_um2']), float(row['ro_total_mW']), False, False,
+                f"`{row['design']}`, {row['clk_transition_ns']} ns clock transition")
+    row, bound = sram.get(key), False
+    modelled = sorted(m for (m, ww, rr), s in sram.items() if (ww, rr) == (w, r) and s['area_um2'])
+    if (not row or not row['area_um2']) and modelled and n < modelled[0]:
+        # below what CACTI can model (under 64 bytes, or N = 8, 16): the smallest modelled table
+        # of the same width and ports stands in, as an upper bound
+        row, bound = sram[(modelled[0], w, r)], True
+    elif not row or not row['area_um2']:
         return None, None, False, False, ''
-    return float(row['area_um2']), float(row['cacti_ro_total_mW']), bound, bound, src
+    src = f"CACTI {float(row['temperature_K']):.0f} K, {w // 8} B/entry" + (f"; N = {row['N']} stands in" if bound else '')
+    return float(row['area_um2']), float(row['ro_total_mW']), bound, bound, src
 
 
 def unit(name):
@@ -135,9 +135,9 @@ def fmt(val, spec, bound):
     return '#' if val is None else f'{val:{spec}}' + ('*' if bound else '')
 
 
-def cell(parts, label):
-    if parts is None:
-        return '—'
+def cost(parts, label=''):
+    """(area um2, power mW, area bound?, power bound?) of a list of (count, primitive); area or
+    power is None when a primitive has no number."""
     area = power = 0.0
     abound = pbound = False
     for n, p in parts:
@@ -149,6 +149,13 @@ def cell(parts, label):
                 missing.setdefault((p, metric), set()).add(label)
         area = None if a is None or area is None else area + n * a
         power = None if w is None or power is None else power + n * w
+    return area, power, abound, pbound
+
+
+def cell(parts, label):
+    if parts is None:
+        return '—'
+    area, power, abound, pbound = cost(parts, label)
     return f"{fmt(area, ',.0f', abound)} / {fmt(power, '.2f', pbound)}"
 
 
@@ -168,9 +175,8 @@ def reason(p):
     family = f"{'Reg' if m[1] == 'reg' else 'SRAM'} LUT, {'1 read port' if m[4] == '1' else 'wq read ports'}"
     if m[1] == 'sram':
         return family, 'not in the CACTI grid'
-    if (int(m[2]), int(m[3]), int(m[4])) in reg:
-        return family, f'read-only corner not computed yet (queue `rf_corners`, [`mac_lut_status.md`]({STATUS}))'
-    return family, f'not synthesized (W = 40, 44, 80, 88, 128 wait for an owner decision; [`mac_lut_status.md`]({STATUS}))'
+    return family, ('not synthesized: W = 40, 44, 80, 88, 128 wait for an owner decision, predict '
+                    f'with the gate-count model or synthesize ([`mac_lut_status.md`]({STATUS}))')
 
 
 def configs(prims):
@@ -218,12 +224,17 @@ def span(vals, spec='.2f'):
     return f'{min(vals):{spec}}–{max(vals):{spec}}'
 
 
-# multi-port vs copies, where both are in the snapshot
-reg_mp = [float(reg[k]['area_um2']) / (k[2] * float(reg[(k[0], k[1], 1)]['area_um2']))
-          for k in reg if k[2] > 1 and (k[0], k[1], 1) in reg]
-sram_mp_area = [float(r['area_vs_R_copies']) for r in sram.values() if r['area_vs_R_copies']]
-sram_mp_power = [float(r['power_vs_R_copies']) for r in sram.values() if r['power_vs_R_copies']]
+# multi-port vs copies: one table with R read ports / R single-port tables, same N and W
+def vs_copies(tables, col):
+    return [float(tables[k][col]) / (k[2] * float(tables[(k[0], k[1], 1)][col])) for k in tables
+            if k[2] > 1 and (k[0], k[1], 1) in tables and tables[k][col] and tables[(k[0], k[1], 1)][col]]
+
+
+reg_mp, reg_mp_power = vs_copies(reg, 'area_um2'), vs_copies(reg, 'ro_total_mW')
+sram_mp_area, sram_mp_power = vs_copies(sram, 'area_um2'), vs_copies(sram, 'ro_total_mW')
 pe_ct = sorted({pe[d]['clk_transition_ns'] for d in ('add_fp16', 'mul_fp16', 'mul_int8', 'add_int16')})
+reg_ct = sorted({r['clk_transition_ns'] for r in reg.values()})
+sram_k = sorted({f"{float(r['temperature_K']):.0f}" for r in sram.values()})
 cvt = [float(pe[f'cvt_int{i}_fp16']['logic_area_um2']) for i in (10, 11, 12, 14, 16) if f'cvt_int{i}_fp16' in pe]
 cvt_rtl = [float(pe[f'cvt_int{i}_fp16_rtl']['logic_area_um2']) for i in (10, 11, 12) if f'cvt_int{i}_fp16_rtl' in pe]
 
@@ -231,10 +242,10 @@ today = datetime.date.today()
 LEGEND = ('`#` = no data yet. `*` = upper bound: an SRAM table CACTI cannot model (under 64 bytes, '
           'or N = 8, 16), costed as the smallest modelled table of the same width and ports. '
           f'`—` = not costed: ternary register-file tables above v = {TER_REG_MAX_V}.')
+pages = {}  # file name -> text; written only when run as a script, so figures can import this
 for bs in BS:
     tables = '\n\n'.join(f'## wq = {wq}, wa = {wa}\n\n{frame_table(wq, wa, bs)}' for wa in WA for wq in WQ)
-    with open(os.path.join(HERE, f'tables-bs{bs}.md'), 'w') as f:
-        f.write(f"""# 01 — MAC-GEMM vs LUT-GEMM cost, batch size {bs}
+    pages[f'tables-bs{bs}.md'] = (f"""# 01 — MAC-GEMM vs LUT-GEMM cost, batch size {bs}
 
 Generated {today} by `make_tables.py`. Cost model, missing data and notes:
 [README.md](README.md). **Cell: area (µm²) / read-only power (mW)** at 500 MHz. {LEGEND}
@@ -243,7 +254,7 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 {tables}
 """)
 
-links = ' · '.join(f'[bs = {bs}](tables-bs{bs}.md)' for bs in BS)
+links =' · '.join(f'[bs = {bs}](tables-bs{bs}.md)' for bs in BS)
 out = f"""# 01 — MAC-GEMM vs LUT-GEMM cost per quantization frame
 
 Generated {today} by `make_tables.py` from [`../results/`](../results/) (the cmp00 sweep
@@ -304,10 +315,11 @@ The data is being collected on cmp00; the snapshot of its plan and status is in
 * **Area** = Σ count × unit area. Adders, multipliers: logic-only area of `u_core` from
   pe_sweep. Register file: the whole `u_buf` (flops, address decode, read muxes, clock gating).
   SRAM: CACTI area.
-* **Power** = Σ count × unit power, every unit busy every cycle. **LUT power is read-only**:
-  register files, the read-only corner (every read port reads every cycle, write port idle
-  with its data and address held) of a power-only Genus re-analysis of the {REG_CT} ns
-  netlist; SRAM, CACTI leakage + R × 500 MHz × E_read.
+* **Power** = Σ count × unit power, every unit busy every cycle. **LUT power is read-only**,
+  the read-only corner of `buffer_costs_v2.csv`: every read port reads every cycle, the write
+  port is idle with its data and address held. Register files: a power-only Genus
+  re-analysis of the {"/".join(reg_ct)} ns netlist, measured instance only. SRAM: CACTI at
+  {"/".join(sram_k)} K, leakage + R × 500 MHz × E_read.
 * **Not counted:** table precompute, the sign flip, the 2^b weighting between bit-planes, and
   any int → fp conversion.
 
@@ -319,25 +331,24 @@ Only primitives with at least one number; the rest are in *Missing data*.
 
 ## Notes
 
-1. **Register-file power is mostly `#` in this snapshot.** On 2026-10-23 the cmp00 agent
-   found that the earlier read-only runs left the idle write port's data toggling every
-   cycle, which overstates read-only power 2–4×; those numbers are no longer used. The
-   corrected read-only corner is computed by a power-only re-analysis of every {REG_CT} ns
-   netlist (queue `rf_corners`), and had reached {len(corner)} tables at this sync. Areas
-   are final: every register file has a {REG_CT} ns run, and activity doesn't change the
-   netlist.
+1. **LUT numbers are the revised (2026-10-23) results.** The earlier read-only register-file
+   runs left the idle write port's data toggling every cycle and overstated read-only power
+   2–4×; they are no longer used. CACTI moved from 360 K to {"/".join(sram_k)} K (the owner's
+   choice, matched to the synthesis library's 25 °C): same area and access energy, 0.31–0.35×
+   the leakage. Still open on cmp00: whether power includes the input nets that fan out into
+   the table (for the read-only corner only the address nets, ≤ ~10% at the smallest N).
 2. **The baselines are at a different clock transition from the rest.** `add_fp16`,
    `mul_fp16`, `mul_int8` and `add_int16` are {"/".join(pe_ct)} ns runs; the register files
-   and the pe designs added on 2026-10-22 are {REG_CT} ns. Logic area moves by up to ±10%
-   between the two for designs at ~0 ps slack. A pe_sweep rebuild at {REG_CT} ns (with
-   the owner's revised MAC precision and names) is pending on cmp00.
+   and the pe designs added on 2026-10-22 are {"/".join(reg_ct)} ns. Logic area moves by up to
+   ±10% between the two for designs at ~0 ps slack. The pe_sweep rebuild at 0.1 ns with the
+   owner's revised MAC precision and names (`pe_sweep_v2`) was running at this sync.
 3. **CACTI cannot model N = 8 or 16 at any width** ("no valid data array organizations
    found"), nor tables under 64 bytes. Those cells use the smallest modelled table (`*`).
 4. **Multi-port vs copies.** In CACTI, one table with R read ports has {span(sram_mp_area)}×
-   the area of R single-port copies (all {len(sram_mp_area)} cases) and {span(sram_mp_power)}×
-   the read-only power. For register files, one table with R read ports has
-   {span(reg_mp)}× the area of R copies ({len(reg_mp)} cases so far): the flip-flops are shared
-   and only the read muxes are replicated.
+   the area of R single-port copies ({len(sram_mp_area)} cases) and {span(sram_mp_power)}× the
+   read-only power. For register files it is the other way round: {span(reg_mp)}× the area and
+   {span(reg_mp_power)}× the read-only power of R copies ({len(reg_mp)} cases), because the
+   flip-flops are shared and only the read muxes are replicated.
 5. **wa = int8 entries are exact** (8 + ⌈log2 v⌉ bits), so no partial sum overflows. The adds
    stay fp16, as specified.
 6. **The converter MAC opt leaves out is small.** A standalone `CW_fp_i2flt` → fp16 is
@@ -356,6 +367,10 @@ Only primitives with at least one number; the rest are in *Missing data*.
    {float(pe['mul_fp16@Periodclk4']['logic_area_um2']):.0f} µm²; the tables use the 2 ns numbers.
 """
 
-with open(os.path.join(HERE, 'README.md'), 'w') as f:
-    f.write(out)
-print(f'wrote README.md and {len(BS)} table files; {len(missing)} missing (primitive, metric) pairs')
+pages['README.md'] = out
+
+if __name__ == '__main__':
+    for name, text in pages.items():
+        with open(os.path.join(HERE, name), 'w') as f:
+            f.write(text)
+    print(f'wrote {", ".join(pages)}; {len(missing)} missing (primitive, metric) pairs')

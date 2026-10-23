@@ -15,10 +15,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | # / # | # / # | # / # | # / # |
-| LUT SRAM dup, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 4,947* / 12.75* | 5,502 / 13.04 | 6,334 / 13.48 | 8,099 / 14.32 |
-| LUT SRAM dup, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 4,947* / 12.75* | 5,076 / 12.82 | 5,502 / 13.04 | 6,334 / 13.48 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 4,947* / 12.75* | 5,502 / 13.04 | 6,334 / 13.48 | 8,099 / 14.32 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 4,947* / 12.75* | 5,076 / 12.82 | 5,502 / 13.04 | 6,334 / 13.48 |
+| LUT SRAM dup, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 4,947* / 12.62* | 5,502 / 12.76 | 6,334 / 12.96 | 8,099 / 13.29 |
+| LUT SRAM dup, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 4,947* / 12.62* | 5,076 / 12.67 | 5,502 / 12.76 | 6,334 / 12.96 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 4,947* / 12.62* | 5,502 / 12.76 | 6,334 / 12.96 | 8,099 / 13.29 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 4,947* / 12.62* | 5,076 / 12.67 | 5,502 / 12.76 | 6,334 / 12.96 |
 
 ## wq = ter, wa = int8
 
@@ -31,10 +31,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 1 × LUT[2^⌈log2 ⌊3^v/2⌋⌉ × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | # / # | # / # | — | — |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^⌈log2 3^v⌉ × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | # / # | # / # | — | — |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^⌈log2 ⌊3^v/2⌋⌉ × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | # / # | # / # | — | — |
-| LUT SRAM dup, pre-ignore | 1 × LUT[2^⌈log2 3^v⌉ × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 6,077 / 13.36 | 19,209 / 20.48 | 71,287 / 39.54 | 144,895 / 63.78 |
-| LUT SRAM dup, pre-ignore+symm | 1 × LUT[2^⌈log2 ⌊3^v/2⌋⌉ × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 5,331 / 12.95 | 12,281 / 16.68 | 33,561 / 27.74 | 71,287 / 39.54 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^⌈log2 3^v⌉ × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 6,077 / 13.36 | 19,209 / 20.48 | 71,287 / 39.54 | 144,895 / 63.78 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^⌈log2 ⌊3^v/2⌋⌉ × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 5,331 / 12.95 | 12,281 / 16.68 | 33,561 / 27.74 | 71,287 / 39.54 |
+| LUT SRAM dup, pre-ignore | 1 × LUT[2^⌈log2 3^v⌉ × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 6,077 / 12.88 | 19,209 / 15.88 | 71,287 / 23.88 | 144,895 / 32.47 |
+| LUT SRAM dup, pre-ignore+symm | 1 × LUT[2^⌈log2 ⌊3^v/2⌋⌉ × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 5,331 / 12.70 | 12,281 / 14.35 | 33,561 / 19.09 | 71,287 / 23.88 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^⌈log2 3^v⌉ × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 6,077 / 12.88 | 19,209 / 15.88 | 71,287 / 23.88 | 144,895 / 32.47 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^⌈log2 ⌊3^v/2⌋⌉ × 8·(8+⌈log2 v⌉)b, 1R] + 8 × fp16 add | 5,331 / 12.70 | 12,281 / 14.35 | 33,561 / 19.09 | 71,287 / 23.88 |
 
 ## wq = int2, wa = int8
 
@@ -47,10 +47,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 2 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 16 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 2R] + 16 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 2R] + 16 × fp16 add | # / # | # / # | # / # | # / # |
-| LUT SRAM dup, pre-ignore | 2 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 16 × fp16 add | 9,895* / 25.50* | 11,004 / 26.08 | 12,668 / 26.96 | 16,198 / 28.63 |
-| LUT SRAM dup, pre-ignore+symm | 2 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 16 × fp16 add | 9,895* / 25.50* | 10,151 / 25.63 | 11,004 / 26.08 | 12,668 / 26.96 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 2R] + 16 × fp16 add | 11,979* / 25.79* | 14,101 / 26.40 | 17,162 / 27.31 | 23,206 / 28.99 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 2R] + 16 × fp16 add | 11,979* / 25.79* | 12,556 / 25.98 | 14,101 / 26.40 | 17,162 / 27.31 |
+| LUT SRAM dup, pre-ignore | 2 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 16 × fp16 add | 9,895* / 25.24* | 11,004 / 25.53 | 12,668 / 25.91 | 16,198 / 26.58 |
+| LUT SRAM dup, pre-ignore+symm | 2 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 16 × fp16 add | 9,895* / 25.24* | 10,151 / 25.34 | 11,004 / 25.53 | 12,668 / 25.91 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 2R] + 16 × fp16 add | 11,979* / 25.53* | 14,101 / 25.89 | 17,162 / 26.33 | 23,206 / 27.09 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 2R] + 16 × fp16 add | 11,979* / 25.53* | 12,556 / 25.69 | 14,101 / 25.89 | 17,162 / 26.33 |
 
 ## wq = int3, wa = int8
 
@@ -63,10 +63,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 3 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 24 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 3R] + 24 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 3R] + 24 × fp16 add | # / # | # / # | # / # | # / # |
-| LUT SRAM dup, pre-ignore | 3 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 24 × fp16 add | 14,842* / 38.26* | 16,506 / 39.12 | 19,002 / 40.44 | 24,297 / 42.95 |
-| LUT SRAM dup, pre-ignore+symm | 3 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 24 × fp16 add | 14,842* / 38.26* | 15,227 / 38.45 | 16,506 / 39.12 | 19,002 / 40.44 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 3R] + 24 × fp16 add | 18,231* / 38.79* | 21,474 / 39.66 | 26,046 / 40.83 | 35,097 / 42.98 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 3R] + 24 × fp16 add | 18,231* / 38.79* | 19,151 / 39.11 | 21,474 / 39.66 | 26,046 / 40.83 |
+| LUT SRAM dup, pre-ignore | 3 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 24 × fp16 add | 14,842* / 37.86* | 16,506 / 38.29 | 19,002 / 38.87 | 24,297 / 39.88 |
+| LUT SRAM dup, pre-ignore+symm | 3 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 24 × fp16 add | 14,842* / 37.86* | 15,227 / 38.01 | 16,506 / 38.29 | 19,002 / 38.87 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 3R] + 24 × fp16 add | 18,231* / 38.48* | 21,474 / 39.04 | 26,046 / 39.68 | 35,097 / 40.77 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 3R] + 24 × fp16 add | 18,231* / 38.48* | 19,151 / 38.76 | 21,474 / 39.04 | 26,046 / 39.68 |
 
 ## wq = int4, wa = int8
 
@@ -79,10 +79,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 4 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 32 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 4R] + 32 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 4R] + 32 × fp16 add | # / # | # / # | # / # | # / # |
-| LUT SRAM dup, pre-ignore | 4 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 32 × fp16 add | 19,789* / 51.01* | 22,009 / 52.16 | 25,336 / 53.92 | 32,395 / 57.27 |
-| LUT SRAM dup, pre-ignore+symm | 4 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 32 × fp16 add | 19,789* / 51.01* | 20,302 / 51.27 | 22,009 / 52.16 | 25,336 / 53.92 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 4R] + 32 × fp16 add | 24,949* / 51.94* | 29,548 / 53.09 | 35,914 / 54.56 | 48,551 / 57.24 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 4R] + 32 × fp16 add | 24,949* / 51.94* | 26,290 / 52.41 | 29,548 / 53.09 | 35,914 / 54.56 |
+| LUT SRAM dup, pre-ignore | 4 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 32 × fp16 add | 19,789* / 50.47* | 22,009 / 51.06 | 25,336 / 51.82 | 32,395 / 53.17 |
+| LUT SRAM dup, pre-ignore+symm | 4 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 32 × fp16 add | 19,789* / 50.47* | 20,302 / 50.68 | 22,009 / 51.06 | 25,336 / 51.82 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 4R] + 32 × fp16 add | 24,949* / 51.57* | 29,548 / 52.37 | 35,914 / 53.24 | 48,551 / 54.71 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 4R] + 32 × fp16 add | 24,949* / 51.57* | 26,290 / 52.00 | 29,548 / 52.37 | 35,914 / 53.24 |
 
 ## wq = int6, wa = int8
 
@@ -95,10 +95,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 6 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 48 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 6R] + 48 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 6R] + 48 × fp16 add | # / # | # / # | # / # | # / # |
-| LUT SRAM dup, pre-ignore | 6 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 48 × fp16 add | 29,684* / 76.51* | 33,013 / 78.24 | 38,004 / 80.87 | 48,593 / 85.90 |
-| LUT SRAM dup, pre-ignore+symm | 6 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 48 × fp16 add | 29,684* / 76.51* | 30,453 / 76.90 | 33,013 / 78.24 | 38,004 / 80.87 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 6R] + 48 × fp16 add | 39,761* / 78.67* | 47,727 / 80.53 | 58,557 / 82.70 | 80,107 / 86.61 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 6R] + 48 × fp16 add | 39,761* / 78.67* | 42,174 / 79.54 | 47,727 / 80.53 | 58,557 / 82.70 |
+| LUT SRAM dup, pre-ignore | 6 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 48 × fp16 add | 29,684* / 75.71* | 33,013 / 76.58 | 38,004 / 77.73 | 48,593 / 79.75 |
+| LUT SRAM dup, pre-ignore+symm | 6 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 48 × fp16 add | 29,684* / 75.71* | 30,453 / 76.03 | 33,013 / 76.58 | 38,004 / 77.73 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 6R] + 48 × fp16 add | 39,761* / 78.17* | 47,727 / 79.59 | 58,557 / 81.02 | 80,107 / 83.44 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 6R] + 48 × fp16 add | 39,761* / 78.17* | 42,174 / 78.98 | 47,727 / 79.59 | 58,557 / 81.02 |
 
 ## wq = int8, wa = int8
 
@@ -111,10 +111,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 8 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 64 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 8R] + 64 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 8R] + 64 × fp16 add | # / # | # / # | # / # | # / # |
-| LUT SRAM dup, pre-ignore | 8 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 64 × fp16 add | 39,578* / 102.01* | 44,017 / 104.32 | 50,672 / 107.83 | 64,791 / 114.53 |
-| LUT SRAM dup, pre-ignore+symm | 8 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 64 × fp16 add | 39,578* / 102.01* | 40,605 / 102.54 | 44,017 / 104.32 | 50,672 / 107.83 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 8R] + 64 × fp16 add | 56,379* / 105.97* | 68,583 / 108.72 | 85,058 / 111.73 | 117,834 / 117.11 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 8R] + 64 × fp16 add | 56,379* / 105.97* | 60,171 / 107.36 | 68,583 / 108.72 | 85,058 / 111.73 |
+| LUT SRAM dup, pre-ignore | 8 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 1R] + 64 × fp16 add | 39,578* / 100.95* | 44,017 / 102.11 | 50,672 / 103.64 | 64,791 / 106.34 |
+| LUT SRAM dup, pre-ignore+symm | 8 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 1R] + 64 × fp16 add | 39,578* / 100.95* | 40,605 / 101.37 | 44,017 / 102.11 | 50,672 / 103.64 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·(8+⌈log2 v⌉)b, 8R] + 64 × fp16 add | 56,379* / 105.34* | 68,583 / 107.55 | 85,058 / 109.68 | 117,834 / 113.29 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·(8+⌈log2 v⌉)b, 8R] + 64 × fp16 add | 56,379* / 105.34* | 60,171 / 106.64 | 68,583 / 107.55 | 85,058 / 109.68 |
 
 ## wq = int1, wa = fp16
 
@@ -127,10 +127,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 1R] + 8 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 1R] + 8 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 1R] + 8 × fp16 add | # / # | # / # | # / # | # / # |
-| LUT SRAM dup, pre-ignore | 1 × LUT[2^v × 8·16b, 1R] + 8 × fp16 add | 5,838* / 13.21* | 6,488 / 13.58 | 7,765 / 14.31 | 10,316 / 15.74 |
-| LUT SRAM dup, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 1R] + 8 × fp16 add | 5,838* / 13.21* | 5,838 / 13.21 | 6,488 / 13.58 | 7,765 / 14.31 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 1R] + 8 × fp16 add | 5,838* / 13.21* | 6,488 / 13.58 | 7,765 / 14.31 | 10,316 / 15.74 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 1R] + 8 × fp16 add | 5,838* / 13.21* | 5,838 / 13.21 | 6,488 / 13.58 | 7,765 / 14.31 |
+| LUT SRAM dup, pre-ignore | 1 × LUT[2^v × 8·16b, 1R] + 8 × fp16 add | 5,838* / 12.96* | 6,488 / 13.11 | 7,765 / 13.41 | 10,316 / 13.97 |
+| LUT SRAM dup, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 1R] + 8 × fp16 add | 5,838* / 12.96* | 5,838 / 12.96 | 6,488 / 13.11 | 7,765 / 13.41 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 1R] + 8 × fp16 add | 5,838* / 12.96* | 6,488 / 13.11 | 7,765 / 13.41 | 10,316 / 13.97 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 1R] + 8 × fp16 add | 5,838* / 12.96* | 5,838 / 12.96 | 6,488 / 13.11 | 7,765 / 13.41 |
 
 ## wq = ter, wa = fp16
 
@@ -143,10 +143,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 1 × LUT[2^⌈log2 ⌊3^v/2⌋⌉ × 8·16b, 1R] + 8 × fp16 add | # / # | # / # | — | — |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^⌈log2 3^v⌉ × 8·16b, 1R] + 8 × fp16 add | # / # | # / # | — | — |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^⌈log2 ⌊3^v/2⌋⌉ × 8·16b, 1R] + 8 × fp16 add | # / # | # / # | — | — |
-| LUT SRAM dup, pre-ignore | 1 × LUT[2^⌈log2 3^v⌉ × 8·16b, 1R] + 8 × fp16 add | 7,765 / 14.31 | 26,075 / 24.04 | 105,059 / 53.12 | 213,605 / 85.37 |
-| LUT SRAM dup, pre-ignore+symm | 1 × LUT[2^⌈log2 ⌊3^v/2⌋⌉ × 8·16b, 1R] + 8 × fp16 add | 6,488 / 13.58 | 16,207 / 18.68 | 46,560 / 34.01 | 105,059 / 53.12 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^⌈log2 3^v⌉ × 8·16b, 1R] + 8 × fp16 add | 7,765 / 14.31 | 26,075 / 24.04 | 105,059 / 53.12 | 213,605 / 85.37 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^⌈log2 ⌊3^v/2⌋⌉ × 8·16b, 1R] + 8 × fp16 add | 6,488 / 13.58 | 16,207 / 18.68 | 46,560 / 34.01 | 105,059 / 53.12 |
+| LUT SRAM dup, pre-ignore | 1 × LUT[2^⌈log2 3^v⌉ × 8·16b, 1R] + 8 × fp16 add | 7,765 / 13.41 | 26,075 / 17.57 | 105,059 / 29.44 | 213,605 / 41.56 |
+| LUT SRAM dup, pre-ignore+symm | 1 × LUT[2^⌈log2 ⌊3^v/2⌋⌉ × 8·16b, 1R] + 8 × fp16 add | 6,488 / 13.11 | 16,207 / 15.41 | 46,560 / 22.17 | 105,059 / 29.44 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^⌈log2 3^v⌉ × 8·16b, 1R] + 8 × fp16 add | 7,765 / 13.41 | 26,075 / 17.57 | 105,059 / 29.44 | 213,605 / 41.56 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^⌈log2 ⌊3^v/2⌋⌉ × 8·16b, 1R] + 8 × fp16 add | 6,488 / 13.11 | 16,207 / 15.41 | 46,560 / 22.17 | 105,059 / 29.44 |
 
 ## wq = int2, wa = fp16
 
@@ -159,10 +159,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 2 × LUT[2^v/2 × 8·16b, 1R] + 16 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 2R] + 16 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 2R] + 16 × fp16 add | # / # | # / # | # / # | # / # |
-| LUT SRAM dup, pre-ignore | 2 × LUT[2^v × 8·16b, 1R] + 16 × fp16 add | 11,675* / 26.42* | 12,976 / 27.16 | 15,530 / 28.62 | 20,631 / 31.47 |
-| LUT SRAM dup, pre-ignore+symm | 2 × LUT[2^v/2 × 8·16b, 1R] + 16 × fp16 add | 11,675* / 26.42* | 11,675 / 26.42 | 12,976 / 27.16 | 15,530 / 28.62 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 2R] + 16 × fp16 add | 15,964* / 26.95* | 18,187 / 27.55 | 22,594 / 28.79 | 31,319 / 31.14 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 2R] + 16 × fp16 add | 15,964* / 26.95* | 15,964 / 26.95 | 18,187 / 27.55 | 22,594 / 28.79 |
+| LUT SRAM dup, pre-ignore | 2 × LUT[2^v × 8·16b, 1R] + 16 × fp16 add | 11,675* / 25.92* | 12,976 / 26.22 | 15,530 / 26.82 | 20,631 / 27.94 |
+| LUT SRAM dup, pre-ignore+symm | 2 × LUT[2^v/2 × 8·16b, 1R] + 16 × fp16 add | 11,675* / 25.92* | 11,675 / 25.92 | 12,976 / 26.22 | 15,530 / 26.82 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 2R] + 16 × fp16 add | 15,964* / 26.55* | 18,187 / 26.83 | 22,594 / 27.43 | 31,319 / 28.50 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 2R] + 16 × fp16 add | 15,964* / 26.55* | 15,964 / 26.55 | 18,187 / 26.83 | 22,594 / 27.43 |
 
 ## wq = int3, wa = fp16
 
@@ -175,10 +175,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 3 × LUT[2^v/2 × 8·16b, 1R] + 24 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 3R] + 24 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 3R] + 24 × fp16 add | # / # | # / # | # / # | # / # |
-| LUT SRAM dup, pre-ignore | 3 × LUT[2^v × 8·16b, 1R] + 24 × fp16 add | 17,513* / 39.63* | 19,463 / 40.74 | 23,295 / 42.94 | 30,947 / 47.21 |
-| LUT SRAM dup, pre-ignore+symm | 3 × LUT[2^v/2 × 8·16b, 1R] + 24 × fp16 add | 17,513* / 39.63* | 17,513 / 39.63 | 19,463 / 40.74 | 23,295 / 42.94 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 3R] + 24 × fp16 add | 24,693* / 40.78* | 28,045 / 41.55 | 34,657 / 43.16 | 47,769 / 46.19 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 3R] + 24 × fp16 add | 24,693* / 40.78* | 24,693 / 40.78 | 28,045 / 41.55 | 34,657 / 43.16 |
+| LUT SRAM dup, pre-ignore | 3 × LUT[2^v × 8·16b, 1R] + 24 × fp16 add | 17,513* / 38.89* | 19,463 / 39.33 | 23,295 / 40.23 | 30,947 / 41.90 |
+| LUT SRAM dup, pre-ignore+symm | 3 × LUT[2^v/2 × 8·16b, 1R] + 24 × fp16 add | 17,513* / 38.89* | 17,513 / 38.89 | 19,463 / 39.33 | 23,295 / 40.23 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 3R] + 24 × fp16 add | 24,693* / 40.29* | 28,045 / 40.68 | 34,657 / 41.55 | 47,769 / 43.10 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 3R] + 24 × fp16 add | 24,693* / 40.29* | 24,693 / 40.29 | 28,045 / 40.68 | 34,657 / 41.55 |
 
 ## wq = int4, wa = fp16
 
@@ -191,10 +191,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 4 × LUT[2^v/2 × 8·16b, 1R] + 32 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 4R] + 32 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 4R] + 32 × fp16 add | # / # | # / # | # / # | # / # |
-| LUT SRAM dup, pre-ignore | 4 × LUT[2^v × 8·16b, 1R] + 32 × fp16 add | 23,350* / 52.84* | 25,951 / 54.32 | 31,060 / 57.25 | 41,262 / 62.95 |
-| LUT SRAM dup, pre-ignore+symm | 4 × LUT[2^v/2 × 8·16b, 1R] + 32 × fp16 add | 23,350* / 52.84* | 23,350 / 52.84 | 25,951 / 54.32 | 31,060 / 57.25 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 4R] + 32 × fp16 add | 33,516* / 54.95* | 37,977 / 55.91 | 46,727 / 57.93 | 64,113 / 61.72 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 4R] + 32 × fp16 add | 33,516* / 54.95* | 33,516 / 54.95 | 37,977 / 55.91 | 46,727 / 57.93 |
+| LUT SRAM dup, pre-ignore | 4 × LUT[2^v × 8·16b, 1R] + 32 × fp16 add | 23,350* / 51.85* | 25,951 / 52.44 | 31,060 / 53.65 | 41,262 / 55.87 |
+| LUT SRAM dup, pre-ignore+symm | 4 × LUT[2^v/2 × 8·16b, 1R] + 32 × fp16 add | 23,350* / 51.85* | 23,350 / 51.85 | 25,951 / 52.44 | 31,060 / 53.65 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 4R] + 32 × fp16 add | 33,516* / 54.35* | 37,977 / 54.88 | 46,727 / 56.06 | 64,113 / 58.17 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 4R] + 32 × fp16 add | 33,516* / 54.35* | 33,516 / 54.35 | 37,977 / 54.88 | 46,727 / 56.06 |
 
 ## wq = int6, wa = fp16
 
@@ -207,10 +207,10 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 6 × LUT[2^v/2 × 8·16b, 1R] + 48 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 6R] + 48 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 6R] + 48 × fp16 add | # / # | # / # | # / # | # / # |
-| LUT SRAM dup, pre-ignore | 6 × LUT[2^v × 8·16b, 1R] + 48 × fp16 add | 35,025* / 79.26* | 38,927 / 81.47 | 46,591 / 85.87 | 61,894 / 94.42 |
-| LUT SRAM dup, pre-ignore+symm | 6 × LUT[2^v/2 × 8·16b, 1R] + 48 × fp16 add | 35,025* / 79.26* | 35,025 / 79.26 | 38,927 / 81.47 | 46,591 / 85.87 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 6R] + 48 × fp16 add | 55,329* / 84.31* | 62,943 / 85.71 | 77,856 / 88.70 | 107,533 / 94.26 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 6R] + 48 × fp16 add | 55,329* / 84.31* | 55,329 / 84.31 | 62,943 / 85.71 | 77,856 / 88.70 |
+| LUT SRAM dup, pre-ignore | 6 × LUT[2^v × 8·16b, 1R] + 48 × fp16 add | 35,025* / 77.77* | 38,927 / 78.66 | 46,591 / 80.47 | 61,894 / 83.81 |
+| LUT SRAM dup, pre-ignore+symm | 6 × LUT[2^v/2 × 8·16b, 1R] + 48 × fp16 add | 35,025* / 77.77* | 35,025 / 77.77 | 38,927 / 78.66 | 46,591 / 80.47 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 6R] + 48 × fp16 add | 55,329* / 83.45* | 62,943 / 84.33 | 77,856 / 86.29 | 107,533 / 89.77 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 6R] + 48 × fp16 add | 55,329* / 83.45* | 55,329 / 83.45 | 62,943 / 84.33 | 77,856 / 86.29 |
 
 ## wq = int8, wa = fp16
 
@@ -223,7 +223,7 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT reg dup, pre-ignore+symm | 8 × LUT[2^v/2 × 8·16b, 1R] + 64 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 8R] + 64 × fp16 add | # / # | # / # | # / # | # / # |
 | LUT reg multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 8R] + 64 × fp16 add | # / # | # / # | # / # | # / # |
-| LUT SRAM dup, pre-ignore | 8 × LUT[2^v × 8·16b, 1R] + 64 × fp16 add | 46,700* / 105.68* | 51,903 / 108.63 | 62,121 / 114.50 | 82,525 / 125.89 |
-| LUT SRAM dup, pre-ignore+symm | 8 × LUT[2^v/2 × 8·16b, 1R] + 64 × fp16 add | 46,700* / 105.68* | 46,700 / 105.68 | 51,903 / 108.63 | 62,121 / 114.50 |
-| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 8R] + 64 × fp16 add | 80,914* / 115.02* | 92,457 / 116.94 | 115,132 / 121.06 | 160,244 / 128.68 |
-| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 8R] + 64 × fp16 add | 80,914* / 115.02* | 80,914 / 115.02 | 92,457 / 116.94 | 115,132 / 121.06 |
+| LUT SRAM dup, pre-ignore | 8 × LUT[2^v × 8·16b, 1R] + 64 × fp16 add | 46,700* / 103.70* | 51,903 / 104.88 | 62,121 / 107.29 | 82,525 / 111.75 |
+| LUT SRAM dup, pre-ignore+symm | 8 × LUT[2^v/2 × 8·16b, 1R] + 64 × fp16 add | 46,700* / 103.70* | 46,700 / 103.70 | 51,903 / 104.88 | 62,121 / 107.29 |
+| LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 8·16b, 8R] + 64 × fp16 add | 80,914* / 113.89* | 92,457 / 115.20 | 115,132 / 118.10 | 160,244 / 123.28 |
+| LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 8·16b, 8R] + 64 × fp16 add | 80,914* / 113.89* | 80,914 / 113.89 | 92,457 / 115.20 | 115,132 / 118.10 |

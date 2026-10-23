@@ -11,18 +11,23 @@ collection's queue scripts and logs). `results/` keeps the part worth versioning
 
 ## Results snapshot (`results/`)
 
-Last synced **2026-10-23 12:15** from `cmp00:~/isca26hw/micro26rcf/playground/` (not a git
-repo), **while the cmp00 agent was revising the register-file power** (queue `rf_corners`
-had just started): see [`todo/mac_lut_status.md`](results/todo/mac_lut_status.md),
-section *Assumption revisions*, for the owner's 2026-10-23 decisions. Earlier syncs:
-2026-10-21, 2026-10-22 19:00. Setup: Genus 21.1, TSMC 28nm HPC+ 9-track, TT 0.9 V 25 °C,
+Last synced **2026-10-23 13:30**, result files only (the CSVs below and `todo/`); run
+folders last copied at 12:15. Source: `cmp00:~/isca26hw/micro26rcf/playground/` (not a git
+repo). At that time the register-file power re-analysis (queue `rf_corners`) had finished
+and the pe_sweep rebuild (`pe_sweep_v2`, queue `pe_v2`) was running; see
+[`todo/mac_lut_status.md`](results/todo/mac_lut_status.md), section *Assumption revisions*,
+for the owner's 2026-10-23 decisions. Earlier syncs: 2026-10-21, 2026-10-22 19:00,
+2026-10-23 12:15. Setup: Genus 21.1, TSMC 28nm HPC+ 9-track, TT 0.9 V 25 °C,
 500 MHz (2 ns clock), Genus vectorless power. The flow's clock transition changed from 5 ns
 to 0.1 ns on 2026-10-22 at 16:40; every run records which one it used.
 
 **Old vs revised results (cmp00, 2026-10-23).** `compare_summary.csv`, `lut_buffer_costs.csv`
 and `pe_summary.csv` are frozen as the *old* results and their collectors are not rerun.
-Revised results go to new files: so far `rf_corner_costs.csv`; a rebuilt pe_sweep with new
-design names (and a `legacy_name` column) is pending.
+Revised results go to new files: `buffer_costs_v2.csv` (register files and SRAM, power in
+activity corners, CACTI at 300 K), `rf_corner_costs.csv` (register files only), CACTI
+`*_300K.csv`; a rebuilt pe_sweep with new design names (and a `legacy_name` column) is
+pending. `01` reads `buffer_costs_v2.csv` for every LUT table and the old `pe_summary.csv`
+for the MAC units until the rebuild lands.
 
 | File | What it is |
 |---|---|
@@ -32,9 +37,10 @@ design names (and a `legacy_name` column) is pending.
 | [`pe_sweep/README.md`](results/pe_sweep/README.md) | How the sweep is built and run, and the traps in the flow |
 | [`buffer_sweep/REPORT.md`](results/buffer_sweep/REPORT.md) | N × 16-bit buffer (N = 4 … 256), 1RW (one read/write port) and 1R1W (one read + one write port): flip-flop register file from Genus vs. SRAM from CACTI |
 | [`buffer_sweep/compare_summary.csv`](results/buffer_sweep/compare_summary.csv) | Synthesized and CACTI numbers side by side, one row per (port, N), at 80% read / 20% write |
-| [`buffer_sweep/lut_buffer_costs.csv`](results/buffer_sweep/lut_buffer_costs.csv) | **Every LUT table** (old results, frozen): register files (one row per clock-transition variant, `primary` = the 0.1 ns run) and CACTI SRAM, by `N` entries, `W` bits and `R` read ports. `01` reads its areas and SRAM rows; **its register-file `ro` power overstates read-only power 2–4× and is not used** |
-| [`buffer_sweep/rf_corner_costs.csv`](results/buffer_sweep/rf_corner_costs.csv) | **Revised register-file power**: per design, the read-only (`ro_*`), write-only (`wo_*`) and idle (`idle_*`) corners of a power-only re-analysis of the 0.1 ns netlist, plus per-access energies. Growing while queue `rf_corners` runs. `01` reads `ro_total_mW` |
-| [`buffer_sweep/cacti_exp/`](results/buffer_sweep/cacti_exp/) | CACTI LUT grid (`lut_cacti_grid.csv`), the older 16-bit summary, raw CACTI output (`cacti_stats.csv`) and its config (`sram_config.json`, 28nm) |
+| [`buffer_sweep/buffer_costs_v2.csv`](results/buffer_sweep/buffer_costs_v2.csv) | **Every table, revised (2026-10-23)**: register files (Genus, 0.1 ns netlists) and CACTI SRAM (300 K) by `model`, `org`, `N` entries, `W` bits, `R` read ports; area; power in the read-only (`ro_*`), write-only (`wo_*`) and idle (`idle_*`) corners, with and without the input nets; per-access energies. **What `01` and `03` read** (`ro_total_mW`) |
+| [`buffer_sweep/rf_corner_costs.csv`](results/buffer_sweep/rf_corner_costs.csv) | The register-file rows of the above |
+| [`buffer_sweep/lut_buffer_costs.csv`](results/buffer_sweep/lut_buffer_costs.csv) | Old results, frozen: register files per clock-transition variant and CACTI at 360 K. **Its register-file `ro` power overstates read-only power 2–4×**; no longer used |
+| [`buffer_sweep/cacti_exp/`](results/buffer_sweep/cacti_exp/) | CACTI LUT grid at 300 K (`lut_cacti_grid_300K.csv`, revised) and 360 K (`lut_cacti_grid.csv`, old), the 16-bit summaries, raw CACTI output (`cacti_stats.csv`) and its config (`sram_config.json`, 28nm) |
 | [`buffer_sweep/designs.json`](results/buffer_sweep/designs.json), [`README.md`](results/buffer_sweep/README.md) | Design list; how the sweep is built and run |
 | [`todo/`](results/todo/) | The data-collection plan (`mac_lut_data_to_collect.md`), the collector's status at sync time (`mac_lut_status.md`), and the activity and modeling assumptions with the owner's decisions (`activity_assumptions.md`) |
 
@@ -53,10 +59,11 @@ From `quantization_survey/hardware/`:
 ```bash
 rsync -a cmp00:isca26hw/micro26rcf/playground/{buffer_sweep,pe_sweep,todo} ./
 cp -p pe_sweep/{README.md,REPORT.md,pe_summary.csv,designs.json,designs.txt} mac_lut_tradeoff/results/pe_sweep/
-cp -p buffer_sweep/{README.md,REPORT.md,compare_summary.csv,designs.json,lut_buffer_costs.csv,rf_corner_costs.csv} mac_lut_tradeoff/results/buffer_sweep/
-cp -p buffer_sweep/cacti_exp/{buffer_cacti_summary.csv,cacti_stats.csv,sram_config.json,lut_cacti_grid.csv} mac_lut_tradeoff/results/buffer_sweep/cacti_exp/
+cp -p buffer_sweep/{README.md,REPORT.md,compare_summary.csv,designs.json,lut_buffer_costs.csv,rf_corner_costs.csv,buffer_costs_v2.csv} mac_lut_tradeoff/results/buffer_sweep/
+cp -p buffer_sweep/cacti_exp/{buffer_cacti_summary.csv,cacti_stats.csv,sram_config.json,lut_cacti_grid.csv,lut_cacti_grid_300K.csv,buffer_cacti_summary_300K.csv} mac_lut_tradeoff/results/buffer_sweep/cacti_exp/
 cp -p todo/*.md mac_lut_tradeoff/results/todo/
 python3 mac_lut_tradeoff/01-gemm-cost-per-frame/make_tables.py
+(cd mac_lut_tradeoff/03-lut-section-figures && python3 fig1_bitsplit_to_lut.py && python3 fig2_mac_vs_lut_sram.py && python3 fig3_reg_vs_sram.py)
 ```
 
 `rsync -a` without `--delete` keeps local files that were removed on `cmp00`; a run that is
@@ -73,5 +80,6 @@ reused.
 
 | # | Discussion | Status |
 |---|---|---|
-| 01 | [MAC-GEMM vs LUT-GEMM cost per quantization frame](01-gemm-cost-per-frame/README.md): area / read-only power for wq ∈ {int1, ter, int2, int3, int4, int6, int8} × wa ∈ {int8, fp16} × bs ∈ {1, 2, 4, 8}, v ∈ {4, 6, 7, 8}; LUT as duplicated or multi-port tables, register file or SRAM. Built by `make_tables.py` | 2026-10-23 sync: all MAC and SRAM cells and all register-file areas up to W = 32 and 64 filled; register-file power waits for the read-only corner (queue `rf_corners`); W = 40, 44, 80, 88, 128 wait for an owner decision (extrapolate or synthesize) |
+| 01 | [MAC-GEMM vs LUT-GEMM cost per quantization frame](01-gemm-cost-per-frame/README.md): area / read-only power for wq ∈ {int1, ter, int2, int3, int4, int6, int8} × wa ∈ {int8, fp16} × bs ∈ {1, 2, 4, 8}, v ∈ {4, 6, 7, 8}; LUT as duplicated or multi-port tables, register file or SRAM. Built by `make_tables.py` | 2026-10-23 13:30 sync: every cell filled except register files of W = 40, 44, 80, 88, 128 (owner decision: predict or synthesize) and multi-port files wider than 16 bits (not queued). LUT power is the revised read-only corner; MAC units still at 5 ns clock transition until `pe_sweep_v2` |
 | 02 | [How large is the int → fp16 converter after the multiplier?](02-int-to-fp-converter-cost/README.md) | Answered: 272 µm² of 1,763 in the single-cycle `mac_mulint8_addfp16`, 120 µm² standalone; the rest of the gap is timing upsizing |
+| 03 | [Figures for the LUT section](03-lut-section-figures/README.md): bit-splitting → LUT-GEMM illustration; MAC-GEMM vs SRAM LUT-GEMM area and power; register-file vs SRAM tables by size and ports | Drafts, from the 2026-10-23 13:30 data; rerun after `pe_sweep_v2` |
