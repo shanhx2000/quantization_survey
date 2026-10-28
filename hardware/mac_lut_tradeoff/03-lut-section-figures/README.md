@@ -12,7 +12,7 @@ is the owner's step.
 | [`fig3_reg_vs_sram.py`](fig3_reg_vs_sram.py) `[W]` | `fig3_reg_vs_sram_w16` | Register-file vs SRAM table, area and read-only power against entries N, one panel per read-port count R; solid = one table with R read + 1 write ports, dashed = **the total** of R one-port copies |
 | [`fig4_per_mac_vs_v_bs.py`](fig4_per_mac_vs_v_bs.py) `[q_W] [w_a]` | `fig4_per_mac_vs_v_bs_int4_fp16` | MAC-GEMM vs LUT-GEMM (SRAM and register-file tables, sign-symmetric) against v, one panel per batch size, **normalized per MAC**: area per MAC/cycle and energy per MAC |
 | [`fig5_lut_mac_ratio_vs_v_bs.py`](fig5_lut_mac_ratio_vs_v_bs.py) `[q_W] [w_a] [opt\|fp16\|int8]` | `fig5_lut_mac_ratio_vs_v_bs_int4_fp16_opt` | LUT-GEMM / MAC-GEMM (default: the int-q_W × w_a multiplier MAC) against v, one line per batch size, for SRAM and register-file tables, area and energy |
-| [`fig6_lut_mac_by_quant_pair.py`](fig6_lut_mac_by_quant_pair.py) `[sram\|reg] [bs] [opt\|fp16\|int8]` | `fig6_lut_mac_by_quant_pair_sram_bs1_opt`, `…_reg_bs1_opt` | **By quantization pair:** LUT-GEMM / MAC-GEMM for every weight format × v, one panel per activation format and metric (area, energy); each pair against its own int-q_W × w_a multiplier MAC; diverging blue (LUT cheaper) to red |
+| [`fig6_lut_mac_by_quant_pair.py`](fig6_lut_mac_by_quant_pair.py) `[sram\|reg] [bs] [opt\|fp16\|int8]` | `fig6_lut_mac_by_quant_pair_sram_bs{1,2,4,8}_opt`, `…_reg_bs1_opt` | **By quantization pair:** LUT-GEMM / MAC-GEMM for every weight format × v, one panel per activation format and metric (area, energy); each pair against its own int-q_W × w_a multiplier MAC; diverging blue (LUT cheaper) to red |
 
 Figures 2–6 import the cost model from
 [`../01-gemm-cost-per-frame/make_tables.py`](../01-gemm-cost-per-frame/make_tables.py), so
@@ -23,7 +23,8 @@ of them after every results sync:
 cd hardware/mac_lut_tradeoff/03-lut-section-figures
 python3 fig1_bitsplit_to_lut.py && python3 fig2_mac_vs_lut_sram.py && python3 fig3_reg_vs_sram.py
 python3 fig4_per_mac_vs_v_bs.py && python3 fig5_lut_mac_ratio_vs_v_bs.py
-python3 fig6_lut_mac_by_quant_pair.py && python3 fig6_lut_mac_by_quant_pair.py reg
+for bs in 1 2 4 8; do python3 fig6_lut_mac_by_quant_pair.py sram $bs; done
+python3 fig6_lut_mac_by_quant_pair.py reg
 ```
 
 They need matplotlib (installed for the user's `python3`; run without `-I`).
@@ -89,3 +90,11 @@ LUT-GEMM / the pair's own int-q_W × w_a multiplier MAC (adds only for int1 and 
   loses at v ≥ 7, where tables grow as 3^v.
 - **Register-file tables:** they keep most of the energy win but lose area for most pairs at
   v ≥ 6 (up to 6.3× at int8, v = 8).
+
+**Other batch sizes** (`…_sram_bs2/4/8_opt`, added 2026-10-28): the maps barely change.
+Energy stays within ±0.02 of bs = 1 almost everywhere. Area moves for two reasons:
+- **int8 activations gain with bs**, most for ternary weights (v = 8: 3.48× at bs = 1, 2.12× at
+  bs = 8). CACTI stores whole bytes, so an 11-bit entry wastes 5 of 16 bits at bs = 1 and
+  nothing at bs = 8 (88 bits = 11 bytes).
+- **fp16 activations lose slightly with bs** (int8 weights, v = 6–8: 0.95–1.05× at bs = 1,
+  1.01–1.06× at bs = 8), because CACTI area grows a little faster than entry width.
