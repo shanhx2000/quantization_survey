@@ -13,6 +13,7 @@ is the owner's step.
 | [`fig4_per_mac_vs_v_bs.py`](fig4_per_mac_vs_v_bs.py) `[q_W] [w_a]` | `fig4_per_mac_vs_v_bs_int4_fp16` | MAC-GEMM vs LUT-GEMM (SRAM and register-file tables, sign-symmetric) against v, one panel per batch size, **normalized per MAC**: area per MAC/cycle and energy per MAC |
 | [`fig5_lut_mac_ratio_vs_v_bs.py`](fig5_lut_mac_ratio_vs_v_bs.py) `[q_W] [w_a] [opt\|fp16\|int8]` | `fig5_lut_mac_ratio_vs_v_bs_int4_fp16_opt` | LUT-GEMM / MAC-GEMM (default: the int-q_W × w_a multiplier MAC) against v, one line per batch size, for SRAM and register-file tables, area and energy |
 | [`fig6_lut_mac_by_quant_pair.py`](fig6_lut_mac_by_quant_pair.py) `[sram\|reg] [bs] [opt\|fp16\|int8]` | `fig6_lut_mac_by_quant_pair_sram_bs{1,2,4,8}_opt`, `…_reg_bs1_opt` | **By quantization pair:** LUT-GEMM / MAC-GEMM for every weight format × v, one panel per activation format and metric (area, energy); each pair against its own int-q_W × w_a multiplier MAC; diverging blue (LUT cheaper) to red |
+| [`fig7_op_counts.py`](fig7_op_counts.py) `[q_W] [v] [bs] [N]` | `fig7_op_counts_int4_fp16_v8_bs1_n64` | **Operation counts**, int4 × fp16, v = 8, bs = 1: (a) per output column and 8 activations, MAC-GEMM 8 multiplies + 8 adds vs LUT-GEMM 4 reads + 4 adds; (b) one 128-entry table shared by N = 64 columns: 512 + 512 vs 256 reads + 256 adds + 128 build adds |
 
 Figures 2–6 import the cost model from
 [`../01-gemm-cost-per-frame/make_tables.py`](../01-gemm-cost-per-frame/make_tables.py), so
@@ -25,6 +26,7 @@ python3 fig1_bitsplit_to_lut.py && python3 fig2_mac_vs_lut_sram.py && python3 fi
 python3 fig4_per_mac_vs_v_bs.py && python3 fig5_lut_mac_ratio_vs_v_bs.py
 for bs in 1 2 4 8; do python3 fig6_lut_mac_by_quant_pair.py sram $bs; done
 python3 fig6_lut_mac_by_quant_pair.py reg
+python3 fig7_op_counts.py
 ```
 
 They need matplotlib (installed for the user's `python3`; run without `-I`).
@@ -98,3 +100,12 @@ Energy stays within ±0.02 of bs = 1 almost everywhere. Area moves for two reaso
   nothing at bs = 8 (88 bits = 11 bytes).
 - **fp16 activations lose slightly with bs** (int8 weights, v = 6–8: 0.95–1.05× at bs = 1,
   1.01–1.06× at bs = 8), because CACTI area grows a little faster than entry width.
+
+## Fig. 7: operation counts (int4 × fp16, v = 8, bs = 1)
+
+Per output column and 8 activations, MAC-GEMM does 8 multiplies and 8 adds. LUT-GEMM does no
+multiply, 4 table reads (one per bit-plane) and 4 adds. The sign-symmetric table has 2^(v−1) =
+128 entries and costs about 128 adds to build, shared by every column that reads it. With
+N = 64 columns: 512 multiplies + 512 adds against 256 reads + 384 adds (256 + 128 build). The
+build pays for itself in adds alone once more than 32 columns share the table (128 build adds
+/ 4 adds saved per column); the multiplies are saved from the first column.
