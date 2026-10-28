@@ -1,6 +1,6 @@
 # 01 — MAC-GEMM vs LUT-GEMM cost per quantization frame
 
-Generated 2026-10-23 by `make_tables.py` from [`../results/`](../results/) (the cmp00 sweep
+Generated 2026-10-28 by `make_tables.py` from [`../results/`](../results/) (the cmp00 sweep
 snapshot; see [`../README.md`](../README.md)). Edit the script, not this file.
 
 **Tables, one file per batch size: [bs = 1](tables-bs1.md) · [bs = 2](tables-bs2.md) · [bs = 4](tables-bs4.md) · [bs = 8](tables-bs8.md).** Each file has one table per frame
@@ -13,8 +13,8 @@ slice of a dot product for every batch row each cycle. Power × 2 = energy per c
 
 | Data | Missing | Configurations | Why |
 |---|---|---|---|
-| Reg LUT, 1 read port | area + power | W = 40: N = 8, 16, 64, 128<br>W = 44: N = 32, 64, 128, 256, 512, 1024<br>W = 80: N = 8, 16, 64, 128<br>W = 88: N = 32, 64, 128, 256, 512, 1024<br>W = 128: N = 8, 16, 32, 64, 128, 256, 512, 1024 | not synthesized: W = 40, 44, 80, 88, 128 wait for an owner decision, predict with the gate-count model or synthesize ([`mac_lut_status.md`](../results/todo/mac_lut_status.md)) |
-| Reg LUT, wq read ports | area + power | W = 20: N = 8, 16, R = 2/3/4/6/8<br>W = 22: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 32: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 40: N = 8, 16, R = 2/3/4/6/8<br>W = 44: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 64: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 80: N = 8, 16, R = 2/3/4/6/8<br>W = 88: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 128: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8 | not synthesized: W = 40, 44, 80, 88, 128 wait for an owner decision, predict with the gate-count model or synthesize ([`mac_lut_status.md`](../results/todo/mac_lut_status.md)) |
+| Reg LUT, 1 read port | area + power | W = 88: N = 1024<br>W = 128: N = 1024 | skipped as too large by the owner; model estimate in [`mac_lut_status.md`](../results/todo/mac_lut_status.md) |
+| Reg LUT, wq read ports | area + power | W = 20: N = 8, 16, R = 2/3/4/6/8<br>W = 22: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 32: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 40: N = 8, 16, R = 2/3/4/6/8<br>W = 44: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 64: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 80: N = 8, 16, R = 2/3/4/6/8<br>W = 88: N = 32, 64, 128, 256, R = 2/3/4/6/8<br>W = 128: N = 8, 16, 32, 64, 128, 256, R = 2/3/4/6/8 | not queued (multi-port register files were run at W = 10, 11, 16 only) |
 
 The data is being collected on cmp00; the snapshot of its plan and status is in
 [`../results/todo/`](../results/todo/).
@@ -59,12 +59,13 @@ The data is being collected on cmp00; the snapshot of its plan and status is in
 | ter, pre-ignore+symm | 64 | 512 | 2,048 | 4,096 |
 
 * **Area** = Σ count × unit area. Adders, multipliers: logic-only area of `u_core` from
-  pe_sweep. Register file: the whole `u_buf` (flops, address decode, read muxes, clock gating).
+  pe_sweep_v2. Register file: the whole `u_buf` (flops, address decode, read muxes, clock gating).
   SRAM: CACTI area.
 * **Power** = Σ count × unit power, every unit busy every cycle. **LUT power is read-only**,
   the read-only corner of `buffer_costs_v2.csv`: every read port reads every cycle, the write
   port is idle with its data and address held. Register files: a power-only Genus
-  re-analysis of the 0.1 ns netlist, measured instance only. SRAM: CACTI at
+  re-analysis of the 0.1 ns netlist, `u_buf` plus the input nets that fan out
+  into it. SRAM: CACTI at
   300 K, leakage + R × 500 MHz × E_read.
 * **Not counted:** table precompute, the sign flip, the 2^b weighting between bit-planes, and
   any int → fp conversion.
@@ -75,123 +76,149 @@ Only primitives with at least one number; the rest are in *Missing data*.
 
 | Primitive | Area (µm²) | Power (mW) | Source |
 |---|---|---|---|
-| `add_fp16` | 515.1 | 1.530 | `add_fp16`, logic only |
-| `add_int16` | 32.8 | 0.053 | `add_int16`, logic only |
-| `mul_fp16` | 383.7 | 1.064 | `mul_fp16`, logic only |
-| `mul_int2xfp16` | 40.7 | 0.116 | `mul_int2xfp16`, logic only |
-| `mul_int2xint8` | 33.5 | 0.093 | `mul_int2xint8`, logic only |
-| `mul_int3xfp16` | 189.4 | 0.582 | `mul_int3xfp16`, logic only |
-| `mul_int3xint8` | 47.5 | 0.109 | `mul_int3xint8`, logic only |
-| `mul_int4xfp16` | 223.4 | 0.659 | `mul_int4xfp16`, logic only |
-| `mul_int4xint8` | 64.3 | 0.119 | `mul_int4xint8`, logic only |
-| `mul_int6xfp16` | 315.8 | 0.963 | `mul_int6xfp16`, logic only |
-| `mul_int6xint8` | 106.3 | 0.202 | `mul_int6xint8`, logic only |
-| `mul_int8` | 142.3 | 0.244 | `mul_int8`, logic only |
-| `mul_int8xfp16` | 401.6 | 1.105 | `mul_int8xfp16`, logic only |
-| `reg_lut_n8_w10_r1` | 234.0 | 0.103 | `buffer_n8_w10`, 0.1 ns clock transition |
-| `reg_lut_n16_w10_r1` | 446.5 | 0.144 | `buffer_n16_w10`, 0.1 ns clock transition |
-| `reg_lut_n64_w10_r1` | 1,713.2 | 0.302 | `buffer_n64_w10`, 0.1 ns clock transition |
-| `reg_lut_n128_w10_r1` | 3,390.7 | 0.459 | `buffer_n128_w10`, 0.1 ns clock transition |
-| `reg_lut_n8_w10_r2` | 296.1 | 0.182 | `buffer1w2r_n8_w10`, 0.1 ns clock transition |
-| `reg_lut_n16_w10_r2` | 551.5 | 0.250 | `buffer1w2r_n16_w10`, 0.1 ns clock transition |
-| `reg_lut_n8_w10_r3` | 357.8 | 0.268 | `buffer1w3r_n8_w10`, 0.1 ns clock transition |
-| `reg_lut_n16_w10_r3` | 652.7 | 0.363 | `buffer1w3r_n16_w10`, 0.1 ns clock transition |
-| `reg_lut_n8_w10_r4` | 419.6 | 0.354 | `buffer1w4r_n8_w10`, 0.1 ns clock transition |
-| `reg_lut_n16_w10_r4` | 755.2 | 0.478 | `buffer1w4r_n16_w10`, 0.1 ns clock transition |
-| `reg_lut_n8_w10_r6` | 543.1 | 0.526 | `buffer1w6r_n8_w10`, 0.1 ns clock transition |
-| `reg_lut_n16_w10_r6` | 960.4 | 0.708 | `buffer1w6r_n16_w10`, 0.1 ns clock transition |
-| `reg_lut_n8_w10_r8` | 666.5 | 0.699 | `buffer1w8r_n8_w10`, 0.1 ns clock transition |
-| `reg_lut_n16_w10_r8` | 1,156.0 | 0.936 | `buffer1w8r_n16_w10`, 0.1 ns clock transition |
-| `reg_lut_n32_w11_r1` | 950.7 | 0.212 | `buffer_n32_w11`, 0.1 ns clock transition |
-| `reg_lut_n64_w11_r1` | 1,865.9 | 0.324 | `buffer_n64_w11`, 0.1 ns clock transition |
-| `reg_lut_n128_w11_r1` | 3,690.4 | 0.479 | `buffer_n128_w11`, 0.1 ns clock transition |
-| `reg_lut_n256_w11_r1` | 7,380.4 | 0.730 | `buffer_n256_w11`, 0.1 ns clock transition |
-| `reg_lut_n512_w11_r1` | 14,754.1 | 1.356 | `buffer_n512_w11`, 0.1 ns clock transition |
-| `reg_lut_n1024_w11_r1` | 29,530.6 | 2.450 | `buffer_n1024_w11`, 0.1 ns clock transition |
-| `reg_lut_n32_w11_r2` | 1,154.9 | 0.352 | `buffer1w2r_n32_w11`, 0.1 ns clock transition |
-| `reg_lut_n64_w11_r2` | 2,233.6 | 0.483 | `buffer1w2r_n64_w11`, 0.1 ns clock transition |
-| `reg_lut_n128_w11_r2` | 4,392.5 | 0.680 | `buffer1w2r_n128_w11`, 0.1 ns clock transition |
-| `reg_lut_n256_w11_r2` | 8,770.1 | 0.985 | `buffer1w2r_n256_w11`, 0.1 ns clock transition |
-| `reg_lut_n32_w11_r3` | 1,353.7 | 0.508 | `buffer1w3r_n32_w11`, 0.1 ns clock transition |
-| `reg_lut_n64_w11_r3` | 2,600.5 | 0.682 | `buffer1w3r_n64_w11`, 0.1 ns clock transition |
-| `reg_lut_n128_w11_r3` | 5,094.2 | 0.937 | `buffer1w3r_n128_w11`, 0.1 ns clock transition |
-| `reg_lut_n256_w11_r3` | 10,158.9 | 1.310 | `buffer1w3r_n256_w11`, 0.1 ns clock transition |
-| `reg_lut_n32_w11_r4` | 1,553.2 | 0.665 | `buffer1w4r_n32_w11`, 0.1 ns clock transition |
-| `reg_lut_n64_w11_r4` | 2,970.3 | 0.885 | `buffer1w4r_n64_w11`, 0.1 ns clock transition |
-| `reg_lut_n128_w11_r4` | 5,796.4 | 1.194 | `buffer1w4r_n128_w11`, 0.1 ns clock transition |
-| `reg_lut_n256_w11_r4` | 11,548.2 | 1.636 | `buffer1w4r_n256_w11`, 0.1 ns clock transition |
-| `reg_lut_n32_w11_r6` | 1,951.9 | 0.979 | `buffer1w6r_n32_w11`, 0.1 ns clock transition |
-| `reg_lut_n64_w11_r6` | 3,701.5 | 1.284 | `buffer1w6r_n64_w11`, 0.1 ns clock transition |
-| `reg_lut_n128_w11_r6` | 7,201.0 | 1.710 | `buffer1w6r_n128_w11`, 0.1 ns clock transition |
-| `reg_lut_n256_w11_r6` | 14,331.9 | 2.290 | `buffer1w6r_n256_w11`, 0.1 ns clock transition |
-| `reg_lut_n32_w11_r8` | 2,340.8 | 1.281 | `buffer1w8r_n32_w11`, 0.1 ns clock transition |
-| `reg_lut_n64_w11_r8` | 4,436.5 | 1.688 | `buffer1w8r_n64_w11`, 0.1 ns clock transition |
-| `reg_lut_n128_w11_r8` | 8,603.7 | 2.227 | `buffer1w8r_n128_w11`, 0.1 ns clock transition |
-| `reg_lut_n256_w11_r8` | 17,125.2 | 2.956 | `buffer1w8r_n256_w11`, 0.1 ns clock transition |
-| `reg_lut_n8_w16_r1` | 357.2 | 0.152 | `buffer_n8`, 0.1 ns clock transition |
-| `reg_lut_n16_w16_r1` | 681.7 | 0.201 | `buffer_n16`, 0.1 ns clock transition |
-| `reg_lut_n32_w16_r1` | 1,333.1 | 0.268 | `buffer_n32`, 0.1 ns clock transition |
-| `reg_lut_n64_w16_r1` | 2,622.2 | 0.398 | `buffer_n64`, 0.1 ns clock transition |
-| `reg_lut_n128_w16_r1` | 5,191.6 | 0.559 | `buffer_n128`, 0.1 ns clock transition |
-| `reg_lut_n256_w16_r1` | 10,378.6 | 0.824 | `buffer_n256`, 0.1 ns clock transition |
-| `reg_lut_n512_w16_r1` | 20,731.9 | 1.444 | `buffer_n512`, 0.1 ns clock transition |
-| `reg_lut_n1024_w16_r1` | 41,475.8 | 2.542 | `buffer_n1024`, 0.1 ns clock transition |
-| `reg_lut_n8_w16_r2` | 451.8 | 0.297 | `buffer1w2r_n8`, 0.1 ns clock transition |
-| `reg_lut_n16_w16_r2` | 842.8 | 0.367 | `buffer1w2r_n16`, 0.1 ns clock transition |
-| `reg_lut_n32_w16_r2` | 1,616.7 | 0.460 | `buffer1w2r_n32`, 0.1 ns clock transition |
-| `reg_lut_n64_w16_r2` | 3,138.8 | 0.618 | `buffer1w2r_n64`, 0.1 ns clock transition |
-| `reg_lut_n128_w16_r2` | 6,182.2 | 0.837 | `buffer1w2r_n128`, 0.1 ns clock transition |
-| `reg_lut_n256_w16_r2` | 12,341.4 | 1.175 | `buffer1w2r_n256`, 0.1 ns clock transition |
-| `reg_lut_n8_w16_r3` | 546.1 | 0.440 | `buffer1w3r_n8`, 0.1 ns clock transition |
-| `reg_lut_n16_w16_r3` | 1,000.2 | 0.539 | `buffer1w3r_n16`, 0.1 ns clock transition |
-| `reg_lut_n32_w16_r3` | 1,895.3 | 0.671 | `buffer1w3r_n32`, 0.1 ns clock transition |
-| `reg_lut_n64_w16_r3` | 3,655.8 | 0.883 | `buffer1w3r_n64`, 0.1 ns clock transition |
-| `reg_lut_n128_w16_r3` | 7,173.4 | 1.177 | `buffer1w3r_n128`, 0.1 ns clock transition |
-| `reg_lut_n256_w16_r3` | 14,306.5 | 1.595 | `buffer1w3r_n256`, 0.1 ns clock transition |
-| `reg_lut_n8_w16_r4` | 640.3 | 0.583 | `buffer1w4r_n8`, 0.1 ns clock transition |
-| `reg_lut_n16_w16_r4` | 1,157.7 | 0.712 | `buffer1w4r_n16`, 0.1 ns clock transition |
-| `reg_lut_n32_w16_r4` | 2,173.9 | 0.881 | `buffer1w4r_n32`, 0.1 ns clock transition |
-| `reg_lut_n64_w16_r4` | 4,171.4 | 1.155 | `buffer1w4r_n64`, 0.1 ns clock transition |
-| `reg_lut_n128_w16_r4` | 8,165.7 | 1.516 | `buffer1w4r_n128`, 0.1 ns clock transition |
-| `reg_lut_n256_w16_r4` | 16,276.8 | 2.007 | `buffer1w4r_n256`, 0.1 ns clock transition |
-| `reg_lut_n8_w16_r6` | 828.8 | 0.869 | `buffer1w6r_n8`, 0.1 ns clock transition |
-| `reg_lut_n16_w16_r6` | 1,472.7 | 1.057 | `buffer1w6r_n16`, 0.1 ns clock transition |
-| `reg_lut_n32_w16_r6` | 2,730.9 | 1.294 | `buffer1w6r_n32`, 0.1 ns clock transition |
-| `reg_lut_n64_w16_r6` | 5,204.2 | 1.682 | `buffer1w6r_n64`, 0.1 ns clock transition |
-| `reg_lut_n128_w16_r6` | 10,150.3 | 2.192 | `buffer1w6r_n128`, 0.1 ns clock transition |
-| `reg_lut_n256_w16_r6` | 20,209.3 | 2.841 | `buffer1w6r_n256`, 0.1 ns clock transition |
-| `reg_lut_n8_w16_r8` | 1,017.3 | 1.156 | `buffer1w8r_n8`, 0.1 ns clock transition |
-| `reg_lut_n16_w16_r8` | 1,787.7 | 1.403 | `buffer1w8r_n16`, 0.1 ns clock transition |
-| `reg_lut_n32_w16_r8` | 3,287.7 | 1.711 | `buffer1w8r_n32`, 0.1 ns clock transition |
-| `reg_lut_n64_w16_r8` | 6,237.5 | 2.217 | `buffer1w8r_n64`, 0.1 ns clock transition |
-| `reg_lut_n128_w16_r8` | 12,133.8 | 2.875 | `buffer1w8r_n128`, 0.1 ns clock transition |
-| `reg_lut_n256_w16_r8` | 24,138.6 | 3.676 | `buffer1w8r_n256`, 0.1 ns clock transition |
-| `reg_lut_n8_w20_r1` | 456.8 | 0.195 | `buffer_n8_w20`, 0.1 ns clock transition |
-| `reg_lut_n16_w20_r1` | 870.8 | 0.262 | `buffer_n16_w20`, 0.1 ns clock transition |
-| `reg_lut_n64_w20_r1` | 3,345.4 | 0.527 | `buffer_n64_w20`, 0.1 ns clock transition |
-| `reg_lut_n128_w20_r1` | 6,631.9 | 0.777 | `buffer_n128_w20`, 0.1 ns clock transition |
-| `reg_lut_n32_w22_r1` | 1,860.3 | 0.383 | `buffer_n32_w22`, 0.1 ns clock transition |
-| `reg_lut_n64_w22_r1` | 3,645.8 | 0.554 | `buffer_n64_w22`, 0.1 ns clock transition |
-| `reg_lut_n128_w22_r1` | 7,229.8 | 0.810 | `buffer_n128_w22`, 0.1 ns clock transition |
-| `reg_lut_n256_w22_r1` | 14,461.8 | 1.226 | `buffer_n256_w22`, 0.1 ns clock transition |
-| `reg_lut_n512_w22_r1` | 28,898.0 | 2.185 | `buffer_n512_w22`, 0.1 ns clock transition |
-| `reg_lut_n1024_w22_r1` | 57,660.9 | 3.909 | `buffer_n1024_w22`, 0.1 ns clock transition |
-| `reg_lut_n8_w32_r1` | 703.5 | 0.301 | `buffer_n8_w32`, 0.1 ns clock transition |
-| `reg_lut_n16_w32_r1` | 1,343.4 | 0.379 | `buffer_n16_w32`, 0.1 ns clock transition |
-| `reg_lut_n32_w32_r1` | 2,627.6 | 0.498 | `buffer_n32_w32`, 0.1 ns clock transition |
-| `reg_lut_n64_w32_r1` | 5,154.7 | 0.704 | `buffer_n64_w32`, 0.1 ns clock transition |
-| `reg_lut_n128_w32_r1` | 10,222.5 | 0.986 | `buffer_n128_w32`, 0.1 ns clock transition |
-| `reg_lut_n256_w32_r1` | 20,465.0 | 1.424 | `buffer_n256_w32`, 0.1 ns clock transition |
-| `reg_lut_n512_w32_r1` | 40,861.4 | 2.408 | `buffer_n512_w32`, 0.1 ns clock transition |
-| `reg_lut_n1024_w32_r1` | 82,011.9 | 4.359 | `buffer_n1024_w32`, 0.1 ns clock transition |
-| `reg_lut_n8_w64_r1` | 1,395.2 | 0.605 | `buffer_n8_w64`, 0.1 ns clock transition |
-| `reg_lut_n16_w64_r1` | 2,665.9 | 0.734 | `buffer_n16_w64`, 0.1 ns clock transition |
-| `reg_lut_n32_w64_r1` | 5,219.6 | 0.952 | `buffer_n32_w64`, 0.1 ns clock transition |
-| `reg_lut_n64_w64_r1` | 10,227.8 | 1.326 | `buffer_n64_w64`, 0.1 ns clock transition |
-| `reg_lut_n128_w64_r1` | 20,321.2 | 1.810 | `buffer_n128_w64`, 0.1 ns clock transition |
-| `reg_lut_n256_w64_r1` | 40,841.1 | 2.610 | `buffer_n256_w64`, 0.1 ns clock transition |
-| `reg_lut_n512_w64_r1` | 81,735.4 | 4.385 | `buffer_n512_w64`, 0.1 ns clock transition |
-| `reg_lut_n1024_w64_r1` | 164,116.4 | 7.549 | `buffer_n1024_w64`, 0.1 ns clock transition |
+| `add_fp16` | 525.8 | 1.545 | `add_fp16xfp16_fp16`, logic only |
+| `add_int16` | 32.8 | 0.053 | `add_int16xint16_int16`, logic only |
+| `mul_fp16` | 397.8 | 1.072 | `mul_fp16xfp16_fp16`, logic only |
+| `mul_int2xfp16` | 40.7 | 0.116 | `mul_int2xfp16_fp16`, logic only |
+| `mul_int2xint8` | 33.5 | 0.093 | `mul_int2xint8_int10`, logic only |
+| `mul_int3xfp16` | 189.4 | 0.582 | `mul_int3xfp16_fp16`, logic only |
+| `mul_int3xint8` | 47.5 | 0.109 | `mul_int3xint8_int11`, logic only |
+| `mul_int4xfp16` | 223.4 | 0.659 | `mul_int4xfp16_fp16`, logic only |
+| `mul_int4xint8` | 64.3 | 0.119 | `mul_int4xint8_int12`, logic only |
+| `mul_int6xfp16` | 315.8 | 0.963 | `mul_int6xfp16_fp16`, logic only |
+| `mul_int6xint8` | 106.3 | 0.202 | `mul_int6xint8_int14`, logic only |
+| `mul_int8` | 143.9 | 0.261 | `mul_int8xint8_int16`, logic only |
+| `mul_int8xfp16` | 401.6 | 1.105 | `mul_int8xfp16_fp16`, logic only |
+| `reg_lut_n8_w10_r1` | 234.0 | 0.115 | `buffer_n8_w10`, 0.1 ns clock transition |
+| `reg_lut_n16_w10_r1` | 446.5 | 0.155 | `buffer_n16_w10`, 0.1 ns clock transition |
+| `reg_lut_n64_w10_r1` | 1,713.2 | 0.330 | `buffer_n64_w10`, 0.1 ns clock transition |
+| `reg_lut_n128_w10_r1` | 3,390.7 | 0.490 | `buffer_n128_w10`, 0.1 ns clock transition |
+| `reg_lut_n8_w10_r2` | 296.1 | 0.206 | `buffer1w2r_n8_w10`, 0.1 ns clock transition |
+| `reg_lut_n16_w10_r2` | 551.5 | 0.274 | `buffer1w2r_n16_w10`, 0.1 ns clock transition |
+| `reg_lut_n8_w10_r3` | 357.8 | 0.304 | `buffer1w3r_n8_w10`, 0.1 ns clock transition |
+| `reg_lut_n16_w10_r3` | 652.7 | 0.398 | `buffer1w3r_n16_w10`, 0.1 ns clock transition |
+| `reg_lut_n8_w10_r4` | 419.6 | 0.402 | `buffer1w4r_n8_w10`, 0.1 ns clock transition |
+| `reg_lut_n16_w10_r4` | 755.2 | 0.524 | `buffer1w4r_n16_w10`, 0.1 ns clock transition |
+| `reg_lut_n8_w10_r6` | 543.1 | 0.599 | `buffer1w6r_n8_w10`, 0.1 ns clock transition |
+| `reg_lut_n16_w10_r6` | 960.4 | 0.778 | `buffer1w6r_n16_w10`, 0.1 ns clock transition |
+| `reg_lut_n8_w10_r8` | 666.5 | 0.795 | `buffer1w8r_n8_w10`, 0.1 ns clock transition |
+| `reg_lut_n16_w10_r8` | 1,156.0 | 1.030 | `buffer1w8r_n16_w10`, 0.1 ns clock transition |
+| `reg_lut_n32_w11_r1` | 950.7 | 0.236 | `buffer_n32_w11`, 0.1 ns clock transition |
+| `reg_lut_n64_w11_r1` | 1,865.9 | 0.351 | `buffer_n64_w11`, 0.1 ns clock transition |
+| `reg_lut_n128_w11_r1` | 3,690.4 | 0.510 | `buffer_n128_w11`, 0.1 ns clock transition |
+| `reg_lut_n256_w11_r1` | 7,380.4 | 0.768 | `buffer_n256_w11`, 0.1 ns clock transition |
+| `reg_lut_n512_w11_r1` | 14,754.1 | 1.396 | `buffer_n512_w11`, 0.1 ns clock transition |
+| `reg_lut_n1024_w11_r1` | 29,530.6 | 2.495 | `buffer_n1024_w11`, 0.1 ns clock transition |
+| `reg_lut_n32_w11_r2` | 1,154.9 | 0.380 | `buffer1w2r_n32_w11`, 0.1 ns clock transition |
+| `reg_lut_n64_w11_r2` | 2,233.6 | 0.516 | `buffer1w2r_n64_w11`, 0.1 ns clock transition |
+| `reg_lut_n128_w11_r2` | 4,392.5 | 0.714 | `buffer1w2r_n128_w11`, 0.1 ns clock transition |
+| `reg_lut_n256_w11_r2` | 8,770.1 | 1.018 | `buffer1w2r_n256_w11`, 0.1 ns clock transition |
+| `reg_lut_n32_w11_r3` | 1,353.7 | 0.549 | `buffer1w3r_n32_w11`, 0.1 ns clock transition |
+| `reg_lut_n64_w11_r3` | 2,600.5 | 0.733 | `buffer1w3r_n64_w11`, 0.1 ns clock transition |
+| `reg_lut_n128_w11_r3` | 5,094.2 | 0.988 | `buffer1w3r_n128_w11`, 0.1 ns clock transition |
+| `reg_lut_n256_w11_r3` | 10,158.9 | 1.359 | `buffer1w3r_n256_w11`, 0.1 ns clock transition |
+| `reg_lut_n32_w11_r4` | 1,553.2 | 0.720 | `buffer1w4r_n32_w11`, 0.1 ns clock transition |
+| `reg_lut_n64_w11_r4` | 2,970.3 | 0.954 | `buffer1w4r_n64_w11`, 0.1 ns clock transition |
+| `reg_lut_n128_w11_r4` | 5,796.4 | 1.263 | `buffer1w4r_n128_w11`, 0.1 ns clock transition |
+| `reg_lut_n256_w11_r4` | 11,548.2 | 1.703 | `buffer1w4r_n256_w11`, 0.1 ns clock transition |
+| `reg_lut_n32_w11_r6` | 1,951.9 | 1.064 | `buffer1w6r_n32_w11`, 0.1 ns clock transition |
+| `reg_lut_n64_w11_r6` | 3,701.5 | 1.388 | `buffer1w6r_n64_w11`, 0.1 ns clock transition |
+| `reg_lut_n128_w11_r6` | 7,201.0 | 1.813 | `buffer1w6r_n128_w11`, 0.1 ns clock transition |
+| `reg_lut_n256_w11_r6` | 14,331.9 | 2.390 | `buffer1w6r_n256_w11`, 0.1 ns clock transition |
+| `reg_lut_n32_w11_r8` | 2,340.8 | 1.396 | `buffer1w8r_n32_w11`, 0.1 ns clock transition |
+| `reg_lut_n64_w11_r8` | 4,436.5 | 1.824 | `buffer1w8r_n64_w11`, 0.1 ns clock transition |
+| `reg_lut_n128_w11_r8` | 8,603.7 | 2.364 | `buffer1w8r_n128_w11`, 0.1 ns clock transition |
+| `reg_lut_n256_w11_r8` | 17,125.2 | 3.088 | `buffer1w8r_n256_w11`, 0.1 ns clock transition |
+| `reg_lut_n8_w16_r1` | 357.2 | 0.167 | `buffer_n8`, 0.1 ns clock transition |
+| `reg_lut_n16_w16_r1` | 681.7 | 0.215 | `buffer_n16`, 0.1 ns clock transition |
+| `reg_lut_n32_w16_r1` | 1,333.1 | 0.294 | `buffer_n32`, 0.1 ns clock transition |
+| `reg_lut_n64_w16_r1` | 2,622.2 | 0.427 | `buffer_n64`, 0.1 ns clock transition |
+| `reg_lut_n128_w16_r1` | 5,191.6 | 0.589 | `buffer_n128`, 0.1 ns clock transition |
+| `reg_lut_n256_w16_r1` | 10,378.6 | 0.862 | `buffer_n256`, 0.1 ns clock transition |
+| `reg_lut_n512_w16_r1` | 20,731.9 | 1.484 | `buffer_n512`, 0.1 ns clock transition |
+| `reg_lut_n1024_w16_r1` | 41,475.8 | 2.591 | `buffer_n1024`, 0.1 ns clock transition |
+| `reg_lut_n8_w16_r2` | 451.8 | 0.326 | `buffer1w2r_n8`, 0.1 ns clock transition |
+| `reg_lut_n16_w16_r2` | 842.8 | 0.395 | `buffer1w2r_n16`, 0.1 ns clock transition |
+| `reg_lut_n32_w16_r2` | 1,616.7 | 0.492 | `buffer1w2r_n32`, 0.1 ns clock transition |
+| `reg_lut_n64_w16_r2` | 3,138.8 | 0.653 | `buffer1w2r_n64`, 0.1 ns clock transition |
+| `reg_lut_n128_w16_r2` | 6,182.2 | 0.870 | `buffer1w2r_n128`, 0.1 ns clock transition |
+| `reg_lut_n256_w16_r2` | 12,341.4 | 1.209 | `buffer1w2r_n256`, 0.1 ns clock transition |
+| `reg_lut_n8_w16_r3` | 546.1 | 0.484 | `buffer1w3r_n8`, 0.1 ns clock transition |
+| `reg_lut_n16_w16_r3` | 1,000.2 | 0.581 | `buffer1w3r_n16`, 0.1 ns clock transition |
+| `reg_lut_n32_w16_r3` | 1,895.3 | 0.719 | `buffer1w3r_n32`, 0.1 ns clock transition |
+| `reg_lut_n64_w16_r3` | 3,655.8 | 0.935 | `buffer1w3r_n64`, 0.1 ns clock transition |
+| `reg_lut_n128_w16_r3` | 7,173.4 | 1.227 | `buffer1w3r_n128`, 0.1 ns clock transition |
+| `reg_lut_n256_w16_r3` | 14,306.5 | 1.646 | `buffer1w3r_n256`, 0.1 ns clock transition |
+| `reg_lut_n8_w16_r4` | 640.3 | 0.642 | `buffer1w4r_n8`, 0.1 ns clock transition |
+| `reg_lut_n16_w16_r4` | 1,157.7 | 0.767 | `buffer1w4r_n16`, 0.1 ns clock transition |
+| `reg_lut_n32_w16_r4` | 2,173.9 | 0.944 | `buffer1w4r_n32`, 0.1 ns clock transition |
+| `reg_lut_n64_w16_r4` | 4,171.4 | 1.224 | `buffer1w4r_n64`, 0.1 ns clock transition |
+| `reg_lut_n128_w16_r4` | 8,165.7 | 1.582 | `buffer1w4r_n128`, 0.1 ns clock transition |
+| `reg_lut_n256_w16_r4` | 16,276.8 | 2.076 | `buffer1w4r_n256`, 0.1 ns clock transition |
+| `reg_lut_n8_w16_r6` | 828.8 | 0.958 | `buffer1w6r_n8`, 0.1 ns clock transition |
+| `reg_lut_n16_w16_r6` | 1,472.7 | 1.141 | `buffer1w6r_n16`, 0.1 ns clock transition |
+| `reg_lut_n32_w16_r6` | 2,730.9 | 1.389 | `buffer1w6r_n32`, 0.1 ns clock transition |
+| `reg_lut_n64_w16_r6` | 5,204.2 | 1.786 | `buffer1w6r_n64`, 0.1 ns clock transition |
+| `reg_lut_n128_w16_r6` | 10,150.3 | 2.292 | `buffer1w6r_n128`, 0.1 ns clock transition |
+| `reg_lut_n256_w16_r6` | 20,209.3 | 2.944 | `buffer1w6r_n256`, 0.1 ns clock transition |
+| `reg_lut_n8_w16_r8` | 1,017.3 | 1.274 | `buffer1w8r_n8`, 0.1 ns clock transition |
+| `reg_lut_n16_w16_r8` | 1,787.7 | 1.515 | `buffer1w8r_n16`, 0.1 ns clock transition |
+| `reg_lut_n32_w16_r8` | 3,287.7 | 1.838 | `buffer1w8r_n32`, 0.1 ns clock transition |
+| `reg_lut_n64_w16_r8` | 6,237.5 | 2.356 | `buffer1w8r_n64`, 0.1 ns clock transition |
+| `reg_lut_n128_w16_r8` | 12,133.8 | 3.008 | `buffer1w8r_n128`, 0.1 ns clock transition |
+| `reg_lut_n256_w16_r8` | 24,138.6 | 3.813 | `buffer1w8r_n256`, 0.1 ns clock transition |
+| `reg_lut_n8_w20_r1` | 456.8 | 0.211 | `buffer_n8_w20`, 0.1 ns clock transition |
+| `reg_lut_n16_w20_r1` | 870.8 | 0.276 | `buffer_n16_w20`, 0.1 ns clock transition |
+| `reg_lut_n64_w20_r1` | 3,345.4 | 0.560 | `buffer_n64_w20`, 0.1 ns clock transition |
+| `reg_lut_n128_w20_r1` | 6,631.9 | 0.810 | `buffer_n128_w20`, 0.1 ns clock transition |
+| `reg_lut_n32_w22_r1` | 1,860.3 | 0.411 | `buffer_n32_w22`, 0.1 ns clock transition |
+| `reg_lut_n64_w22_r1` | 3,645.8 | 0.587 | `buffer_n64_w22`, 0.1 ns clock transition |
+| `reg_lut_n128_w22_r1` | 7,229.8 | 0.842 | `buffer_n128_w22`, 0.1 ns clock transition |
+| `reg_lut_n256_w22_r1` | 14,461.8 | 1.265 | `buffer_n256_w22`, 0.1 ns clock transition |
+| `reg_lut_n512_w22_r1` | 28,898.0 | 2.225 | `buffer_n512_w22`, 0.1 ns clock transition |
+| `reg_lut_n1024_w22_r1` | 57,660.9 | 3.955 | `buffer_n1024_w22`, 0.1 ns clock transition |
+| `reg_lut_n8_w32_r1` | 703.5 | 0.323 | `buffer_n8_w32`, 0.1 ns clock transition |
+| `reg_lut_n16_w32_r1` | 1,343.4 | 0.399 | `buffer_n16_w32`, 0.1 ns clock transition |
+| `reg_lut_n32_w32_r1` | 2,627.6 | 0.529 | `buffer_n32_w32`, 0.1 ns clock transition |
+| `reg_lut_n64_w32_r1` | 5,154.7 | 0.737 | `buffer_n64_w32`, 0.1 ns clock transition |
+| `reg_lut_n128_w32_r1` | 10,222.5 | 1.019 | `buffer_n128_w32`, 0.1 ns clock transition |
+| `reg_lut_n256_w32_r1` | 20,465.0 | 1.464 | `buffer_n256_w32`, 0.1 ns clock transition |
+| `reg_lut_n512_w32_r1` | 40,861.4 | 2.449 | `buffer_n512_w32`, 0.1 ns clock transition |
+| `reg_lut_n1024_w32_r1` | 82,011.9 | 4.409 | `buffer_n1024_w32`, 0.1 ns clock transition |
+| `reg_lut_n8_w40_r1` | 885.4 | 0.393 | `buffer_n8_w40`, 0.1 ns clock transition |
+| `reg_lut_n16_w40_r1` | 1,690.5 | 0.498 | `buffer_n16_w40`, 0.1 ns clock transition |
+| `reg_lut_n64_w40_r1` | 6,480.9 | 0.921 | `buffer_n64_w40`, 0.1 ns clock transition |
+| `reg_lut_n128_w40_r1` | 12,862.3 | 1.288 | `buffer_n128_w40`, 0.1 ns clock transition |
+| `reg_lut_n32_w44_r1` | 3,630.3 | 0.707 | `buffer_n32_w44`, 0.1 ns clock transition |
+| `reg_lut_n64_w44_r1` | 7,112.2 | 0.952 | `buffer_n64_w44`, 0.1 ns clock transition |
+| `reg_lut_n128_w44_r1` | 14,123.3 | 1.328 | `buffer_n128_w44`, 0.1 ns clock transition |
+| `reg_lut_n256_w44_r1` | 28,370.3 | 1.979 | `buffer_n256_w44`, 0.1 ns clock transition |
+| `reg_lut_n512_w44_r1` | 56,669.3 | 3.316 | `buffer_n512_w44`, 0.1 ns clock transition |
+| `reg_lut_n1024_w44_r1` | 113,372.0 | 5.914 | `buffer_n1024_w44`, 0.1 ns clock transition |
+| `reg_lut_n8_w64_r1` | 1,395.2 | 0.640 | `buffer_n8_w64`, 0.1 ns clock transition |
+| `reg_lut_n16_w64_r1` | 2,665.9 | 0.766 | `buffer_n16_w64`, 0.1 ns clock transition |
+| `reg_lut_n32_w64_r1` | 5,219.6 | 0.993 | `buffer_n32_w64`, 0.1 ns clock transition |
+| `reg_lut_n64_w64_r1` | 10,227.8 | 1.368 | `buffer_n64_w64`, 0.1 ns clock transition |
+| `reg_lut_n128_w64_r1` | 20,321.2 | 1.848 | `buffer_n128_w64`, 0.1 ns clock transition |
+| `reg_lut_n256_w64_r1` | 40,841.1 | 2.654 | `buffer_n256_w64`, 0.1 ns clock transition |
+| `reg_lut_n512_w64_r1` | 81,735.4 | 4.433 | `buffer_n512_w64`, 0.1 ns clock transition |
+| `reg_lut_n1024_w64_r1` | 164,116.4 | 7.599 | `buffer_n1024_w64`, 0.1 ns clock transition |
+| `reg_lut_n8_w80_r1` | 1,742.7 | 0.763 | `buffer_n8_w80`, 0.1 ns clock transition |
+| `reg_lut_n16_w80_r1` | 3,328.3 | 0.935 | `buffer_n16_w80`, 0.1 ns clock transition |
+| `reg_lut_n64_w80_r1` | 12,788.9 | 1.597 | `buffer_n64_w80`, 0.1 ns clock transition |
+| `reg_lut_n128_w80_r1` | 25,396.1 | 2.190 | `buffer_n128_w80`, 0.1 ns clock transition |
+| `reg_lut_n32_w88_r1` | 7,188.6 | 1.336 | `buffer_n32_w88`, 0.1 ns clock transition |
+| `reg_lut_n64_w88_r1` | 14,114.3 | 1.784 | `buffer_n64_w88`, 0.1 ns clock transition |
+| `reg_lut_n128_w88_r1` | 28,034.2 | 2.466 | `buffer_n128_w88`, 0.1 ns clock transition |
+| `reg_lut_n256_w88_r1` | 56,279.8 | 3.657 | `buffer_n256_w88`, 0.1 ns clock transition |
+| `reg_lut_n512_w88_r1` | 112,597.4 | 6.127 | `buffer_n512_w88`, 0.1 ns clock transition |
+| `reg_lut_n8_w128_r1` | 2,780.9 | 1.225 | `buffer_n8_w128`, 0.1 ns clock transition |
+| `reg_lut_n16_w128_r1` | 5,308.4 | 1.474 | `buffer_n16_w128`, 0.1 ns clock transition |
+| `reg_lut_n32_w128_r1` | 10,371.2 | 1.881 | `buffer_n32_w128`, 0.1 ns clock transition |
+| `reg_lut_n64_w128_r1` | 20,378.0 | 2.510 | `buffer_n64_w128`, 0.1 ns clock transition |
+| `reg_lut_n128_w128_r1` | 40,473.1 | 3.421 | `buffer_n128_w128`, 0.1 ns clock transition |
+| `reg_lut_n256_w128_r1` | 81,575.6 | 5.103 | `buffer_n256_w128`, 0.1 ns clock transition |
+| `reg_lut_n512_w128_r1` | 185,118.4 | 10.214 | `buffer_n512_w128`, 0.1 ns clock transition |
 | `sram_lut_n8_w16_r1` | 139.7* | 0.075* | CACTI 300 K, 2 B/entry; N = 32 stands in |
 | `sram_lut_n16_w16_r1` | 139.7* | 0.075* | CACTI 300 K, 2 B/entry; N = 32 stands in |
 | `sram_lut_n32_w16_r1` | 139.7 | 0.075 | CACTI 300 K, 2 B/entry |
@@ -490,19 +517,21 @@ Only primitives with at least one number; the rest are in *Missing data*.
    runs left the idle write port's data toggling every cycle and overstated read-only power
    2–4×; they are no longer used. CACTI moved from 360 K to 300 K (the owner's
    choice, matched to the synthesis library's 25 °C): same area and access energy, 0.31–0.35×
-   the leakage. Still open on cmp00: whether power includes the input nets that fan out into
-   the table (for the read-only corner only the address nets, ≤ ~10% at the smallest N).
-2. **The baselines are at a different clock transition from the rest.** `add_fp16`,
-   `mul_fp16`, `mul_int8` and `add_int16` are 5.0 ns runs; the register files
-   and the pe designs added on 2026-10-22 are 0.1 ns. Logic area moves by up to
-   ±10% between the two for designs at ~0 ps slack. The pe_sweep rebuild at 0.1 ns with the
-   owner's revised MAC precision and names (`pe_sweep_v2`) was running at this sync.
+   the leakage. Register-file power counts the input nets that fan out into the table at every
+   size (the owner's boundary); in the read-only corner only the address nets toggle.
+   `buffer_n512_w128` (ternary, v = 6, sign-symmetric, w_a = fp16, bs = 8) is the synthesized
+   value, which carries ≈ 11,900 high-fanout buffers that its neighbours do not: 1.13× the
+   area and 1.24× the read-only power of the width model. Keep it, use the model, or rerun
+   it without that step: the owner's decision, open on cmp00.
+2. **One clock transition throughout.** Every unit here is a 0.1 ns run
+   (`pe_sweep_v2`), like the register files (0.1 ns). The rebuild also changed
+   MAC precision and names, which do not touch the add and multiply units these rows use.
 3. **CACTI cannot model N = 8 or 16 at any width** ("no valid data array organizations
    found"), nor tables under 64 bytes. Those cells use the smallest modelled table (`*`).
 4. **Multi-port vs copies.** In CACTI, one table with R read ports has 1.70–3.56×
    the area of R single-port copies (180 cases) and 1.04–2.76× the
    read-only power. For register files it is the other way round: 0.29–0.63× the area and
-   0.51–0.98× the read-only power of R copies (60 cases), because the
+   0.50–0.98× the read-only power of R copies (60 cases), because the
    flip-flops are shared and only the read muxes are replicated.
 5. **wa = int8 entries are exact** (8 + ⌈log2 v⌉ bits), so no partial sum overflows. The adds
    stay fp16, as specified.
@@ -516,7 +545,5 @@ Only primitives with at least one number; the rest are in *Missing data*.
 8. **Ternary tables are large**: 128, 1,024, 4,096, 8,192 entries
    at v = 4, 6, 7, 8 (half with symm). Register files are costed only up to
    v = 6 (1,024 entries); SRAM at every v.
-9. **fp16 units close timing at ~0 ps slack** at 2 ns (`mul_fp16` 0 ps,
-   `add_fp16` 1 ps), so their area includes upsizing. At a 4 ns clock,
-   `add_fp16` is 344 µm² and `mul_fp16`
-   346 µm²; the tables use the 2 ns numbers.
+9. **fp16 units close timing at ~0 ps slack** at 2 ns (`mul_fp16` 1 ps,
+   `add_fp16` 1 ps), so their area includes upsizing.

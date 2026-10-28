@@ -29,7 +29,6 @@ palette checker on a white surface (all checks pass; aqua is under 3:1 contrast,
 aqua mark in fig. 1 carries a text label). Fig. 1 is 7.0 in wide (`figure*`); fig. 2 is
 3.45 in (one column); fig. 3 is 7.0 in.
 
-**Data state at 2026-10-23 13:30** (the cmp00 sync of that time): LUT tables from
-`buffer_costs_v2.csv` (register files at 0.1 ns clock transition, read-only corner; CACTI at
-300 K). MAC baselines from the old `pe_summary.csv`, still at 5 ns clock transition; the
-0.1 ns rebuild (`pe_sweep_v2`) was running. Rerun once it lands.
+**Data state at 2026-10-28** (the cmp00 sync of that day): LUT tables from
+`buffer_costs_v2.csv` (register files at 0.1 ns clock transition, read-only corner with the
+input nets; CACTI at 300 K). MAC units from `pe_sweep_v2/pe_summary_v2.csv`, also 0.1 ns.

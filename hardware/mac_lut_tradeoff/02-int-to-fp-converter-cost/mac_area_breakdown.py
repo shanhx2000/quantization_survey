@@ -4,11 +4,13 @@
 #   python3 mac_lut_tradeoff/02-int-to-fp-converter-cost/mac_area_breakdown.py pe_sweep mac_mulint8_addfp16
 import collections
 import csv
+import os
 import re
 import sys
 
 root = sys.argv[1]
-summary = {r['design']: r for r in csv.DictReader(open(f'{root}/pe_summary.csv'))}
+csv_path = f'{root}/pe_summary_v2.csv' if os.path.exists(f'{root}/pe_summary_v2.csv') else f'{root}/pe_summary.csv'
+summary = {r['design']: r for r in csv.DictReader(open(csv_path))}
 for design in sys.argv[2:]:
     run = f"{root}/{summary[design]['syn_run']}"
     area = {}  # library cell -> area of one instance

@@ -30,7 +30,10 @@ are **kept unchanged as the old results**: `compare_summary.csv`, `lut_buffer_co
   P(r, w) = P_idle + r·(P_ro − P_idle) + w·(P_wo − P_idle).
   * The read-only corner holds the write port's data and address.
   * It is checked against direct 80/20 runs: 3.4–3.8% low.
-  * Output: `buffer_sweep/rf_corner_costs.csv`.
+  * Power includes the wires from the wrapper's input registers into the buffer, at every
+    size (owner). Otherwise Genus counts them only once it buffers them (N ≥ 256).
+  * Output: `buffer_sweep/rf_corner_costs.csv`, and `buffer_costs_v2.csv` with the CACTI SRAM
+    rows.
 * **Data and address activity:** random, 0.5 toggles/cycle (confirmed).
 * **MAC:** the product keeps its full precision.
   * int × int → fp: exact product, converted once to the accumulator format, e.g.
@@ -118,6 +121,13 @@ its power is not, being 80/20), CACTI N = 32 … 256.
    W in the README's *Missing data* table (54 designs; ternary sizes stop at 1,024). After a
    few widths, check whether area is linear in W; if it is, whether to run the rest is the
    owner's call.
+   > *Revised 2026-10-23:* area is linear in W, but power steps with the clock-gate count
+   > ⌈W/16⌉ per entry (see `mac_lut_status.md`). The owner chose to synthesize the remaining
+   > widths, skipping designs that are too large. Two are skipped: `buffer_n1024_w88` and
+   > `buffer_n1024_w128`, the ones larger than the largest design already run
+   > (`buffer_n1024_w64`, ≈ 89 fp16 MACs). The 26 others are done (2026-10-27) and in
+   > `rf_corner_costs.csv`. `buffer_n512_w128` came out 13% above the area trend, because Genus
+   > added high-fanout buffering; its power is 24–29% above the trend. See `mac_lut_status.md`.
 8. **CACTI, wider and multi-port**: entries of {3, 4, 5, 6, 8, 10, 11, 16} bytes × N = 8 … 8192
    with one read port, and every entry size × N = 8 … 256 with `exclusive read port` = R ∈
    {2, 3, 4, 6, 8} plus one write port. CACTI is cheap, so run the whole grid; sanity-check

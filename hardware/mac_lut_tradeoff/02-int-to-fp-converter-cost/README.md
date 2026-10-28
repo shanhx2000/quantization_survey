@@ -92,11 +92,32 @@ their standalone size; the multiplier is still 2.1× its standalone size. The de
 at 0 ps slack, now on the fp16 add + accumulator loop.
 
 **Clock transition.** Every number above is from the 5 ns clock-transition runs, so the
-single-cycle and pipelined MACs compare at one setting. The 0.1 ns reruns (2026-10-23) move
-designs near 0 ps slack: the pipelined MAC's logic is 949 µm² and `cvt_int16_fp16` 116 µm².
-The single-cycle MAC has no 0.1 ns run in `pe_summary.csv` yet; a pe_sweep rebuild at 0.1 ns
-is pending on cmp00. `mac_area_breakdown.py` follows `pe_summary.csv`'s main run, which is now
-the 0.1 ns one for the pipelined MAC.
+single-cycle and pipelined MACs compare at one setting.
+
+## At the flow's 0.1 ns clock transition (added 2026-10-28)
+
+The rebuilt pe sweep (`pe_sweep_v2`, cmp00, 2026-10-23) has both MACs at 0.1 ns under new
+names: `mac_int8xint8_fp16` and `mac_int8xint8_fp16_pipe`. Same split, logic area in µm²;
+*standalone* is the v2 unit at 0.1 ns:
+
+| Block | Single-cycle MAC | Pipelined MAC | Standalone |
+|---|---|---|---|
+| Multiplier | 531.6 | 253.0 | 143.9 (`mul_int8xint8_int16`) |
+| Converter | 229.6 | 109.0 | 116.2 (`cvt_int16_fp16`) |
+| fp16 adder | 582.5 | 485.5 | 525.8 (`add_fp16xfp16_fp16`) |
+| Glue | 164.7 | 101.1 | — |
+| **Logic** | **1,508.3** | **948.5** | |
+
+**The answer holds at one setting.** The gap to multiplier + adder is 1,508.3 − (143.9 +
+525.8) = 838.6 µm²: multiplier upsizing 387.7 (46%), converter 229.6 (27%), glue 164.7
+(20%), adder upsizing 56.7 (7%). The pipeline register takes 37% off the logic (the 41% above
+compared against the 5 ns MAC), and the converter comes back to its standalone size.
+
+```bash
+# from quantization_survey/hardware/ (reads pe_sweep_v2/pe_summary_v2.csv)
+python3 mac_lut_tradeoff/02-int-to-fp-converter-cost/mac_area_breakdown.py pe_sweep_v2 \
+    mac_int8xint8_fp16 mac_int8xint8_fp16_pipe
+```
 
 ## Method
 
