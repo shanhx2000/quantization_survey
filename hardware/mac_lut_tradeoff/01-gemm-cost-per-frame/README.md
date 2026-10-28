@@ -4,7 +4,7 @@ Generated 2026-10-28 by `make_tables.py` from [`../results/`](../results/) (the 
 snapshot; see [`../README.md`](../README.md)). Edit the script, not this file.
 
 **Tables, one file per batch size: [bs = 1](tables-bs1.md) · [bs = 2](tables-bs2.md) · [bs = 4](tables-bs4.md) · [bs = 8](tables-bs8.md).** Each file has one table per frame
-(wq ∈ {int1, ter, int2, int3, int4, int6, int8} × wa ∈ {int8, fp16}), one row per method and one column per
+(wq ∈ {binary, ter, int2, int3, int4, int6, int8} × wa ∈ {int8, fp16}), one row per method and one column per
 v. **Cell: area (µm²) / power (mW)** at 500 MHz, for hardware that consumes one v-element
 slice of a dot product for every batch row each cycle. Power × 2 = energy per cycle in pJ.
 `#` = no data yet. `*` = upper bound: an SRAM table CACTI cannot model (under 64 bytes, or N = 8, 16), costed as the smallest modelled table of the same width and ports. `—` = not costed: ternary register-file tables above v = 6. `#` and `*` apply to area and power separately.
@@ -21,7 +21,7 @@ The data is being collected on cmp00; the snapshot of its plan and status is in
 
 ## Methods and cost model
 
-* **wq**: weight format: int1, ter, int2, int3, int4, int6, int8. int-b = b-bit integer; **ter** = ternary
+* **wq**: weight format: binary, ter, int2, int3, int4, int6, int8. binary = 1-bit weights {−1, +1}; int-b = b-bit integer; **ter** = ternary
   {−1, 0, +1}. **wa**: activation format (int8 or fp16). **v**: vector length, the number of
   activations combined per step. **bs**: batch size (1, 2, 4, 8).
 * **MAC-GEMM**: bs·v multipliers and bs·v adders (a batch of bs needs bs times the resources).
@@ -29,18 +29,18 @@ The data is being collected on cmp00; the snapshot of its plan and status is in
   * *opt*: v × (int-wq × wa) mul + v × fp16 add. int × fp16 multipliers output fp16. The
     int → fp16 conversion that wa = int8 needs is not counted (note 6).
   * *int8*: v × int8 mul + v × int16 add.
-  * **wq = int1 and ter: no multiplier in any MAC row**, only the adds. The weight just
+  * **wq = binary and ter: no multiplier in any MAC row**, only the adds. The weight just
     selects, negates or zeroes the activation, and that is not counted. So for these two,
     *fp16* and *opt* are the same row.
 * **LUT-GEMM** (lookup table): the table holds the partial sums of v activations for every
   weight pattern. **Reads per slice:** int-b weights read once per bit-plane (b reads, b fp16
-  adds; one for int1); ternary weights index one table with all v trits (1 read, 1 add).
+  adds); binary weights read once; ternary weights index one table with all v trits (1 read, 1 add).
   * *pre-ignore*: the cost of building the table is ignored. *pre-ignore+symm*: half the
     table is stored and the other half is a sign flip of it; the flip is ignored.
   * **Entries**: int-b: 2^v, or 2^v / 2 with symm. ter: the smallest 2^k ≥ 3^v, or ≥ ⌊3^v / 2⌋
     with symm.
   * *dup*: one table copy per read, one read port each. *multi-port*: one table with one read
-    port per read (plus one write port). With one read (int1, ter) the two are the same.
+    port per read (plus one write port). With one read (binary, ter) the two are the same.
   * **Entry width** per batch row: 16 bits for wa = fp16; 8 + ⌈log2 v⌉ bits for wa = int8,
     which holds the exact sum of v int8 activations
     (10 bits at v = 4, 11 bits at v = 6, 11 bits at v = 7, 11 bits at v = 8). Times bs: one entry
@@ -53,8 +53,8 @@ The data is being collected on cmp00; the snapshot of its plan and status is in
 
 | LUT entries | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|
-| int-b, pre-ignore | 16 | 64 | 128 | 256 |
-| int-b, pre-ignore+symm | 8 | 32 | 64 | 128 |
+| binary / int-b, pre-ignore | 16 | 64 | 128 | 256 |
+| binary / int-b, pre-ignore+symm | 8 | 32 | 64 | 128 |
 | ter, pre-ignore | 128 | 1,024 | 4,096 | 8,192 |
 | ter, pre-ignore+symm | 64 | 512 | 2,048 | 4,096 |
 

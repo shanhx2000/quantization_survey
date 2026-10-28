@@ -53,8 +53,9 @@ def figure(metric, ylabel, name, fmt):
                 ax.plot(x, y, 'o', ms=3.4, color=color, mfc='white' if b else color, mew=1.0, zorder=4)
         ax.set_title(f'$w_a$ = {wa}', color=INK_2)
         ax.set_xticks(range(len(mt.WQ)))
-        ax.set_xticklabels([w.replace('int', '') if w != 'ter' else 'ter' for w in mt.WQ])
-        ax.set_xlabel('weight bits $q_W$')
+        ax.set_xticklabels([{'ter': 'ternary'}.get(w, w) for w in mt.WQ], rotation=40, ha='right',
+                           rotation_mode='anchor')
+        ax.set_xlabel('weight format')
         ax.set_ylim(bottom=0)
         ax.grid(axis='x', visible=False)
         ax.yaxis.set_major_formatter(FuncFormatter(fmt))

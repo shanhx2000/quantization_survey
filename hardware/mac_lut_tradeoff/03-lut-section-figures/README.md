@@ -79,9 +79,9 @@ has a separate write port, each copy one shared read/write port.
 
 ## What fig. 6 shows (2026-10-28 data, bs = 1)
 
-LUT-GEMM / the pair's own int-q_W × w_a multiplier MAC (adds only for int1 and ternary).
+LUT-GEMM / the pair's own int-q_W × w_a multiplier MAC (adds only for binary and ternary).
 
-- **SRAM tables, energy:** LUT-GEMM wins almost everywhere, most for 1–2-bit and ternary
+- **SRAM tables, energy:** LUT-GEMM wins almost everywhere, most for binary, 2-bit and ternary
   weights (0.14–0.33× at v ≥ 6). It loses at v = 4 for int6–int8 weights with int8 activations
   and int8 weights with fp16 activations (all upper bounds), and for int8 × int8 at v = 6–7
   (1.20×, 1.04×).

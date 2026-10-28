@@ -8,8 +8,8 @@ import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.path.join(os.path.dirname(HERE), 'results')
-WQ = ['int1', 'ter', 'int2', 'int3', 'int4', 'int6', 'int8']  # ter = ternary {-1, 0, +1}
-NO_MUL = ('int1', 'ter')  # a weight of +-1 (or 0) selects or negates the activation
+WQ = ['binary', 'ter', 'int2', 'int3', 'int4', 'int6', 'int8']  # binary {-1, +1}, ternary {-1, 0, +1}
+NO_MUL = ('binary', 'ter')  # a weight of +-1 (or 0) selects or negates the activation
 WA = ['int8', 'fp16']
 VS = [4, 6, 7, 8]
 BS = [1, 2, 4, 8]
@@ -74,8 +74,9 @@ def unit(name):
 
 
 def reads(wq):
-    """LUT reads per v-slice: one per weight bit-plane; ternary indexes one table with all v trits."""
-    return 1 if wq == 'ter' else int(wq[3:])
+    """LUT reads per v-slice: one per weight bit-plane; binary has one plane, and ternary indexes
+    one table with all v trits."""
+    return 1 if wq in NO_MUL else int(wq[3:])
 
 
 def entries(wq, v, symm):
@@ -279,7 +280,7 @@ The data is being collected on cmp00; the snapshot of its plan and status is in
 
 ## Methods and cost model
 
-* **wq**: weight format: {", ".join(WQ)}. int-b = b-bit integer; **ter** = ternary
+* **wq**: weight format: {", ".join(WQ)}. binary = 1-bit weights {{−1, +1}}; int-b = b-bit integer; **ter** = ternary
   {{−1, 0, +1}}. **wa**: activation format (int8 or fp16). **v**: vector length, the number of
   activations combined per step. **bs**: batch size ({", ".join(map(str, BS))}).
 * **MAC-GEMM**: bs·v multipliers and bs·v adders (a batch of bs needs bs times the resources).
@@ -287,18 +288,18 @@ The data is being collected on cmp00; the snapshot of its plan and status is in
   * *opt*: v × (int-wq × wa) mul + v × fp16 add. int × fp16 multipliers output fp16. The
     int → fp16 conversion that wa = int8 needs is not counted (note 6).
   * *int8*: v × int8 mul + v × int16 add.
-  * **wq = int1 and ter: no multiplier in any MAC row**, only the adds. The weight just
+  * **wq = binary and ter: no multiplier in any MAC row**, only the adds. The weight just
     selects, negates or zeroes the activation, and that is not counted. So for these two,
     *fp16* and *opt* are the same row.
 * **LUT-GEMM** (lookup table): the table holds the partial sums of v activations for every
   weight pattern. **Reads per slice:** int-b weights read once per bit-plane (b reads, b fp16
-  adds; one for int1); ternary weights index one table with all v trits (1 read, 1 add).
+  adds); binary weights read once; ternary weights index one table with all v trits (1 read, 1 add).
   * *pre-ignore*: the cost of building the table is ignored. *pre-ignore+symm*: half the
     table is stored and the other half is a sign flip of it; the flip is ignored.
   * **Entries**: int-b: 2^v, or 2^v / 2 with symm. ter: the smallest 2^k ≥ 3^v, or ≥ ⌊3^v / 2⌋
     with symm.
   * *dup*: one table copy per read, one read port each. *multi-port*: one table with one read
-    port per read (plus one write port). With one read (int1, ter) the two are the same.
+    port per read (plus one write port). With one read (binary, ter) the two are the same.
   * **Entry width** per batch row: 16 bits for wa = fp16; 8 + ⌈log2 v⌉ bits for wa = int8,
     which holds the exact sum of v int8 activations
     ({", ".join(f"{entry_bits('int8', v)} bits at v = {v}" for v in VS)}). Times bs: one entry
@@ -313,7 +314,7 @@ The data is being collected on cmp00; the snapshot of its plan and status is in
 | LUT entries | {" | ".join(f"v = {v}" for v in VS)} |
 |---|{"---|" * len(VS)}
 {chr(10).join(f"| {name} | " + " | ".join(f"{entries(wq, v, s):,}" for v in VS) + " |"
-              for name, wq, s in (("int-b, pre-ignore", "int1", False), ("int-b, pre-ignore+symm", "int1", True),
+              for name, wq, s in (("binary / int-b, pre-ignore", "int2", False), ("binary / int-b, pre-ignore+symm", "int2", True),
                                   ("ter, pre-ignore", "ter", False), ("ter, pre-ignore+symm", "ter", True)))}
 
 * **Area** = Σ count × unit area. Adders, multipliers: logic-only area of `u_core` from

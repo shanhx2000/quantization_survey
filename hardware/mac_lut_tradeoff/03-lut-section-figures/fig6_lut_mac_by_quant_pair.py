@@ -1,7 +1,7 @@
 # Fig. 6: where LUT-GEMM beats MAC-GEMM, by weight x activation quantization pair. Each cell is
 # LUT-GEMM / MAC-GEMM for one weight format (rows) and vector length v (columns); panels are the
 # activation format (columns) and the metric, area or energy (rows). The MAC is the pair's own
-# int-q_W x w_a multiplier MAC by default (adds only for int1 and ternary weights). Blue: LUT
+# int-q_W x w_a multiplier MAC by default (adds only for binary and ternary weights). Blue: LUT
 # cheaper; red: MAC cheaper; grey: parity. Data: make_tables' cost model (../01-gemm-cost-per-frame).
 # Usage: python3 fig6_lut_mac_by_quant_pair.py [sram|reg] [bs] [opt|fp16|int8]
 #        (default sram 1 opt) -> fig6_lut_mac_by_quant_pair_<kind>_bs<bs>_<baseline>.{pdf,png}

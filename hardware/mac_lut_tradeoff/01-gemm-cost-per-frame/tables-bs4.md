@@ -4,7 +4,7 @@ Generated 2026-10-28 by `make_tables.py`. Cost model, missing data and notes:
 [README.md](README.md). **Cell: area (µm²) / read-only power (mW)** at 500 MHz. `#` = no data yet. `*` = upper bound: an SRAM table CACTI cannot model (under 64 bytes, or N = 8, 16), costed as the smallest modelled table of the same width and ports. `—` = not costed: ternary register-file tables above v = 6.
 LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa = int8; × 4.
 
-## wq = int1, wa = int8
+## wq = binary, wa = int8
 
 | Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|---|
@@ -116,7 +116,7 @@ LUT entries per batch row: 16 bits for wa = fp16, 8 + ⌈log2 v⌉ bits for wa =
 | LUT SRAM multi-port, pre-ignore | 1 × LUT[2^v × 4·(8+⌈log2 v⌉)b, 8R] + 32 × fp16 add | 25,820* / 52.29* | 32,914 / 53.48 | 42,346 / 54.77 | 64,852 / 59.01 |
 | LUT SRAM multi-port, pre-ignore+symm | 1 × LUT[2^v/2 × 4·(8+⌈log2 v⌉)b, 8R] + 32 × fp16 add | 25,820* / 52.29* | 28,060 / 52.98 | 32,914 / 53.48 | 42,346 / 54.77 |
 
-## wq = int1, wa = fp16
+## wq = binary, wa = fp16
 
 | Method | Counts | v = 4 | v = 6 | v = 7 | v = 8 |
 |---|---|---|---|---|---|
