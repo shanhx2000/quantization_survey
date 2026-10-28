@@ -1,104 +1,84 @@
 # 02 — How large is the int → fp16 converter after the multiplier?
 
-Written 2026-10-22. Asked by the owner after [01](../01-gemm-cost-per-frame/README.md) noted
-that *MAC opt* with wa = int8 needs an int → fp16 conversion of the product before the fp16
-add, and quoted `mac_mulint8_addfp16` at 1,763 µm² of logic against 657 µm² for
-`mul_int8` + `add_fp16`. The owner expected the converter to be small.
+Written 2026-10-22; **rewritten 2026-10-28 on the rebuilt pe sweep** (`pe_sweep_v2`: every
+design at the flow's 0.1 ns clock transition, names `op_{a}x{b}_{out}`). Asked by the owner
+after [01](../01-gemm-cost-per-frame/README.md) noted that *MAC opt* with wa = int8 needs an
+int → fp16 conversion of the product before the fp16 add, and that the single-cycle
+int8 × int8 → fp16 MAC was far larger than a multiplier plus an adder. The owner expected the
+converter to be small. The first version used the older 5 ns runs; its numbers are at the
+end, and they support the same answer.
 
 ## Answer
 
-**The converter is small; the gap is timing.** Inside `mac_mulint8_addfp16` the converter's
-cells (`CW_fp_i2flt`, int16 → fp16) take **272 µm², 15% of the logic**. Most of the
-1,106 µm² gap is the multiplier and adder growing to close timing: multiply, convert and add
-sit in one 2 ns cycle with the accumulator fed back, the design ends at 0 ps slack, and Genus
-upsized the int8 multiplier **4.1×** (142 → 588 µm²) and the fp16 adder **1.36×**
-(515 → 702 µm²).
+**The converter is small; the gap is timing.** In `mac_int8xint8_fp16` (int8 × int8 → int16
+→ fp16, accumulated in fp16) the converter's cells (`CW_fp_i2flt`, int16 → fp16) take
+**230 µm², 15% of the 1,508 µm² of logic**. Multiply, convert and add sit in one 2 ns cycle
+with the accumulator fed back, and the design ends at 0 ps slack. To meet that, Genus
+upsized the int8 multiplier **3.7×** (144 → 532 µm²) and the fp16 adder 1.11× (526 →
+583 µm²).
 
-| Part of the 1,106 µm² gap | µm² | Share |
+| Part of the 839 µm² gap to `mul_int8xint8_int16` + `add_fp16xfp16_fp16` (670 µm²) | µm² | Share |
 |---|---|---|
-| Multiplier upsizing (588.4 − 142.3) | 446 | 40% |
-| Converter cells | 272 | 25% |
-| Glue: cells Genus renamed while restructuring across the block boundaries | 201 | 18% |
-| fp16 adder upsizing (702.2 − 515.1) | 187 | 17% |
+| Multiplier upsizing (531.6 − 143.9) | 388 | 46% |
+| Converter cells | 230 | 27% |
+| Glue: cells Genus renamed while restructuring across the block boundaries | 165 | 20% |
+| fp16 adder upsizing (582.5 − 525.8) | 57 | 7% |
 
 The glue cannot be assigned to a block. Even counting all of it as converter, the converter
-is at most 473 µm² (27% of the logic).
+is at most 394 µm² (26% of the logic).
 
 Power tells the same story where it can be split: only `u_mul` stays a separate hierarchy in
-the power report, and inside the MAC it draws 0.979 mW against 0.244 mW standalone (4.0×).
+the power report, and inside the MAC it draws 0.880 mW against 0.261 mW standalone (3.4×).
 The converter and adder are flattened into `u_core`, so their power cannot be separated.
 
-## Breakdown of every int → fp MAC, and two references
+## Breakdown of the int → fp MACs, and two references
 
-Logic area in µm², from `mac_area_breakdown.py` (below). *In MAC / standalone* compares the
-block inside the MAC with the standalone pe_sweep design of the same type.
+Logic area in µm², from `mac_area_breakdown.py` (below), all at 0.1 ns. *In MAC / standalone*
+compares the block inside the MAC with the standalone `pe_sweep_v2` unit of the same type.
 
 | MAC | Slack (ps) | Multiplier: in MAC / standalone | Converter | Adder: in MAC / standalone | Glue | Logic |
 |---|---|---|---|---|---|---|
-| `mac_mulint4_addfp16` | 0 | 98.8 / 28.2 (3.5×) | 137.6 (int8 → fp16) | 504.0 / 515.1 (0.98×) | 140.1 | 880.5 |
-| `mac_mulint8_addfp16` | 0 | 588.4 / 142.3 (4.1×) | 271.5 (int16 → fp16) | 702.2 / 515.1 (1.36×) | 201.1 | 1,763.2 |
-| `mac_mulint16_addfp16` | 0 | 2,014.7 / 548.4 (3.7×) | 311.3 (int32 → fp16) | 776.8 / 515.1 (1.51×) | 251.7 | 3,354.6 |
-| `mac_mulint8_addfp32` | 0 | 681.8 / 142.3 (4.8×) | 332.9 (int16 → fp32) | 1,631.6 / 1,411.3 (1.16×) | 319.8 | 2,966.0 |
-| `mac_mulint8_addint16` (no converter) | 110 | 145.9 / 142.3 (1.03×) | — | 32.8 / 32.8 (1.00×) | 0 | 178.7 |
-| `mac_mulfp16_addfp16` (no converter) | 0 | 927.6 / 383.7 (2.4×) | — | 562.0 / 515.1 (1.09×) | 313.6 | 1,803.2 |
+| `mac_int4xint4_fp16` | 0 | 90.3 / 28.2 (3.2×) | 131.2 (int8 → fp16) | 456.5 / 525.8 (0.87×) | 118.8 | 796.8 |
+| `mac_int8xint8_fp16` | 0 | 531.6 / 143.9 (3.7×) | 229.6 (int16 → fp16) | 582.5 / 525.8 (1.11×) | 164.7 | 1,508.3 |
+| `mac_int8xint8_fp32` | 0 | 717.3 / 143.9 (5.0×) | 338.7 (int16 → fp32) | 1,634.6 / 1,489.1 (1.10×) | 309.0 | 2,999.6 |
+| `mac_int16xint16_fp32` | 0 | 2,522.0 / 537.3 (4.7×) | 741.4 (int32 → fp32) | 2,250.4 / 1,489.1 (1.51×) | 482.5 | 5,996.2 |
+| `mac_int8xint8_int16` (no converter) | 344 | 145.7 / 143.9 (1.01×) | — | 32.8 / 32.8 (1.00×) | 0 | 178.4 |
+| `mac_fp16xfp16_fp16` (no converter) | 0 | 872.5 / 397.8 (2.2×) | — | 513.4 / 525.8 (0.98×) | 293.1 | 1,679.1 |
 
-* The converter is 9–16% of the logic in every int → fp MAC.
-* **Timing, not conversion, drives the inflation.** The integer MAC with 110 ps of slack keeps
-  its parts at standalone size (1.03×). `mac_mulfp16_addfp16`, which has no converter at all,
-  still ends at 0 ps and its multiplier still grows 2.4×.
-* The critical path of `mac_mulint8_addfp16` runs `a_q` → multiplier (to 210 ps) → converter
-  (to ~670 ps) → adder → `acc` (`rpt/mac_mulint8_addfp16.timing_100.rpt`, path 1).
+* The converter is 11–17% of the logic in every int → fp MAC.
+* **Timing, not conversion, drives the inflation.** The integer MAC with 344 ps of slack keeps
+  its parts at standalone size (1.01×). `mac_fp16xfp16_fp16`, which has no converter at all,
+  still ends at 0 ps and its multiplier still grows 2.2×.
+* The critical path of `mac_int8xint8_fp16` runs `a_q` → multiplier (to ~344 ps) →
+  converter (to ~725 ps) → adder → `acc_reg` (`rpt/mac_int8xint8_fp16.timing_100.rpt`,
+  path 1, 0 ps slack).
+* The int16 × int16 → fp16 MAC of the first version is gone: the owner dropped MACs whose
+  accumulator is narrower than the operands (assumption revision 9 on cmp00).
+  int16 × int16 → fp32 takes its place.
 
 ## Width matters for MAC opt
 
-In *MAC opt* the converter input is the int-wq × int8 product, not int16. Products of int3 or
+In *MAC opt* the converter input is the int-q_W × int8 product, not int16. Products of int3 or
 int4 with int8 have magnitude at most 512 or 1,024, which fp16 holds exactly (11 significant
-bits). So for wq ≤ 4 the converter needs no rounding, only sign handling, a leading-zero
-count and a shift. For wq = 6 and 8 (magnitude up to 4,096 and 16,384), it must round.
+bits). So for q_W ≤ 4 the converter needs no rounding, only sign handling, a leading-zero
+count and a shift. For q_W = 6 and 8 (magnitude up to 4,096 and 16,384), it must round.
 
-## Standalone converter and pipelined MAC (added 2026-10-22)
+## Standalone converter and pipelined MAC
 
-Run on cmp00 after the first version of this note (items 9 and 10 of
-[`mac_lut_data_to_collect.md`](../results/todo/mac_lut_data_to_collect.md)); numbers from
-[`pe_summary.csv`](../results/pe_sweep/pe_summary.csv). Both confirm the answer above.
-
-**Standalone converter**, registered like every pe_sweep design, int → fp16:
+**Standalone converter**, registered like every pe sweep design, int → fp16, 0.1 ns:
 
 | Input (product of) | `CW_fp_i2flt`: logic µm² / mW / slack | Exact RTL, no rounding: logic µm² / mW |
 |---|---|---|
-| int10 (int2 × int8) | 69.9 / 0.200 / 151 ps | 52.7 / 0.133 |
-| int11 (int3 × int8) | 73.6 / 0.210 / 104 ps | 63.6 / 0.158 |
-| int12 (int4 × int8) | 82.3 / 0.243 / 28 ps | 73.0 / 0.181 |
-| int14 (int6 × int8) | 111.1 / 0.284 / 18 ps | — (needs rounding) |
-| int16 (int8 × int8) | 120.2 / 0.303 / 7 ps | — (needs rounding) |
+| int10 (int2 × int8) | 69.7 / 0.198 / 20 ps | 52.9 / 0.134 |
+| int11 (int3 × int8) | 73.7 / 0.210 / 4 ps | 63.6 / 0.160 |
+| int12 (int4 × int8) | 80.5 / 0.235 / 1 ps | 73.6 / 0.184 |
+| int14 (int6 × int8) | 101.1 / 0.276 / 0 ps | — (needs rounding) |
+| int16 (int8 × int8) | 116.2 / 0.309 / 5 ps | — (needs rounding) |
 
-So the int16 → fp16 converter is **120 µm² on its own**, against 272 µm² of converter cells
+So the int16 → fp16 converter is **116 µm² on its own**, against 230 µm² of converter cells
 inside the single-cycle MAC.
 
-**Pipelined MAC** (`mac_mulint8_addfp16_pipe`: a 16-bit register between converter and
-adder), split with `mac_area_breakdown.py`:
-
-| Block | Single-cycle MAC | Pipelined MAC | Standalone |
-|---|---|---|---|
-| Multiplier | 588.4 | 297.1 | 142.3 (`mul_int8`) |
-| Converter | 271.5 | 131.5 | 120.2 (`cvt_int16_fp16`) |
-| fp16 adder | 702.2 | 501.6 | 515.1 (`add_fp16`) |
-| Glue | 201.1 | 115.3 | — |
-| **Logic** | **1,763.2** | **1,045.5** | |
-| Flops (accumulator; + pipeline register) | 37.3 | 73.1 | |
-
-The pipeline register takes 41% off the logic. The converter and the adder come back to
-their standalone size; the multiplier is still 2.1× its standalone size. The design still ends
-at 0 ps slack, now on the fp16 add + accumulator loop.
-
-**Clock transition.** Every number above is from the 5 ns clock-transition runs, so the
-single-cycle and pipelined MACs compare at one setting.
-
-## At the flow's 0.1 ns clock transition (added 2026-10-28)
-
-The rebuilt pe sweep (`pe_sweep_v2`, cmp00, 2026-10-23) has both MACs at 0.1 ns under new
-names: `mac_int8xint8_fp16` and `mac_int8xint8_fp16_pipe`. Same split, logic area in µm²;
-*standalone* is the v2 unit at 0.1 ns:
+**Pipelined MAC** (`mac_int8xint8_fp16_pipe`: a 16-bit register between converter and adder):
 
 | Block | Single-cycle MAC | Pipelined MAC | Standalone |
 |---|---|---|---|
@@ -107,17 +87,19 @@ names: `mac_int8xint8_fp16` and `mac_int8xint8_fp16_pipe`. Same split, logic are
 | fp16 adder | 582.5 | 485.5 | 525.8 (`add_fp16xfp16_fp16`) |
 | Glue | 164.7 | 101.1 | — |
 | **Logic** | **1,508.3** | **948.5** | |
+| Flops (accumulator; + pipeline register) | 36.3 | 72.6 | |
 
-**The answer holds at one setting.** The gap to multiplier + adder is 1,508.3 − (143.9 +
-525.8) = 838.6 µm²: multiplier upsizing 387.7 (46%), converter 229.6 (27%), glue 164.7
-(20%), adder upsizing 56.7 (7%). The pipeline register takes 37% off the logic (the 41% above
-compared against the 5 ns MAC), and the converter comes back to its standalone size.
+The pipeline register takes 37% off the logic. The converter and the adder come back to
+their standalone size; the multiplier is still 1.8× its standalone size. The design still ends
+at 0 ps slack, now on the fp16 add + accumulator loop.
 
-```bash
-# from quantization_survey/hardware/ (reads pe_sweep_v2/pe_summary_v2.csv)
-python3 mac_lut_tradeoff/02-int-to-fp-converter-cost/mac_area_breakdown.py pe_sweep_v2 \
-    mac_int8xint8_fp16 mac_int8xint8_fp16_pipe
-```
+## First version (5 ns clock transition, 2026-10-22)
+
+Same method on the old `pe_summary.csv` runs, kept for the record: converter 272 of
+1,763 µm² logic in `mac_mulint8_addfp16` (15%); multiplier upsized 4.1×, adder 1.36×; the
+int → fp MACs' converter share 9–16%; standalone `cvt_int16_fp16` 120 µm²; pipelining took
+41% off. The 0.1 ns rebuild moved designs at 0 ps slack by up to −14% (this MAC: 1,763 →
+1,508 µm²) without changing any conclusion.
 
 ## Method
 
@@ -125,12 +107,14 @@ python3 mac_lut_tradeoff/02-int-to-fp-converter-cost/mac_area_breakdown.py pe_sw
 applies them to every instance in `gate/<design>.v`, and groups the instances in
 `mac_core_*` by name: the `u_mul` hierarchy or `mul_*` cells, `u_cvt*`, `u_add*`, the
 `acc_reg` flops, and everything else as glue. For every design above, the sum matches
-`core_area_um2` in `pe_summary.csv` exactly, and the sum without flops matches
-`logic_area_um2`. It needs the full sweep copy, which is not in git:
+`core_area_um2` in the summary CSV exactly, and the sum without flops matches
+`logic_area_um2`. It reads `pe_summary_v2.csv` when the folder has one, else
+`pe_summary.csv`, and needs the full sweep copy, which is not in git:
 
 ```bash
 # from quantization_survey/hardware/
-python3 mac_lut_tradeoff/02-int-to-fp-converter-cost/mac_area_breakdown.py pe_sweep \
-    mac_mulint4_addfp16 mac_mulint8_addfp16 mac_mulint16_addfp16 mac_mulint8_addfp32 \
-    mac_mulint8_addint16 mac_mulfp16_addfp16 mac_mulint8_addfp16_pipe
+python3 mac_lut_tradeoff/02-int-to-fp-converter-cost/mac_area_breakdown.py pe_sweep_v2 \
+    mac_int4xint4_fp16 mac_int8xint8_fp16 mac_int8xint8_fp32 mac_int16xint16_fp32 \
+    mac_int8xint8_int16 mac_fp16xfp16_fp16 mac_int8xint8_fp16_pipe
+# the first version: same script on pe_sweep, with the old names
 ```
