@@ -10,9 +10,11 @@ is the owner's step.
 | [`fig1_bitsplit_to_lut.py`](fig1_bitsplit_to_lut.py) | `fig1_bitsplit_to_lut` | Toy tile, v = 2 activations, 4-bit weights, N = 6 columns: (a) bit-splitting MAC-GEMM, (b) the partial sums repeat, (c) a 2^v-entry LUT built with one add, (d) LUT-GEMM. Every value is computed from the weights in the script |
 | [`fig2_mac_vs_lut_sram.py`](fig2_mac_vs_lut_sram.py) `[v] [bs]` | `fig2a_area_v6_bs1`, `fig2b_power_v6_bs1` | Area and read-only power per v-slice of MAC-GEMM (fp16, int-wq × wa multiplier, int8) vs SRAM LUT-GEMM (full and sign-symmetric table), across weight formats, one panel per activation format |
 | [`fig3_reg_vs_sram.py`](fig3_reg_vs_sram.py) `[W]` | `fig3_reg_vs_sram_w16` | Register-file vs SRAM table, area and read-only power against entries N, one panel per read-port count R; solid = one table with R read + 1 write ports, dashed = **the total** of R one-port copies |
+| [`fig3_paper.py`](fig3_paper.py) `[W]` | `fig3_paper_reg_vs_sram_w16` | **Paper version of fig. 3** (2026-11-04, in `latex/figures/` as `fig:g3:lut-table-ports`): same data, 5.9 in wide (the manuscript text width), no footnote (the LaTeX caption carries it); legend names the two organizations as the text does: *multi-ported* (one table, R read ports; solid) and *replicated* (R one-port copies, total; dashed); x-axis "Table entries" without N, which the text uses for output columns |
 | [`fig4_per_mac_vs_v_bs.py`](fig4_per_mac_vs_v_bs.py) `[q_W] [w_a]` | `fig4_per_mac_vs_v_bs_int4_fp16` | MAC-GEMM vs LUT-GEMM (SRAM and register-file tables, sign-symmetric) against v, one panel per batch size, **normalized per MAC**: area per MAC/cycle and energy per MAC |
 | [`fig5_lut_mac_ratio_vs_v_bs.py`](fig5_lut_mac_ratio_vs_v_bs.py) `[q_W] [w_a] [opt\|fp16\|int8]` | `fig5_lut_mac_ratio_vs_v_bs_int4_fp16_opt` | LUT-GEMM / MAC-GEMM (default: the int-q_W × w_a multiplier MAC) against v, one line per batch size, for SRAM and register-file tables, area and energy |
 | [`fig6_lut_mac_by_quant_pair.py`](fig6_lut_mac_by_quant_pair.py) `[sram\|reg] [bs] [opt\|fp16\|int8]` | `fig6_lut_mac_by_quant_pair_sram_bs{1,2,4,8}_opt`, `…_reg_bs1_opt` | **By quantization pair:** LUT-GEMM / MAC-GEMM for every weight format × v, one panel per activation format and metric (area, energy); each pair against its own int-q_W × w_a multiplier MAC; diverging blue (LUT cheaper) to red |
+| [`fig6_paper_int8.py`](fig6_paper_int8.py) | `fig6_paper_lut_mac_int8act_sram_bs1` | **Paper version of fig. 6** (2026-11-04, in `latex/figures/` as `fig:g3:lut-mac-by-quant-pair`): int8 activations only, SRAM, bs = 1, ternary dropped; area and energy side by side; no title or footnote (the LaTeX caption carries them); x-axis is the weight bit group μ (= v) |
 | [`fig7_op_counts.py`](fig7_op_counts.py) `[q_W] [v] [bs] [N]` | `fig7_op_counts_int4_fp16_v8_bs1_n64` | **Operation counts**, int4 × fp16, v = 8, bs = 1: (a) per output column and 8 activations, MAC-GEMM 8 multiplies + 8 adds vs LUT-GEMM 4 reads + 4 adds; (b) one 128-entry table shared by N = 64 columns: 512 + 512 vs 256 reads + 256 adds + 128 build adds |
 | [`fig7_op_counts_slide.py`](fig7_op_counts_slide.py) `[q_W] [v] [bs] [N]` | `fig7_op_counts_slide_int4_fp16_v8_bs1_n64` | **Slide version of fig. 7 (16:9):** the steps behind the counts (MAC-GEMM: multiply, accumulate; LUT-GEMM: build the table once, bit-split the weights, look up, accumulate), each with its count, next to the two bar panels. Shares `draw_bars()` with `fig7_op_counts.py` |
 
@@ -27,6 +29,8 @@ python3 fig1_bitsplit_to_lut.py && python3 fig2_mac_vs_lut_sram.py && python3 fi
 python3 fig4_per_mac_vs_v_bs.py && python3 fig5_lut_mac_ratio_vs_v_bs.py
 for bs in 1 2 4 8; do python3 fig6_lut_mac_by_quant_pair.py sram $bs; done
 python3 fig6_lut_mac_by_quant_pair.py reg
+python3 fig3_paper.py && cp fig3_paper_reg_vs_sram_w16.pdf ../../../latex/figures/
+python3 fig6_paper_int8.py && cp fig6_paper_lut_mac_int8act_sram_bs1.pdf ../../../latex/figures/
 python3 fig7_op_counts.py && python3 fig7_op_counts_slide.py
 ```
 
